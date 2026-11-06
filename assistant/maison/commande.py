@@ -81,6 +81,7 @@ _VERBES = [
     ("regler", rf"r[éeè]gl{_T}|(?:re)?mets?|(?:re)?mettre|mont{_T}|baiss{_T}|augment{_T}|diminu{_T}|(?:re)?pass{_T}"),
 ]
 _RE_ORDRE = [(a, re.compile(rf"^\s*{_POLI}(?:{v})\b\s*(.*)$", re.IGNORECASE)) for a, v in _VERBES]
+_RE_ORDRE_DEBUT = re.compile(rf"^\s*{_POLI}(?:{'|'.join(v for _, v in _VERBES)})\b", re.IGNORECASE)
 _RE_VALEUR = re.compile(r"(?<![\w.,])(\d+(?:[.,]\d+)?)(?![\w.,])\s*(%|pour ?cent|degr[ée]s?|°)?", re.IGNORECASE)
 _RE_ETAT = re.compile(
     r"^\s*(?:est[- ]ce que\s+)?(.+?)\s+(?:est|sont)(?:[- ](?:elle|il|elles|ils))?\s+"
@@ -158,6 +159,16 @@ def par_regles(texte: str, avec_contexte: bool = False) -> Commande | None:
         return Commande("inventaire", " ".join(x for x in (quoi, ou) if x) or "appareils")
     if _RE_RESTAURER.match(t):
         return Commande("restaurer", "")   # même sans contexte : la maison répondra qu'il n'y a rien à annuler
+    # Sans verbe : « lampe bureau en rouge » ; et avec contexte, la couleur seule : « en rouge »
+    m = re.match(r"^\s*(?:et\s+)?(?P<cible>.*?)\s*(?P<c>\b(?:en|au)\s+.+)$", t, re.IGNORECASE)
+    if m and not _RE_ORDRE_DEBUT.match(t):
+        reste, couleur, kelvin = extraire_couleur(" " + m.group("c"))
+        if (couleur or kelvin) and not reste.strip():
+            cible = m.group("cible").strip()
+            if cible and not _RE_PRONOM.match(cible):
+                return Commande("allumer", cible, None, bool(_RE_TOUS.search(cible)), couleur, kelvin)
+            if avec_contexte:
+                return Commande("allumer", "", None, False, couleur, kelvin)
     if avec_contexte:
         # « remets la lampe bureau » (sans couleur ni valeur) = la remettre comme avant
         if re.match(r"^\s*remets?\s+(?!.*\b(?:en|au)\s)(?!.*\s[àa]\s)(?!.*\d)\S.*$", t, re.IGNORECASE):

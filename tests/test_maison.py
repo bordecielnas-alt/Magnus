@@ -432,3 +432,19 @@ def test_pluriel_vise_tous(maison):
 def test_singulier_reste_ambigu(maison):
     m, _ = maison
     assert dire(m, "allume la lumière du salon").texte.startswith("Lequel")
+
+
+def test_couleur_sans_verbe():
+    c = par_regles("lampe bureau en rouge")
+    assert (c.action, c.cible, c.couleur) == ("allumer", "lampe bureau", "red")
+    assert par_regles("en rouge") is None                      # sans contexte : rien
+    c = par_regles("en bleu", avec_contexte=True)
+    assert (c.action, c.cible, c.couleur) == ("allumer", "", "blue")
+    assert par_regles("Allons en vacances en juin") is None    # pas une couleur
+
+
+def test_couleur_seule_sur_le_dernier_appareil(maison):
+    m, ha = maison
+    dire(m, "allume le plafonnier")
+    dire(m, "en vert")
+    assert ha.appels[-1] == ("light", "turn_on", {"entity_id": "light.plafonnier", "color_name": "green"})
