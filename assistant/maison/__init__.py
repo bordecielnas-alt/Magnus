@@ -216,7 +216,7 @@ class Maison:
             cmd = Commande(ctx.commande.action, cmd.cible, ctx.commande.valeur, cmd.tous,
                            ctx.commande.couleur, ctx.commande.kelvin)
             origine = "suite de conversation"
-        if cmd is None and self.extracteur and self.cfg.extraction_par_modele:
+        if cmd is None and self.extracteur and self.cfg.extraction_par_modele and await self._evoque_la_maison(texte):
             cmd = await par_modele(texte, self.extracteur)
             origine = "modèle"
         if cmd is None:
@@ -259,6 +259,18 @@ class Maison:
         proches = [e for e in proches[:3] if c & (e.mots_nom() | e.mots_piece())]
         suite = f" Tu voulais dire : {', '.join(e.libelle for e in proches)} ?" if proches else ""
         return f"Je ne trouve aucun appareil qui corresponde à « {propre} ». Rien n'a été fait.{suite}"
+
+    async def _evoque_la_maison(self, texte: str) -> bool:
+        """La phrase cite-t-elle un type d'appareil, une pièce ou un appareil connu ? Sinon (« bonjour »),
+        inutile de demander au modèle d'en extraire une commande."""
+        from .resolution import INDICES_DOMAINE
+        m = mots(texte)
+        if m & set(INDICES_DOMAINE):
+            return True
+        connus: set[str] = set()
+        for e in await self.inventaire.obtenir():
+            connus |= e.mots_nom() | e.mots_piece()
+        return bool(m & connus)
 
     async def _plusieurs(self, cmd: Commande, parties: list[str], entites: list[Entite],
                          conversation: str) -> ReponseMaison:

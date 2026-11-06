@@ -406,3 +406,16 @@ def test_type_partage_entre_cibles(maison):
     dire(m, "allume la lumière de la cuisine et du salon")
     ids = {a[2]["entity_id"] for a in ha.appels}
     assert "light.cuisine" in ids and "switch.prise_tv" not in ids
+
+
+def test_bonjour_ne_consulte_pas_l_extracteur(tmp_path):
+    class Espion:
+        appels = 0
+        async def repondre(self, msgs, options=None):
+            Espion.appels += 1
+            return "{}"
+    m = Maison(MaisonConfig(), FauxHA(), AliasAppris(tmp_path / "a.json"), Espion())
+    dire(m, "bonjour")
+    assert Espion.appels == 0
+    dire(m, "fais briller le plafonnier")  # tournure inconnue mais appareil connu : le modèle est consulté
+    assert Espion.appels == 1

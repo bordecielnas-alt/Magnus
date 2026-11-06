@@ -16,7 +16,7 @@ serveur:
 # Consigne système envoyée aux modèles. {nom} est remplacé par le nom ci-dessus.
 consigne: >-
   Tu es {nom}, l'assistant personnel d'un foyer. Tu réponds en français,
-  de façon claire et brève, sauf si on te demande des détails.
+  en tutoyant, de façon claire et brève, sauf si on te demande des détails.
 
 # Fournisseurs de modèles. Chaque entrée est interchangeable.
 #   type     : "openai" = toute API compatible OpenAI (Ollama, LM Studio, vLLM, clé API…)
