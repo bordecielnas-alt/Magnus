@@ -28,6 +28,7 @@ class Entite:
     alias_piece: list[str] = field(default_factory=list)
     etat: str = ""
     attributs: dict = field(default_factory=dict)
+    nom_appareil: str = ""        # nom de l'appareil HA (souvent celui qu'on utilise : « L3 »)
 
     @property
     def domaine(self) -> str:
@@ -38,7 +39,7 @@ class Entite:
         return f"{self.nom} ({self.piece})" if self.piece and self.piece.lower() not in self.nom.lower() else self.nom
 
     def mots_nom(self) -> set[str]:
-        m = mots(self.nom) | mots(self.entity_id.split(".", 1)[1].replace("_", " "))
+        m = mots(self.nom) | mots(self.entity_id.split(".", 1)[1].replace("_", " ")) | mots(self.nom_appareil)
         for a in self.alias:
             m |= mots(a)
         return m
@@ -107,6 +108,7 @@ def construire_detail(resultats: dict, domaines: set[str]) -> tuple[list[Entite]
         sortie.append(Entite(
             eid, nom, piece.get("name", ""), list(r.get("aliases") or []),
             list(piece.get("aliases") or []), s.get("state", ""), a,
+            appareil.get("name_by_user") or appareil.get("name") or "",
         ))
     # entités sans unique_id (définies en YAML : groupes, modèles…) : absentes du registre
     for eid, s in etats.items():

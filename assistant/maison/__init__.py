@@ -21,6 +21,8 @@ ETATS_FR = {
     "heat": "en chauffe", "cool": "en refroidissement", "unavailable": "indisponible", "unknown": "inconnu",
 }
 ATTENTE_MAX_S = 120   # une question « lequel ? » reste valable deux minutes
+CONTEXTE_MAX_S = 600  # « éteins-le », « la cuisine aussi » : valables dix minutes
+PAS_RELATIF = {"light": 20, "cover": 20, "media_player": 10, "fan": 20, "climate": 1}
 
 
 @dataclass
@@ -37,8 +39,77 @@ class _Attente:
     depuis: float
 
 
-def _service(action: str, e: Entite, valeur: float | None) -> tuple[str, str, dict] | None:
+@dataclass
+class _Contexte:
+    commande: Commande            # dernière commande exécutée
+    entites: list[Entite]         # appareils concernés
+    avant: list[dict]             # états lus juste avant l'action (pour « remets comme avant »)
+    depuis: float
+
+
+def _restauration(s: dict) -> tuple[str, str, dict] | None:
+    """Service qui remet une entité dans l'état `s` (état HA lu avant une action)."""
+    eid = s["entity_id"]
+    d, etat, a = eid.split(".", 1)[0], s.get("state"), s.get("attributes") or {}
+    ident = {"entity_id": eid}
+    if etat in ("unavailable", "unknown", None):
+        return None
+    if d == "light":
+        if etat == "off":
+            return d, "turn_off", ident
+        data = dict(ident)
+        if a.get("brightness") is not None:
+            data["brightness"] = a["brightness"]
+        mode = a.get("color_mode")
+        if mode == "color_temp" and a.get("color_temp_kelvin"):
+            data["color_temp_kelvin"] = a["color_temp_kelvin"]
+        elif mode in ("hs", "rgb", "rgbw", "rgbww", "xy") and a.get("rgb_color"):
+            data["rgb_color"] = a["rgb_color"]
+        return d, "turn_on", data
+    if d in ("switch", "fan", "media_player") and etat in ("on", "off"):
+        if d == "fan" and etat == "on" and a.get("percentage") is not None:
+            return d, "set_percentage", {**ident, "percentage": a["percentage"]}
+        return d, "turn_on" if etat == "on" else "turn_off", ident
+    if d == "media_player" and a.get("volume_level") is not None:
+        return d, "volume_set", {**ident, "volume_level": a["volume_level"]}
+    if d == "cover" and a.get("current_position") is not None:
+        return d, "set_cover_position", {**ident, "position": a["current_position"]}
+    if d == "cover" and etat in ("open", "closed"):
+        return d, "open_cover" if etat == "open" else "close_cover", ident
+    if d == "climate" and a.get("temperature") is not None:
+        return d, "set_temperature", {**ident, "temperature": a["temperature"]}
+    return None
+
+
+def _relatif(e: Entite, s: dict | None, sens: float) -> tuple[str, str, dict] | None:
+    """Plus / moins : luminosité, volume, position, vitesse ou consigne, d'un cran."""
+    d, ident, pas = e.domaine, {"entity_id": e.entity_id}, PAS_RELATIF.get(e.domaine, 0)
+    a = (s or {}).get("attributes") or {}
+    if d == "light":
+        return d, "turn_on", {**ident, "brightness_step_pct": pas * sens}
+    if d == "fan":
+        return d, "set_percentage", {**ident, "percentage": max(0, min(100, (a.get("percentage") or 0) + pas * sens))}
+    if d == "cover" and a.get("current_position") is not None:
+        return d, "set_cover_position", {**ident, "position": int(max(0, min(100, a["current_position"] + pas * sens)))}
+    if d == "media_player" and a.get("volume_level") is not None:
+        return d, "volume_set", {**ident, "volume_level": round(max(0, min(1, a["volume_level"] + pas * sens / 100)), 2)}
+    if d == "climate" and a.get("temperature") is not None:
+        return d, "set_temperature", {**ident, "temperature": a["temperature"] + pas * sens}
+    return None
+
+
+def _service(action: str, e: Entite, valeur: float | None,
+             couleur: str | None = None, kelvin: int | None = None) -> tuple[str, str, dict] | None:
     d, ident = e.domaine, {"entity_id": e.entity_id}
+    if action == "allumer" and d == "light" and (couleur or kelvin or valeur is not None):
+        data = dict(ident)
+        if couleur:
+            data["color_name"] = couleur
+        if kelvin:
+            data["color_temp_kelvin"] = kelvin
+        if valeur is not None:
+            data["brightness_pct"] = max(0, min(100, valeur))
+        return d, "turn_on", data
     if action == "allumer":
         return (d, "open_cover", ident) if d == "cover" else (d, "turn_on", ident)
     if action == "eteindre":
@@ -92,10 +163,16 @@ class Maison:
         self.extracteur = extracteur
         self.inventaire = Inventaire(ha, cfg.domaines_autorises, cfg.rafraichir_s)
         self._attentes: dict[str, _Attente] = {}
+        self._contextes: dict[str, _Contexte] = {}
 
-    def reconnait(self, texte: str) -> bool:
-        """La phrase ressemble-t-elle à une commande ou une question sur un appareil ?"""
-        return par_regles(texte) is not None
+    def _contexte(self, conversation: str) -> _Contexte | None:
+        c = self._contextes.get(conversation)
+        return c if c and time.monotonic() - c.depuis < CONTEXTE_MAX_S else None
+
+    def reconnait(self, texte: str, conversation: str = "") -> bool:
+        """La phrase ressemble-t-elle à une commande ou une question sur un appareil ?
+        Avec un contexte récent, les suites (« éteins-le », « plus fort ») comptent aussi."""
+        return par_regles(texte, avec_contexte=self._contexte(conversation) is not None) is not None
 
     def en_attente(self, conversation: str) -> bool:
         a = self._attentes.get(conversation)
@@ -110,12 +187,30 @@ class Maison:
             choix = self._choisir(texte, attente.candidats)
             if choix:
                 cle = self.alias.apprendre(attente.commande.cible, [e.entity_id for e in choix])
-                r = await self._executer(attente.commande, choix)
+                r = await self._executer(attente.commande, choix, conversation)
                 r.detail.update(alias_appris=cle, duree_ms=ms())
                 return r
 
-        cmd = par_regles(texte)
+        ctx = self._contexte(conversation)
+        cmd = par_regles(texte, avec_contexte=ctx is not None)
         origine = "règles"
+        if cmd and ctx and cmd.action in ("restaurer", "relatif"):
+            r = await (self._restaurer(ctx) if cmd.action == "restaurer" else self._plus_moins(ctx, cmd.valeur or 1))
+            r.detail.update(analyse="suite de conversation", resolution=cmd.action, duree_ms=ms())
+            if cmd.action == "restaurer":
+                self._contextes.pop(conversation, None)
+            return r
+        if cmd and ctx and cmd.vers_contexte:
+            # « éteins-le » : mêmes appareils que la dernière fois
+            r = await self._executer(cmd, ctx.entites, conversation)
+            r.detail.update(analyse="suite de conversation", resolution="mêmes appareils", duree_ms=ms())
+            return r
+        suite_meme = bool(cmd and ctx and cmd.action == "meme")
+        if suite_meme:
+            # « la cuisine aussi » : même action, nouvelle cible
+            cmd = Commande(ctx.commande.action, cmd.cible, ctx.commande.valeur, cmd.tous,
+                           ctx.commande.couleur, ctx.commande.kelvin)
+            origine = "suite de conversation"
         if cmd is None and self.extracteur and self.cfg.extraction_par_modele:
             cmd = await par_modele(texte, self.extracteur)
             origine = "modèle"
@@ -134,8 +229,10 @@ class Maison:
             q = "Lequel ? " + " ; ".join(noms) + ". Réponds par le numéro ou le nom (ou « tous »)."
             return ReponseMaison(True, q, {**detail, "candidats": [e.entity_id for e in res.ambigues], "duree_ms": ms()})
         if not res.entites:
+            if suite_meme:  # « moi aussi » n'était sans doute pas une commande : on laisse le modèle répondre
+                return ReponseMaison(False, detail={"raison": "suite non reconnue", "duree_ms": ms()})
             return ReponseMaison(False, self.introuvable(cmd.cible), {**detail, "duree_ms": ms()})
-        r = await self._executer(cmd, res.entites)
+        r = await self._executer(cmd, res.entites, conversation)
         r.detail.update(detail, duree_ms=ms())
         return r
 
@@ -174,29 +271,90 @@ class Maison:
             return [notes[0][1]]
         return []
 
-    async def _executer(self, cmd: Commande, entites: list[Entite]) -> ReponseMaison:
+    async def _executer(self, cmd: Commande, entites: list[Entite], conversation: str = "") -> ReponseMaison:
         ids = [e.entity_id for e in entites]
         if cmd.action == "etat":
             lignes = []
             for e in entites:
                 s = await self.ha.etat_entite(e.entity_id)
                 lignes.append(_decrire_etat(e, s) if s else f"{e.libelle} : état inconnu.")
+            # « éteins-le » juste après « le projo est-il allumé ? » vise le projo
+            self._contextes[conversation] = _Contexte(cmd, entites, [], time.monotonic())
             return ReponseMaison(True, " ".join(lignes), {"entites": ids})
+        avant = [s for s in [await self.ha.etat_entite(e.entity_id) for e in entites] if s]
         faits, rates, impossibles = [], [], []
         for e in entites:
-            svc = _service(cmd.action, e, cmd.valeur)
+            svc = _service(cmd.action, e, cmd.valeur, cmd.couleur, cmd.kelvin)
             if not svc:
                 impossibles.append(e)
                 continue
             ok = await self.ha.appeler_service(*svc)
             (faits if ok else rates).append(e)
+        if faits:
+            self._contextes[conversation] = _Contexte(cmd, faits, avant, time.monotonic())
         morceaux = []
         if faits:
             verbe = VERBES_FAIT.get(cmd.action, "fait")
-            val = f" ({cmd.valeur:g}{' %' if cmd.action == 'regler' and faits[0].domaine != 'climate' else ' °C' if cmd.action == 'regler' else ''})" if cmd.valeur is not None else ""
+            details = []
+            if cmd.valeur is not None:
+                details.append(f"{cmd.valeur:g} °C" if faits[0].domaine == "climate" else f"{cmd.valeur:g} %")
+            if cmd.couleur or cmd.kelvin:
+                details.append(_nom_couleur(cmd))
+            val = f" ({', '.join(details)})" if details else ""
             morceaux.append(f"C'est fait : {', '.join(e.libelle for e in faits)} — {verbe}{val}.")
         if rates:
             morceaux.append(f"Home Assistant a refusé : {', '.join(e.libelle for e in rates)}.")
         if impossibles:
             morceaux.append(f"Action impossible sur : {', '.join(e.libelle for e in impossibles)}.")
         return ReponseMaison(True, " ".join(morceaux), {"entites": ids, "echecs": [e.entity_id for e in rates]})
+
+
+    async def _restaurer(self, ctx: _Contexte) -> ReponseMaison:
+        if not ctx.avant:
+            return ReponseMaison(True, "Je n'ai pas d'état précédent à remettre pour ces appareils.")
+        faits, rates = [], []
+        noms = {e.entity_id: e.libelle for e in ctx.entites}
+        for s in ctx.avant:
+            svc = _restauration(s)
+            if not svc:
+                continue
+            ok = await self.ha.appeler_service(*svc)
+            (faits if ok else rates).append(noms.get(s["entity_id"], s["entity_id"]))
+        if not faits and not rates:
+            return ReponseMaison(True, "Je ne sais pas remettre l'état précédent de ces appareils.")
+        txt = f"C'est remis comme avant : {', '.join(faits)}." if faits else ""
+        if rates:
+            txt += f" Home Assistant a refusé : {', '.join(rates)}."
+        return ReponseMaison(True, txt.strip(), {"entites": [s["entity_id"] for s in ctx.avant]})
+
+    async def _plus_moins(self, ctx: _Contexte, sens: float) -> ReponseMaison:
+        avant = [await self.ha.etat_entite(e.entity_id) for e in ctx.entites]
+        faits, impossibles = [], []
+        for e, s in zip(ctx.entites, avant):
+            svc = _relatif(e, s, sens)
+            if svc and await self.ha.appeler_service(*svc):
+                faits.append(e)
+            else:
+                impossibles.append(e)
+        if faits:
+            self._contextes_maj(ctx, [x for x in avant if x])
+        mot = "plus" if sens > 0 else "moins"
+        txt = f"C'est fait : {', '.join(e.libelle for e in faits)} — un cran {mot}." if faits else ""
+        if impossibles:
+            txt += f" Je ne sais pas régler {', '.join(e.libelle for e in impossibles)} en {mot}."
+        return ReponseMaison(True, txt.strip(), {"entites": [e.entity_id for e in ctx.entites]})
+
+    def _contextes_maj(self, ctx: _Contexte, avant: list[dict]) -> None:
+        ctx.avant, ctx.depuis = avant, time.monotonic()
+
+
+NOMS_COULEURS = {"red": "rouge", "blue": "bleu", "green": "vert", "yellow": "jaune", "orange": "orange",
+                 "purple": "violet", "pink": "rose", "cyan": "cyan", "turquoise": "turquoise",
+                 "magenta": "magenta", "indigo": "indigo", "gold": "doré"}
+
+
+def _nom_couleur(cmd: Commande) -> str:
+    if cmd.couleur:
+        return NOMS_COULEURS.get(cmd.couleur, cmd.couleur)
+    k = cmd.kelvin or 0
+    return "blanc chaud" if k <= 3000 else "blanc froid" if k >= 5500 else "blanc"

@@ -251,3 +251,68 @@ def test_entite_yaml_hors_registre_incluse():
 def test_question_de_niveau(texte):
     c = par_regles(texte)
     assert c.action == "etat" and c.cible.strip(" ?") == ("le projo" if "combien" in texte else "projo")
+
+
+# --- itération 5 ter : appareils, couleurs, suites de conversation ----------------
+
+def test_nom_d_appareil_reconnu(maison):
+    m, ha = maison
+    dire(m, "Allume le hue plafond")  # nom de l'appareil (device), pas de l'entité
+    assert ha.appels[0][2]["entity_id"] == "light.plafonnier"
+
+
+@pytest.mark.parametrize("texte,attendu", [
+    ("Mets le plafonnier en rouge", {"color_name": "red"}),
+    ("allume le plafonnier en blanc chaud", {"color_temp_kelvin": 2700}),
+    ("passe le plafonnier en bleu à 40 %", {"color_name": "blue", "brightness_pct": 40.0}),
+])
+def test_couleurs(maison, texte, attendu):
+    m, ha = maison
+    r = dire(m, texte)
+    assert r.traite and ha.appels[0][1] == "turn_on"
+    assert {k: ha.appels[0][2][k] for k in attendu} == attendu
+
+
+def test_eteins_le_apres_une_question(maison):
+    m, ha = maison
+    dire(m, "Le plafonnier est-il allumé ?")
+    assert m.reconnait("éteins-le", "c1") and not m.reconnait("éteins-le", "autre")
+    dire(m, "éteins-le")
+    assert ha.appels == [("light", "turn_off", {"entity_id": "light.plafonnier"})]
+
+
+def test_la_cuisine_aussi(maison):
+    m, ha = maison
+    dire(m, "Allume le plafonnier en rouge")
+    dire(m, "la cuisine aussi")
+    assert ha.appels[-1] == ("light", "turn_on", {"entity_id": "light.cuisine", "color_name": "red"})
+
+
+def test_moi_aussi_laisse_le_modele(maison):
+    m, ha = maison
+    dire(m, "Allume le plafonnier")
+    r = dire(m, "moi aussi")
+    assert not r.traite and not r.texte and len(ha.appels) == 1
+
+
+def test_plus_fort(maison):
+    m, ha = maison
+    dire(m, "Allume le plafonnier")
+    dire(m, "un peu plus")
+    assert ha.appels[-1] == ("light", "turn_on", {"entity_id": "light.plafonnier", "brightness_step_pct": 20})
+
+
+def test_remets_comme_avant(maison):
+    m, ha = maison
+    dire(m, "Mets le plafonnier en rouge")           # il était allumé à 50 % (brightness 128)
+    r = dire(m, "remets le comme il était")
+    assert "remis comme avant" in r.texte
+    assert ha.appels[-1] == ("light", "turn_on", {"entity_id": "light.plafonnier", "brightness": 128})
+    dire(m, "Éteins la lampe sur pied")             # elle était éteinte
+    dire(m, "annule")
+    assert ha.appels[-1] == ("light", "turn_off", {"entity_id": "light.lampe_pied"})
+
+
+def test_suites_sans_contexte_ignorees(maison):
+    m, _ = maison
+    assert not m.reconnait("plus fort", "nouvelle") and not m.reconnait("éteins-le", "nouvelle")

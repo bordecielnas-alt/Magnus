@@ -138,7 +138,7 @@ def creer_app(config: Config | None = None, registre: Registre | None = None,
     @app.post("/api/chat")
     async def chat(d: DemandeChat):
         decision = None
-        if d.role == ROLE_AUTO and ha.configure and (maison.en_attente(d.conversation) or maison.reconnait(d.message)):
+        if d.role == ROLE_AUTO and ha.configure and (maison.en_attente(d.conversation) or maison.reconnait(d.message, d.conversation)):
             # Commande de maison reconnue (ou réponse à « Lequel ? ») : inutile de consulter le routeur
             decision = Decision(SIMPLE, cfg.routeur.role_simple, "commande maison", 0.0)
             role = decision.role
@@ -206,6 +206,7 @@ def creer_app(config: Config | None = None, registre: Registre | None = None,
             try:
                 async for x in reg.flux(role, msgs):
                     if isinstance(x, Reponse):
+                        journal.info("réponse %s : %s", x.fournisseur, x.texte[:160].replace("\n", " "))
                         yield _ndjson({
                             "fin": True,
                             "fournisseur": x.fournisseur,
@@ -245,6 +246,7 @@ def _tracer(route: dict, message: str) -> None:
 
 
 def _reponse_ha(flux: bool, texte: str, route: dict, fournisseur: str, modele: str, duree_ms: int):
+    journal.info("réponse %s : %s", fournisseur, texte[:160])
     fin = {"fournisseur": fournisseur, "modele": modele, "secours": False, "duree_ms": duree_ms}
     if not flux:
         return {"reponse": texte, **fin, "route": route}
