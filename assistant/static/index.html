@@ -11,12 +11,27 @@
   html,body { height:100%; margin:0; }
   body { background:var(--bg); color:var(--fg); font-family:system-ui,sans-serif; }
   main { max-width:720px; height:100%; margin:0 auto; padding:16px; display:flex; flex-direction:column; }
-  header { text-align:center; padding:12px 0 8px; }
-  .orbe { width:96px; height:96px; margin:0 auto 12px; border-radius:50%;
-          background:radial-gradient(circle at 40% 35%, var(--accent), transparent 70%);
-          filter:blur(6px); animation:respire 4s ease-in-out infinite; transition:filter .3s; }
-  .orbe.pense { animation-duration:1.2s; filter:blur(3px); }
-  @keyframes respire { 50% { transform:scale(1.12); opacity:.75; } }
+  header { position:relative; text-align:center; padding:4px 0 8px; }
+  /* Orbe : canvas animé (static/orbe.js), posé sur un fond sombre pour briller aussi en thème clair */
+  .orbe-cadre { width:160px; height:160px; margin:0 auto 4px; border-radius:50%;
+                background:radial-gradient(circle, #0a1018 0 44%, rgba(10,16,24,.5) 54%, transparent 66%); }
+  .orbe { width:100%; height:100%; display:block; }
+  #reglagesOrbe { position:absolute; top:4px; right:0; padding:6px 10px; background:transparent; color:var(--muted);
+                  border:1px solid var(--bord); font-size:1.1rem; line-height:1; }
+  #reglagesOrbe:hover { color:var(--fg); }
+  dialog { border:1px solid var(--bord); border-radius:14px; background:var(--bg); color:var(--fg); padding:18px 20px; width:min(92vw, 380px); }
+  dialog::backdrop { background:rgba(0,0,0,.45); }
+  dialog form { display:block; padding:0; border:0; }
+  dialog input[type=range] { width:100%; flex:none; }
+  dialog h2 { margin:0 0 12px; font-size:1.1rem; }
+  dialog .ligne { display:grid; gap:6px; margin-bottom:14px; font-size:.9rem; color:var(--muted); }
+  dialog .ecoles { display:flex; flex-wrap:wrap; gap:6px; }
+  dialog .ecoles button { padding:6px 12px; background:var(--bulle); color:var(--fg); border:1px solid var(--bord); font-size:.9rem; }
+  dialog .ecoles button[aria-pressed="true"] { border-color:var(--accent); outline:1px solid var(--accent); }
+  dialog input[type=range] { padding:0; accent-color:var(--accent); }
+  dialog .actions { display:flex; justify-content:space-between; gap:8px; }
+  dialog .actions button { padding:8px 14px; }
+  dialog .actions .discret { background:transparent; color:var(--muted); border:1px solid var(--bord); }
   h1 { margin:0 0 4px; font-size:2rem; letter-spacing:.02em; }
   .meta { margin:0; color:var(--muted); font-size:.85rem; }
   code { color:var(--fg); }
@@ -37,7 +52,8 @@
 <body>
 <main>
   <header>
-    <div class="orbe" id="orbe" aria-hidden="true"></div>
+    <div class="orbe-cadre"><canvas class="orbe" id="orbe" aria-hidden="true"></canvas></div>
+    <button type="button" id="reglagesOrbe" title="Apparence de l'orbe" aria-label="Apparence de l'orbe">⚙</button>
     <h1 id="nom">…</h1>
     <p class="meta">Wake word : <code id="wake">…</code> · <span id="version"></span> · <span id="modeles">modèles…</span></p>
   </header>
@@ -52,10 +68,58 @@
     <button id="envoyer">Envoyer</button>
   </form>
 </main>
+<dialog id="dlgOrbe">
+  <form method="dialog">
+    <h2>Apparence de l'orbe</h2>
+    <div class="ligne">École de magie<div class="ecoles" id="ecoles"></div></div>
+    <label class="ligne" for="rgParticules">Particules<input type="range" id="rgParticules" min="0" max="400" step="10"></label>
+    <label class="ligne" for="rgBrume">Brume<input type="range" id="rgBrume" min="0" max="100"></label>
+    <div class="actions">
+      <button type="button" class="discret" id="orbeDefaut">Valeurs par défaut</button>
+      <button value="ok">Fermer</button>
+    </div>
+  </form>
+</dialog>
+<script src="/static/orbe.js"></script>
 <script>
 const $ = id => document.getElementById(id);
 const historique = [];
 const conversation = (crypto.randomUUID ? crypto.randomUUID() : String(Math.random())).slice(0, 36);
+
+// ----- Orbe : apparence réglable, gardée dans ce navigateur -----
+const ORBE_DEFAUT = {ecole: 'givre', particules: 80, brume: 75};
+let reglagesOrbe = {...ORBE_DEFAUT};
+try { Object.assign(reglagesOrbe, JSON.parse(localStorage.getItem('orbe.reglages') || '{}')); } catch (e) {}
+const orbe = creerOrbe($('orbe'), {ecole: reglagesOrbe.ecole, particules: reglagesOrbe.particules, brume: reglagesOrbe.brume / 100});
+let occupe = false, minuteurEcoute = null, minuteurErreur = null;
+
+function appliquerOrbe() {
+  orbe.reglages({ecole: reglagesOrbe.ecole, particules: reglagesOrbe.particules, brume: reglagesOrbe.brume / 100});
+  $('rgParticules').value = reglagesOrbe.particules;
+  $('rgBrume').value = reglagesOrbe.brume;
+  for (const b of $('ecoles').children) b.setAttribute('aria-pressed', String(b.dataset.ecole === reglagesOrbe.ecole));
+  try { localStorage.setItem('orbe.reglages', JSON.stringify(reglagesOrbe)); } catch (e) {}
+}
+for (const [cle, nom] of Object.entries(creerOrbe.ECOLES)) {
+  const b = document.createElement('button');
+  b.type = 'button'; b.dataset.ecole = cle; b.textContent = nom;
+  b.onclick = () => { reglagesOrbe.ecole = cle; appliquerOrbe(); };
+  $('ecoles').appendChild(b);
+}
+$('rgParticules').oninput = e => { reglagesOrbe.particules = +e.target.value; appliquerOrbe(); };
+$('rgBrume').oninput = e => { reglagesOrbe.brume = +e.target.value; appliquerOrbe(); };
+$('orbeDefaut').onclick = () => { reglagesOrbe = {...ORBE_DEFAUT}; appliquerOrbe(); };
+$('reglagesOrbe').onclick = () => $('dlgOrbe').showModal();
+appliquerOrbe();
+
+// L'orbe « écoute » pendant qu'on lui écrit, puis revient au repos.
+$('saisie').addEventListener('input', () => {
+  if (occupe) return;
+  orbe.etat($('saisie').value ? 'ecoute' : 'repos');
+  clearTimeout(minuteurEcoute);
+  minuteurEcoute = setTimeout(() => { if (!occupe) orbe.etat('repos'); }, 2500);
+});
+$('saisie').addEventListener('blur', () => { if (!occupe) orbe.etat('repos'); });
 
 fetch('/api/info').then(r => r.json()).then(i => {
   document.title = i.nom;
@@ -85,7 +149,8 @@ $('form').addEventListener('submit', async ev => {
   if (!message) return;
   $('saisie').value = '';
   $('envoyer').disabled = true;
-  $('orbe').classList.add('pense');
+  occupe = true; clearTimeout(minuteurEcoute); clearTimeout(minuteurErreur);
+  orbe.etat('reflexion');
   bulle('moi', message);
   const rep = bulle('lui', '');
   let texte = '', route = null;
@@ -108,7 +173,7 @@ $('form').addEventListener('submit', async ev => {
         if (!ligne) continue;
         const o = JSON.parse(ligne);
         if (o.route) route = o.route;
-        if (o.delta) { texte += o.delta; rep.firstChild ? rep.firstChild.textContent = texte : rep.textContent = texte; }
+        if (o.delta) { if (orbe.etatCourant !== 'parole') orbe.etat('parole'); orbe.impulsion(o.delta.length); texte += o.delta; rep.firstChild ? rep.firstChild.textContent = texte : rep.textContent = texte; }
         if (o.erreur) throw new Error(o.erreur);
         if (o.fin) {
           const s = document.createElement('small');
@@ -126,9 +191,12 @@ $('form').addEventListener('submit', async ev => {
   } catch (e) {
     if (!texte) rep.remove();
     bulle('erreur', 'Erreur : ' + e.message);
+    orbe.etat('erreur');
+    minuteurErreur = setTimeout(() => { if (!occupe) orbe.etat('repos'); }, 4000);
   } finally {
     $('envoyer').disabled = false;
-    $('orbe').classList.remove('pense');
+    occupe = false;
+    if (orbe.etatCourant !== 'erreur') orbe.etat('repos');
     $('saisie').focus();
   }
 });
