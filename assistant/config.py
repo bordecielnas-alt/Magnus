@@ -77,6 +77,15 @@ class FournisseurConfig(BaseModel):
         return (os.environ if env is None else env).get(self.cle_env, "")
 
 
+class HomeAssistantConfig(BaseModel):
+    url: str = ""                         # vide = intégration désactivée
+    jeton_env: str = "HA_JETON"           # NOM de la variable qui contient le jeton
+    langue: str = "fr"
+    agent: str = "conversation.home_assistant"   # agent Assist intégré, sans LLM
+    timeout: float = Field(default=5, gt=0)
+    pour_simples: bool = True             # les demandes simples passent d'abord par HA
+
+
 class RouteurConfig(BaseModel):
     role_simple: str = "rapide"
     role_complexe: str = "raisonnement"
@@ -95,6 +104,7 @@ class Config(BaseModel):
     fournisseurs: dict[str, FournisseurConfig] = Field(default_factory=dict)
     roles: dict[str, str] = Field(default_factory=dict)
     routeur: RouteurConfig = Field(default_factory=RouteurConfig)
+    home_assistant: HomeAssistantConfig = Field(default_factory=HomeAssistantConfig)
 
     @model_validator(mode="after")
     def _roles_valides(self) -> "Config":
@@ -156,3 +166,27 @@ def charger(env: dict[str, str] | None = None, fichier: Path | None = None) -> C
         if env.get(var):
             data.setdefault(section, {})[cle] = env[var]
     return Config.model_validate(data)
+
+
+def charger_secrets(chemin: Path | None = None, env: dict[str, str] | None = None) -> Path | None:
+    """Charge un fichier de secrets CLE=valeur dans l'environnement (sans écraser l'existant).
+
+    Ordre : ASSISTANT_SECRETS, /config/.env (conteneur), puis .env à la racine du dépôt.
+    Renvoie le fichier lu, ou None.
+    """
+    env = os.environ if env is None else env
+    candidats = [chemin] if chemin else [
+        Path(p) for p in (env.get("ASSISTANT_SECRETS"), "/config/.env") if p
+    ] + [RACINE / ".env"]
+    for c in candidats:
+        if c and c.is_file():
+            for ligne in c.read_text(encoding="utf-8-sig").splitlines():
+                ligne = ligne.strip()
+                if not ligne or ligne.startswith("#") or "=" not in ligne:
+                    continue
+                cle, valeur = ligne.split("=", 1)
+                cle, valeur = cle.strip(), valeur.strip().strip('"').strip("'")
+                if cle and valeur and cle not in env:
+                    env[cle] = valeur
+            return c
+    return None

@@ -14,9 +14,10 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from . import __version__
-from .config import Config, charger
+from .config import Config, charger, charger_secrets
 from .fournisseurs import FournisseurIndisponible, Message, Registre, Reponse
-from .routeur import Decision, Routeur
+from .home_assistant import HomeAssistant
+from .routeur import SIMPLE, Decision, Routeur
 
 STATIC = Path(__file__).resolve().parent / "static"
 HISTORIQUE_MAX = 20
@@ -42,20 +43,24 @@ def _messages(cfg: Config, d: DemandeChat) -> list[Message]:
     return msgs
 
 
-def creer_app(config: Config | None = None, registre: Registre | None = None) -> FastAPI:
+def creer_app(config: Config | None = None, registre: Registre | None = None,
+              ha: HomeAssistant | None = None) -> FastAPI:
     cfg = config or charger()
     reg = registre or Registre.depuis_config(cfg)
     routeur = Routeur(cfg.routeur, reg)
+    ha = ha or HomeAssistant(cfg.home_assistant)
 
     @asynccontextmanager
     async def cycle(app: FastAPI):
         yield
         await reg.fermer()
+        await ha.fermer()
 
     app = FastAPI(title=f"{cfg.identite.nom} — orchestrateur", version=__version__, lifespan=cycle)
     app.state.config = cfg
     app.state.registre = reg
     app.state.routeur = routeur
+    app.state.ha = ha
 
     @app.get("/health")
     def health() -> dict:
@@ -74,6 +79,10 @@ def creer_app(config: Config | None = None, registre: Registre | None = None) ->
     @app.get("/api/fournisseurs")
     async def fournisseurs() -> dict:
         return {"roles": reg.roles, "fournisseurs": await reg.etat()}
+
+    @app.get("/api/home-assistant")
+    async def etat_ha() -> dict:
+        return await ha.etat()
 
     @app.post("/api/route")
     async def route(d: DemandeChat) -> dict:
@@ -95,6 +104,19 @@ def creer_app(config: Config | None = None, registre: Registre | None = None) ->
         else:
             raise HTTPException(400, f"rôle inconnu : {d.role}")
         route = decision.en_dict() if decision else {"role": role, "raison": "choisi à la main"}
+
+        # Demande simple : l'agent Assist de Home Assistant d'abord (exécute l'action, sans LLM)
+        rha = None
+        if decision and decision.categorie == SIMPLE and cfg.home_assistant.pour_simples and ha.configure:
+            debut_ha = time.perf_counter()
+            rha = await ha.conversation(d.message)
+            route["home_assistant"] = {"compris": rha.compris, "type": rha.type, "code": rha.code,
+                                       "duree_ms": round((time.perf_counter() - debut_ha) * 1000)}
+            if not rha.compris:
+                rha = None
+        if rha:
+            return _reponse_ha(d.flux, rha.texte, route)
+
         msgs = _messages(cfg, d)
 
         if not d.flux:
@@ -145,6 +167,20 @@ def creer_app(config: Config | None = None, registre: Registre | None = None) ->
     return app
 
 
+def _reponse_ha(flux: bool, texte: str, route: dict):
+    fin = {"fournisseur": "home-assistant", "modele": "assist", "secours": False,
+           "duree_ms": route["home_assistant"]["duree_ms"]}
+    if not flux:
+        return {"reponse": texte, **fin, "route": route}
+
+    async def lignes():
+        yield _ndjson({"route": route})
+        yield _ndjson({"delta": texte})
+        yield _ndjson({"fin": True, **fin, "premier_ms": fin["duree_ms"]})
+
+    return StreamingResponse(lignes(), media_type="application/x-ndjson")
+
+
 def _ndjson(obj: dict) -> str:
     return json.dumps(obj, ensure_ascii=False) + "\n"
 
@@ -152,6 +188,9 @@ def _ndjson(obj: dict) -> str:
 def run() -> None:
     import uvicorn
 
+    secrets = charger_secrets()
+    if secrets:
+        print(f"Secrets chargés depuis {secrets}")
     cfg = charger()
     uvicorn.run(creer_app(cfg), host=cfg.serveur.hote, port=cfg.serveur.port)
 
