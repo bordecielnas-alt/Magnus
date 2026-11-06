@@ -165,10 +165,14 @@ def creer_app(config: Config | None = None, registre: Registre | None = None,
                 debut_ha = time.perf_counter()
                 rha = await ha.conversation(maison.texte_pour_assist(d.message))
                 duree = round((time.perf_counter() - debut_ha) * 1000)
-                route["home_assistant"] = {"compris": rha.compris, "type": rha.type, "code": rha.code, "duree_ms": duree}
+                route["home_assistant"] = {"compris": rha.compris, "type": rha.type, "code": rha.code,
+                                           "duree_ms": duree, "entites": rha.entites}
                 if rha.compris:
+                    appris = await maison.apprendre_d_assist(d.message, rha.entites, d.conversation)
+                    if appris:
+                        route["home_assistant"]["alias_appris"] = appris
                     _tracer(route, d.message)
-                    return _reponse_ha(d.flux, rha.texte, route, "home-assistant", "assist", duree)
+                    return _reponse_ha(d.flux, rha.texte or "C'est fait.", route, "home-assistant", "assist", duree)
                 echec_ha = rha.code or rha.type
             if "commande" in rm.detail and rm.texte:
                 # Commande de maison comprise mais appareil introuvable : réponse factuelle,
@@ -235,7 +239,12 @@ def creer_app(config: Config | None = None, registre: Registre | None = None,
 def _tracer(route: dict, message: str) -> None:
     """Une ligne par demande dans la console : par où elle est passée et pourquoi."""
     h = route.get("home_assistant")
-    ha = f" | HA : {'compris' if h['compris'] else 'non compris'} ({h['type']}{' ' + h['code'] if h['code'] else ''}, {h['duree_ms']} ms)" if h else ""
+    ha = ""
+    if h:
+        cibles = f", {', '.join(h['entites'])}" if h.get("entites") else ""
+        appris = f", alias appris « {h['alias_appris']} »" if h.get("alias_appris") else ""
+        ha = (f" | HA : {'compris' if h['compris'] else 'non compris'} "
+              f"({h['type']}{' ' + h['code'] if h['code'] else ''}{cibles}{appris}, {h['duree_ms']} ms)")
     m = route.get("maison")
     if m:
         appris = f", alias appris « {m['alias_appris']} »" if m.get("alias_appris") else ""

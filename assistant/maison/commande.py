@@ -105,7 +105,9 @@ _RE_RELATIF = re.compile(
 _RE_RESTAURER = re.compile(
     r"^\s*(?:(?:re)?mets?|r[ée]tablis|reviens|remet)?\s*(?:-?(?:le|la|les)\s*)?(?:(?:tout|ça|ca)\s+)?"
     r"(?:comme\s+(?:avant|il\s+[ée]tait|elle\s+[ée]tait|c.[ée]tait|tout\s+[àa]\s+l.heure)|[àa]\s+l.[ée]tat\s+pr[ée]c[ée]dent)"
-    r"|^\s*annule(?:\s+(?:[çc]a|la derni[èe]re action|ce que tu viens de faire))?\s*[.!?]*$",
+    r"|^\s*annule(?:\s+(?:[çc]a|la derni[èe]re action|ce que tu viens de faire))?\s*[.!?]*$"
+    r"|^\s*(?:reviens|retourne|retour|on revient)\s+(?:en\s+)?arri[èe]re\s*[.!?]*$"
+    r"|^\s*(?:d[ée]fais|undo)(?:\s+[çc]a)?\s*[.!?]*$",
     re.IGNORECASE)
 
 # Fautes de frappe sur le verbe : forme « canonique » (sans accents, lettres doublées réduites)
@@ -139,9 +141,9 @@ def par_regles(texte: str, avec_contexte: bool = False) -> Commande | None:
     """Commande reconnue par les règles. `avec_contexte` : accepte aussi les suites de conversation
     (« éteins-le », « la cuisine aussi », « plus fort », « remets comme avant »)."""
     t = corriger_verbe(texte.strip().rstrip("!."))
+    if _RE_RESTAURER.match(t):
+        return Commande("restaurer", "")   # même sans contexte : la maison répondra qu'il n'y a rien à annuler
     if avec_contexte:
-        if _RE_RESTAURER.match(t):
-            return Commande("restaurer", "")
         m = _RE_RELATIF.match(t)
         if m:
             sens = (m.group("sens") or "").lower()
@@ -206,6 +208,10 @@ async def par_modele(texte: str, modele: Fournisseur) -> Commande | None:
     action = normaliser(str(d.get("action", ""))).replace(" ", "")
     cible = str(d.get("cible") or "").strip()
     if action not in ACTIONS or not cible:
+        return None
+    # le petit modèle invente parfois une cible absente de la phrase (« plus fort » -> « Lampe Cristal »)
+    from .texte import mots
+    if not (mots(cible) & mots(texte)):
         return None
     valeur = d.get("valeur")
     try:

@@ -316,3 +316,41 @@ def test_remets_comme_avant(maison):
 def test_suites_sans_contexte_ignorees(maison):
     m, _ = maison
     assert not m.reconnait("plus fort", "nouvelle") and not m.reconnait("éteins-le", "nouvelle")
+
+
+def test_reviens_en_arriere(maison):
+    m, ha = maison
+    dire(m, "Éteins le plafonnier")
+    assert m.reconnait("REVIENS EN ARRIERE", "c1")
+    dire(m, "REVIENS EN ARRIERE")
+    assert ha.appels[-1][1] == "turn_on"
+
+
+def test_annule_sans_contexte(maison):
+    m, ha = maison
+    r = dire(m, "annule", conv="neuve")
+    assert r.traite and "rien" in r.texte.lower() and not ha.appels
+
+
+def test_plus_fort_apres_annule_garde_l_appareil(maison):
+    m, ha = maison
+    dire(m, "Allume le plafonnier")
+    dire(m, "annule")
+    dire(m, "plus fort")
+    assert ha.appels[-1][2]["entity_id"] == "light.plafonnier"
+
+
+def test_apprend_d_assist(maison):
+    m, _ = maison
+    cle = asyncio.run(m.apprendre_d_assist("allume le pupitre", ["light.lampe_bureau"], "c1"))
+    assert cle == "le pupitre" and m.alias.table()["le pupitre"] == ["light.lampe_bureau"]
+    assert m.reconnait("éteins-le", "c1")
+
+
+def test_extraction_refuse_cible_inventee():
+    from assistant.maison.commande import par_modele
+
+    class Modele:
+        async def repondre(self, msgs, options=None):
+            return '{"action": "regler", "cible": "Lampe Cristal", "valeur": null}'
+    assert asyncio.run(par_modele("plus fort", Modele())) is None

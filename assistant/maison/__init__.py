@@ -194,11 +194,14 @@ class Maison:
         ctx = self._contexte(conversation)
         cmd = par_regles(texte, avec_contexte=ctx is not None)
         origine = "règles"
+        if cmd and cmd.action == "restaurer" and not ctx:
+            return ReponseMaison(True, "Je n'ai pas d'action récente à annuler dans cette conversation. Rien n'a été fait.",
+                                 {"resolution": "rien à annuler", "duree_ms": ms()})
         if cmd and ctx and cmd.action in ("restaurer", "relatif"):
             r = await (self._restaurer(ctx) if cmd.action == "restaurer" else self._plus_moins(ctx, cmd.valeur or 1))
             r.detail.update(analyse="suite de conversation", resolution=cmd.action, duree_ms=ms())
             if cmd.action == "restaurer":
-                self._contextes.pop(conversation, None)
+                ctx.avant = []   # on garde les appareils (« plus fort » reste possible), pas un 2e retour
             return r
         if cmd and ctx and cmd.vers_contexte:
             # « éteins-le » : mêmes appareils que la dernière fois
@@ -249,6 +252,19 @@ class Maison:
         proches = [e for e in proches[:3] if c & (e.mots_nom() | e.mots_piece())]
         suite = f" Tu voulais dire : {', '.join(e.libelle for e in proches)} ?" if proches else ""
         return f"Je ne trouve aucun appareil qui corresponde à « {propre} ». Rien n'a été fait.{suite}"
+
+    async def apprendre_d_assist(self, texte: str, entity_ids: list[str], conversation: str = "") -> str:
+        """L'agent Assist a agi là où la maison n'a rien trouvé : on retient la cible comme alias
+        (la prochaine fois, la maison la pilotera elle-même) et on garde le contexte (« éteins-le »)."""
+        cmd = par_regles(texte)
+        if not cmd or not cmd.cible or not entity_ids:
+            return ""
+        entites = [e for e in await self.inventaire.obtenir() if e.entity_id in set(entity_ids)]
+        if not entites:
+            return ""
+        cle = self.alias.apprendre(cmd.cible, [e.entity_id for e in entites], source="assist")
+        self._contextes[conversation] = _Contexte(cmd, entites, [], time.monotonic())
+        return cle
 
     def texte_pour_assist(self, texte: str) -> str:
         """Phrase envoyée à l'agent Assist : verbe mal tapé corrigé."""

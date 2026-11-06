@@ -9,7 +9,7 @@ from __future__ import annotations
 import json
 import os
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 import httpx
@@ -25,6 +25,7 @@ class ReponseHA:
     texte: str             # phrase de HA (en français)
     type: str              # action_done, query_answer, error
     code: str = ""         # code d'erreur HA (no_intent_match, no_valid_targets…)
+    entites: list[str] = field(default_factory=list)   # entity_id touchés (action_done)
 
 
 class HomeAssistant:
@@ -59,8 +60,10 @@ class HomeAssistant:
             return ReponseHA(False, "", "error", f"injoignable : {e.__class__.__name__}")
         type_ = rep.get("response_type", "error")
         texte_ha = ((rep.get("speech") or {}).get("plain") or {}).get("speech", "")
-        code = (rep.get("data") or {}).get("code", "") if type_ == "error" else ""
-        return ReponseHA(type_ in REUSSITES, texte_ha, type_, code)
+        data = rep.get("data") or {}
+        code = data.get("code", "") if type_ == "error" else ""
+        cibles = [c.get("id") for c in (data.get("success") or []) if c.get("type") == "entity" and c.get("id")]
+        return ReponseHA(type_ in REUSSITES, texte_ha, type_, code, cibles)
 
     async def etat(self, cache_s: float = 30) -> dict:
         """Connexion, version et nombre d'entités exposées à Assist (mis en cache)."""
