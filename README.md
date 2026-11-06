@@ -84,6 +84,14 @@ Avec un jeton d'utilisateur HA non administrateur, les registres (pièces, alias
 | `POST /api/maison/rafraichir` | Relire l'inventaire tout de suite |
 | `DELETE /api/maison/alias/{phrase}` | Oublier un alias appris |
 
+## Voix (locale)
+
+- **Transcription** : faster-whisper « small » en français (`POST /api/voix/transcrire`, corps = l'audio enregistré par le navigateur, webm/opus ou wav). Les noms de l'assistant, des appareils et des pièces sont donnés à Whisper comme indices.
+- **Synthèse** : Piper, voix `fr_FR-siwis-medium` (`POST /api/voix/parler` -> WAV).
+- Modèles dans `modeles/` (jamais versionnés) : `modeles/whisper-small/` et `modeles/piper/fr_FR-siwis-medium.onnx(.json)`. Chemins, appareil (`cpu`, `cuda`) et vitesse dans `voix:` de la config.
+- Les modèles se chargent en arrière-plan au démarrage ; `GET /api/voix` donne leur état.
+- Sur la page : 🎤 (clic pour parler, clic pour envoyer : la réponse est lue), 🔈 pour lire aussi les réponses écrites. Le micro marche sur `127.0.0.1` sans HTTPS ; une tablette demandera HTTPS.
+
 ## Tests
 
 ```powershell

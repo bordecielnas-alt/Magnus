@@ -12,8 +12,8 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Literal
 
-from fastapi import FastAPI, Header, HTTPException
-from fastapi.responses import FileResponse, StreamingResponse
+from fastapi import FastAPI, Header, HTTPException, Request
+from fastapi.responses import FileResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
@@ -24,6 +24,7 @@ from .home_assistant import HomeAssistant
 from .maison import Maison
 from .maison.alias import AliasAppris
 from .routeur import SIMPLE, Decision, Routeur
+from .voix import Voix
 
 STATIC = Path(__file__).resolve().parent / "static"
 journal = logging.getLogger("uvicorn.error")  # s'affiche dans la console de l'assistant
@@ -61,6 +62,11 @@ class Action(BaseModel):
 
 class Conv(BaseModel):
     conversation: str = ""
+
+
+class Parole(BaseModel):
+    """Texte à lire à voix haute."""
+    texte: str = Field(min_length=1, max_length=4000)
 
 
 # Les petits modèles imitent les réponses « C'est fait : … » vues dans l'historique :
@@ -105,13 +111,15 @@ def _messages(cfg: Config, d: DemandeChat, outils: bool = False) -> list[Message
 
 
 def creer_app(config: Config | None = None, registre: Registre | None = None,
-              ha: HomeAssistant | None = None, alias: AliasAppris | None = None) -> FastAPI:
+              ha: HomeAssistant | None = None, alias: AliasAppris | None = None,
+              voix: Voix | None = None) -> FastAPI:
     cfg = config or charger()
     reg = registre or Registre.depuis_config(cfg)
     routeur = Routeur(cfg.routeur, reg)
     ha = ha or HomeAssistant(cfg.home_assistant)
     extracteur = reg.pour_role(cfg.maison.extracteur) if cfg.maison.extracteur in reg.roles else None
     maison = Maison(cfg.maison, ha, alias or AliasAppris(chemin_alias(cfg)), extracteur)
+    voix = voix or Voix(cfg.voix)
     jeton_interne = secrets.token_urlsafe(24)   # pour le serveur MCP « maison », change à chaque démarrage
 
     def outils_maison(conversation: str) -> dict:
@@ -129,6 +137,9 @@ def creer_app(config: Config | None = None, registre: Registre | None = None,
 
     @asynccontextmanager
     async def cycle(app: FastAPI):
+        import asyncio
+        if cfg.voix.active and cfg.voix.whisper_present() and cfg.voix.piper_presente():
+            app.state.prechauffage = asyncio.create_task(voix.prechauffer())
         yield
         await reg.fermer()
         await ha.fermer()
@@ -139,6 +150,7 @@ def creer_app(config: Config | None = None, registre: Registre | None = None,
     app.state.routeur = routeur
     app.state.ha = ha
     app.state.maison = maison
+    app.state.voix = voix
 
     @app.get("/health")
     def health() -> dict:
@@ -206,6 +218,39 @@ def creer_app(config: Config | None = None, registre: Registre | None = None,
         r = await maison.annuler(c.conversation)
         journal.info("outil annuler -> %s", r.texte[:120])
         return {"resultat": r.texte}
+
+    # --- Voix ------------------------------------------------------------------------------
+    @app.get("/api/voix")
+    def etat_voix() -> dict:
+        return voix.etat()
+
+    @app.post("/api/voix/transcrire")
+    async def transcrire(requete: Request) -> dict:
+        if not cfg.voix.active:
+            raise HTTPException(503, "voix désactivée (voix.active)")
+        if not cfg.voix.whisper_present():
+            raise HTTPException(503, f"modèle Whisper absent : {cfg.voix.chemin_whisper()}")
+        audio = await requete.body()
+        if not audio:
+            raise HTTPException(400, "audio vide")
+        if len(audio) > cfg.voix.max_audio_mo * 1e6:
+            raise HTTPException(413, "enregistrement trop long")
+        # Mots probables : nom de l'assistant, appareils et pièces (aide Whisper sur « Globe », « L3 »…)
+        noms = [cfg.identite.nom] + sorted({e.nom for e in maison.inventaire.entites} |
+                                           {e.piece for e in maison.inventaire.entites if e.piece})[:60]
+        try:
+            t = await voix.transcrire(audio, ", ".join(noms))
+        except Exception as e:  # noqa: BLE001 - audio illisible, modèle en erreur
+            raise HTTPException(422, f"transcription impossible ({e.__class__.__name__})") from e
+        journal.info("voix : « %s » (%.1f s d'audio, %d ms)", t.texte[:120], t.duree_audio_s, t.duree_ms)
+        return {"texte": t.texte, "duree_audio_s": t.duree_audio_s, "duree_ms": t.duree_ms}
+
+    @app.post("/api/voix/parler")
+    async def parler(p: Parole) -> Response:
+        if not cfg.voix.active or not cfg.voix.piper_presente():
+            raise HTTPException(503, "synthèse vocale indisponible")
+        wav, duree = await voix.parler(p.texte)
+        return Response(wav, media_type="audio/wav", headers={"X-Duree-Ms": str(duree), "Cache-Control": "no-store"})
 
     @app.post("/api/route")
     async def route(d: DemandeChat) -> dict:

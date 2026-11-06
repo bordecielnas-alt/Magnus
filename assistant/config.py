@@ -108,6 +108,29 @@ class MaisonConfig(BaseModel):
         return v
 
 
+class VoixConfig(BaseModel):
+    active: bool = True
+    whisper: str = ""          # dossier du modèle faster-whisper ; vide = modeles/whisper-small
+    appareil: Literal["cpu", "cuda", "auto"] = "cpu"
+    calcul: str = "int8"       # int8 sur processeur, float16 sur GPU
+    langue: str = "fr"
+    piper: str = ""            # voix Piper (.onnx) ; vide = modeles/piper/fr_FR-siwis-medium.onnx
+    lenteur: float = Field(default=1.0, gt=0.3, lt=3)   # > 1 = parle plus lentement
+    max_audio_mo: float = Field(default=10, gt=0)
+
+    def chemin_whisper(self) -> str:
+        return self.whisper or str(RACINE / "modeles" / "whisper-small")
+
+    def chemin_piper(self) -> str:
+        return self.piper or str(RACINE / "modeles" / "piper" / "fr_FR-siwis-medium.onnx")
+
+    def whisper_present(self) -> bool:
+        return (Path(self.chemin_whisper()) / "model.bin").is_file()
+
+    def piper_presente(self) -> bool:
+        return Path(self.chemin_piper()).is_file()
+
+
 class RouteurConfig(BaseModel):
     role_simple: str = "rapide"
     role_complexe: str = "raisonnement"
@@ -128,6 +151,7 @@ class Config(BaseModel):
     routeur: RouteurConfig = Field(default_factory=RouteurConfig)
     home_assistant: HomeAssistantConfig = Field(default_factory=HomeAssistantConfig)
     maison: MaisonConfig = Field(default_factory=MaisonConfig)
+    voix: VoixConfig = Field(default_factory=VoixConfig)
 
     @model_validator(mode="after")
     def _roles_valides(self) -> "Config":

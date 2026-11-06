@@ -20,6 +20,10 @@
                   border:1px solid var(--bord); font-size:1.1rem; line-height:1; }
   #reglagesOrbe:hover { color:var(--fg); }
   dialog { border:1px solid var(--bord); border-radius:14px; background:var(--bg); color:var(--fg); padding:18px 20px; width:min(92vw, 380px); }
+  #micro, #hautParleur { padding:0 12px; background:var(--bulle); color:var(--fg); border:1px solid var(--bord); font-size:1.1rem; }
+  #micro.actif { background:#c0392b; color:#fff; border-color:#c0392b; animation:clignote 1s ease-in-out infinite; }
+  #hautParleur[aria-pressed="true"] { border-color:var(--accent); outline:1px solid var(--accent); }
+  @keyframes clignote { 50% { opacity:.6; } }
   dialog::backdrop { background:rgba(0,0,0,.45); }
   dialog form { display:block; padding:0; border:0; }
   dialog input[type=range] { width:100%; flex:none; }
@@ -65,6 +69,8 @@
       <option value="raisonnement">Raisonnement</option>
     </select>
     <input id="saisie" autocomplete="off" placeholder="Écris un message…" required>
+    <button type="button" id="micro" title="Parler (clic pour commencer, clic pour envoyer)" aria-label="Parler">🎤</button>
+    <button type="button" id="hautParleur" title="Réponses lues à voix haute" aria-label="Réponses à voix haute" aria-pressed="false">🔈</button>
     <button id="envoyer">Envoyer</button>
   </form>
 </main>
@@ -143,11 +149,15 @@ function bulle(classe, texte) {
   return d;
 }
 
-$('form').addEventListener('submit', async ev => {
+$('form').addEventListener('submit', ev => {
   ev.preventDefault();
   const message = $('saisie').value.trim();
   if (!message) return;
   $('saisie').value = '';
+  envoyerMessage(message, false);
+});
+
+async function envoyerMessage(message, vocal) {
   $('envoyer').disabled = true;
   occupe = true; clearTimeout(minuteurEcoute); clearTimeout(minuteurErreur);
   orbe.etat('reflexion');
@@ -188,6 +198,7 @@ $('form').addEventListener('submit', async ev => {
       $('fil').scrollTop = $('fil').scrollHeight;
     }
     historique.push({role: 'user', content: message}, {role: 'assistant', content: texte});
+    if (texte && (vocal || $('hautParleur').getAttribute('aria-pressed') === 'true')) await direAVoixHaute(texte);
   } catch (e) {
     if (!texte) rep.remove();
     bulle('erreur', 'Erreur : ' + e.message);
@@ -199,7 +210,94 @@ $('form').addEventListener('submit', async ev => {
     if (orbe.etatCourant !== 'erreur') orbe.etat('repos');
     $('saisie').focus();
   }
-});
+}
+
+// ----- Voix : micro (clic pour commencer, clic pour envoyer) et lecture des réponses -----
+let enregistreur = null, morceaux = [], fluxMicro = null, lecture = null;
+try { if (localStorage.getItem('voix.hautParleur') === '1') $('hautParleur').setAttribute('aria-pressed', 'true'); } catch (e) {}
+$('hautParleur').onclick = () => {
+  const on = $('hautParleur').getAttribute('aria-pressed') !== 'true';
+  $('hautParleur').setAttribute('aria-pressed', String(on));
+  $('hautParleur').textContent = on ? '🔊' : '🔈';
+  try { localStorage.setItem('voix.hautParleur', on ? '1' : '0'); } catch (e) {}
+};
+if ($('hautParleur').getAttribute('aria-pressed') === 'true') $('hautParleur').textContent = '🔊';
+
+$('micro').onclick = async () => {
+  if (lecture) { lecture.pause(); lecture = null; }
+  if (enregistreur && enregistreur.state === 'recording') { enregistreur.stop(); return; }
+  if (occupe) return;
+  try {
+    fluxMicro = await navigator.mediaDevices.getUserMedia({audio: {echoCancellation: true, noiseSuppression: true}});
+  } catch (e) {
+    bulle('erreur', 'Micro inaccessible : ' + e.message + ' (autorise le micro pour cette page)');
+    return;
+  }
+  morceaux = [];
+  enregistreur = new MediaRecorder(fluxMicro);
+  enregistreur.ondataavailable = ev => { if (ev.data.size) morceaux.push(ev.data); };
+  enregistreur.onstop = transcrireEtEnvoyer;
+  enregistreur.start();
+  $('micro').classList.add('actif'); $('micro').textContent = '⏹';
+  orbe.etat('ecoute');
+  suivreVolume(fluxMicro);
+  setTimeout(() => { if (enregistreur && enregistreur.state === 'recording') enregistreur.stop(); }, 30000);
+};
+
+function suivreVolume(flux) {
+  // fait réagir l'orbe à la voix pendant l'enregistrement
+  try {
+    const ctx = new AudioContext(), src = ctx.createMediaStreamSource(flux), an = ctx.createAnalyser();
+    an.fftSize = 512; src.connect(an);
+    const buf = new Uint8Array(an.fftSize);
+    const tic = () => {
+      if (!enregistreur || enregistreur.state !== 'recording') { ctx.close(); return; }
+      an.getByteTimeDomainData(buf);
+      let m = 0; for (const v of buf) m = Math.max(m, Math.abs(v - 128));
+      if (m > 12) orbe.impulsion(Math.round(m / 6));
+      requestAnimationFrame(tic);
+    };
+    tic();
+  } catch (e) {}
+}
+
+async function transcrireEtEnvoyer() {
+  $('micro').classList.remove('actif'); $('micro').textContent = '🎤';
+  if (fluxMicro) fluxMicro.getTracks().forEach(t => t.stop());
+  const blob = new Blob(morceaux, {type: enregistreur.mimeType || 'audio/webm'});
+  enregistreur = null;
+  if (blob.size < 2000) { orbe.etat('repos'); return; }
+  orbe.etat('reflexion');
+  try {
+    const r = await fetch('/api/voix/transcrire', {method: 'POST', headers: {'Content-Type': blob.type}, body: blob});
+    const o = await r.json();
+    if (!r.ok) throw new Error(o.detail || r.statusText);
+    if (!o.texte) { orbe.etat('repos'); bulle('erreur', 'Je n\'ai rien entendu.'); return; }
+    await envoyerMessage(o.texte, true);
+    const derniere = [...document.querySelectorAll('.msg.moi')].pop();
+    if (derniere) derniere.title = 'Transcrit en ' + o.duree_ms + ' ms (' + o.duree_audio_s + ' s d\'audio)';
+  } catch (e) {
+    bulle('erreur', 'Voix : ' + e.message);
+    orbe.etat('erreur');
+    setTimeout(() => { if (!occupe) orbe.etat('repos'); }, 4000);
+  }
+}
+
+async function direAVoixHaute(texte) {
+  try {
+    const r = await fetch('/api/voix/parler', {method: 'POST', headers: {'Content-Type': 'application/json'},
+                                               body: JSON.stringify({texte: texte.slice(0, 4000)})});
+    if (!r.ok) return;
+    const url = URL.createObjectURL(await r.blob());
+    lecture = new Audio(url);
+    orbe.etat('parole');
+    const pulse = setInterval(() => orbe.impulsion(4), 180);
+    await new Promise(res => { lecture.onended = lecture.onerror = lecture.onpause = res; lecture.play().catch(res); });
+    clearInterval(pulse);
+    URL.revokeObjectURL(url);
+    lecture = null;
+  } catch (e) {}
+}
 </script>
 </body>
 </html>
