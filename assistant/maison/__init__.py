@@ -37,6 +37,10 @@ class _Attente:
     commande: Commande
     candidats: list[Entite]
     depuis: float
+    type: str = "lequel"          # « lequel » (appareil ambigu) ou « piece » (« tout » sans pièce)
+
+
+MOTS_TOUTE_LA_MAISON = {"maison", "partout", "appartement", "etage"}
 
 
 @dataclass
@@ -189,6 +193,13 @@ class Maison:
         ms = lambda: round((time.perf_counter() - debut) * 1000)  # noqa: E731
 
         attente = self._attentes.pop(conversation, None)
+        if attente and attente.type == "piece" and time.monotonic() - attente.depuis < ATTENTE_MAX_S:
+            choix = self._choisir_piece(texte, attente.candidats)
+            if choix:
+                r = await self._executer(attente.commande, choix, conversation)
+                r.detail.update(resolution="pièce précisée", duree_ms=ms())
+                return r
+            attente = None   # réponse sans pièce reconnue : on la traite comme une nouvelle demande
         if attente and time.monotonic() - attente.depuis < ATTENTE_MAX_S:
             choix = self._choisir(texte, attente.candidats)
             if choix:
@@ -246,6 +257,14 @@ class Maison:
                 noms.append(f"et {len(res.ambigues) - 6} autres")
             q = "Lequel ? " + " ; ".join(noms) + ". Réponds par le numéro ou le nom (ou « tous »)."
             return ReponseMaison(True, q, {**detail, "candidats": [e.entity_id for e in res.ambigues], "duree_ms": ms()})
+        pieces = sorted({e.piece or "Sans pièce" for e in res.entites})
+        if cmd.tous and cmd.action != "etat" and len(pieces) > 1 and not self._piece_precisee(cmd.cible):
+            # Sécurité : « éteins toutes les lumières » sans pièce -> on demande où avant d'agir sur toute la maison
+            self._attentes[conversation] = _Attente(cmd, res.entites, time.monotonic(), "piece")
+            compte = [f"{p} ({sum(1 for e in res.entites if (e.piece or 'Sans pièce') == p)})" for p in pieces]
+            q = (f"Dans quelle pièce ? {', '.join(compte)}. "
+                 f"Réponds par une ou plusieurs pièces, ou « toute la maison » ({len(res.entites)} appareils).")
+            return ReponseMaison(True, q, {**detail, "resolution": "pièce demandée", "duree_ms": ms()})
         if not res.entites:
             if suite_meme:  # « moi aussi » n'était sans doute pas une commande : on laisse le modèle répondre
                 return ReponseMaison(False, detail={"raison": "suite non reconnue", "duree_ms": ms()})
@@ -357,6 +376,18 @@ class Maison:
     def texte_pour_assist(self, texte: str) -> str:
         """Phrase envoyée à l'agent Assist : verbe mal tapé corrigé."""
         return corriger_verbe(texte.strip())
+
+    def _piece_precisee(self, cible: str) -> bool:
+        m = mots(cible)
+        if m & MOTS_TOUTE_LA_MAISON:
+            return True
+        return any(m & e.mots_piece() for e in self.inventaire.entites)
+
+    def _choisir_piece(self, texte: str, candidats: list[Entite]) -> list[Entite]:
+        m = mots(texte)
+        if m & MOTS_TOUTE_LA_MAISON or normaliser(texte) in ("tout", "toutes", "tous", "partout", "oui"):
+            return candidats
+        return [e for e in candidats if m & e.mots_piece()]
 
     def _choisir(self, texte: str, candidats: list[Entite]) -> list[Entite]:
         t = normaliser(texte)

@@ -448,3 +448,41 @@ def test_couleur_seule_sur_le_dernier_appareil(maison):
     dire(m, "allume le plafonnier")
     dire(m, "en vert")
     assert ha.appels[-1] == ("light", "turn_on", {"entity_id": "light.plafonnier", "color_name": "green"})
+
+
+def test_tout_sans_piece_demande_la_piece(maison):
+    m, ha = maison
+    q = dire(m, "éteins toutes les lumières")
+    assert q.texte.startswith("Dans quelle pièce ?") and not ha.appels
+    assert "Salon (2)" in q.texte and "Cuisine (1)" in q.texte
+    dire(m, "le salon")
+    assert {a[2]["entity_id"] for a in ha.appels} == {"light.plafonnier", "light.lampe_pied"}
+
+
+def test_tout_toute_la_maison(maison):
+    m, ha = maison
+    dire(m, "éteins toutes les lumières")
+    dire(m, "toute la maison")
+    assert len(ha.appels) == 4
+
+
+def test_tout_avec_piece_ou_maison_agit_direct(maison):
+    m, ha = maison
+    dire(m, "éteins toutes les lumières du salon")
+    assert len(ha.appels) == 2
+    dire(m, "éteins toutes les lumières de la maison")
+    assert len(ha.appels) == 6
+
+
+def test_tout_reponse_sans_piece_devient_nouvelle_demande(maison):
+    m, ha = maison
+    dire(m, "éteins toutes les lumières")
+    dire(m, "allume le plafonnier")
+    assert ha.appels == [("light", "turn_on", {"entity_id": "light.plafonnier"})]
+
+
+def test_eteins_tout_demande_la_piece(maison):
+    m, ha = maison
+    assert dire(m, "éteins tout").texte.startswith("Dans quelle pièce ?") and not ha.appels
+    dire(m, "cuisine")
+    assert ha.appels == [("light", "turn_off", {"entity_id": "light.cuisine"})]

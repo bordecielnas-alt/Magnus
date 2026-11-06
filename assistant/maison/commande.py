@@ -91,7 +91,7 @@ _RE_ETAT = re.compile(
     r"(?:\s+en\s+(?:luminosit[ée]|temp[ée]rature|position))?\s*\??\s*$",
     re.IGNORECASE,
 )
-_RE_TOUS = re.compile(r"\b(tou(?:te)?s?)\b", re.IGNORECASE)
+_RE_TOUS = re.compile(r"\b(?:tout|toute|toutes|tous)\b", re.IGNORECASE)
 _RE_PRONOM = re.compile(r"^[-\s]*(?:le|la|les|l'|l’|lui|leur|ça|ca|cela)?[\s.!?]*$", re.IGNORECASE)
 
 # Suites de conversation

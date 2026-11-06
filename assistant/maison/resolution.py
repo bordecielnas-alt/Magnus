@@ -81,6 +81,13 @@ def resoudre(cible: str, action: str, entites: list[Entite], tous: bool = False,
     for m in cible_mots:
         evoques |= INDICES_DOMAINE.get(m, set())
     compatibles = [e for e in entites if action in ACTIONS_DOMAINE.get(e.domaine, set())]
+    if tous:
+        # « toutes les lumières (de la maison) » : seul le type compte, sans nom ni pièce précis
+        cible_mots -= {"maison", "partout", "appartement", "etage"}
+        if not (cible_mots - set(INDICES_DOMAINE)):
+            # « éteins tout » (aucun type) : tous les appareils compatibles avec l'action
+            tout = [e for e in compatibles if not evoques or score(e, cible_mots, evoques) > 0]
+            return Resultat(tout, [], "tous") if tout else Resultat([], [], "aucun appareil ne correspond")
     notes = sorted(((score(e, cible_mots, evoques), e) for e in compatibles), key=lambda x: -x[0])
     notes = [(s, e) for s, e in notes if s >= SEUIL]
     if not notes:
