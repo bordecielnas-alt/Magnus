@@ -24,6 +24,7 @@ from .home_assistant import HomeAssistant
 from .maison import Maison
 from .maison.alias import AliasAppris
 from .routeur import SIMPLE, Decision, Routeur
+from .reveil import Reveil
 from .voix import Voix
 
 STATIC = Path(__file__).resolve().parent / "static"
@@ -120,6 +121,7 @@ def creer_app(config: Config | None = None, registre: Registre | None = None,
     extracteur = reg.pour_role(cfg.maison.extracteur) if cfg.maison.extracteur in reg.roles else None
     maison = Maison(cfg.maison, ha, alias or AliasAppris(chemin_alias(cfg)), extracteur)
     voix = voix or Voix(cfg.voix)
+    reveil = Reveil(cfg.voix.fenetre_s, cfg.voix.toujours_a_l_ecoute)
     import asyncio as _asyncio
     verrou_transcription = _asyncio.Lock()   # une transcription à la fois (sinon CPU/GPU saturé)
     jeton_interne = secrets.token_urlsafe(24)   # pour le serveur MCP « maison », change à chaque démarrage
@@ -224,7 +226,8 @@ def creer_app(config: Config | None = None, registre: Registre | None = None,
     # --- Voix ------------------------------------------------------------------------------
     @app.get("/api/voix")
     def etat_voix() -> dict:
-        return voix.etat()
+        return {**voix.etat(), "wake_word": cfg.identite.wake_word_effectif,
+                "fenetre_s": cfg.voix.fenetre_s, "toujours_a_l_ecoute": cfg.voix.toujours_a_l_ecoute}
 
     @app.post("/api/voix/transcrire")
     async def transcrire(requete: Request, partiel: bool = False) -> dict:
@@ -250,6 +253,29 @@ def creer_app(config: Config | None = None, registre: Registre | None = None,
         if not partiel:   # les transcriptions partielles (mots en direct) ne sont pas tracées
             journal.info("voix : « %s » (%.1f s d'audio, %d ms)", t.texte[:120], t.duree_audio_s, t.duree_ms)
         return {"texte": t.texte, "duree_audio_s": t.duree_audio_s, "duree_ms": t.duree_ms}
+
+    @app.post("/api/voix/ecoute")
+    async def ecoute(requete: Request, conversation: str = "") -> dict:
+        """Écoute continue : un morceau de parole -> ignorer, réveil (« <nom> ? ») ou commande.
+        Le wake word est celui de la config (identite.wake_word, ou le nom)."""
+        if not cfg.voix.active or not cfg.voix.whisper_present():
+            raise HTTPException(503, "voix indisponible")
+        audio = await requete.body()
+        if not audio or len(audio) > cfg.voix.max_audio_mo * 1e6:
+            raise HTTPException(400, "audio vide ou trop long")
+        noms = [cfg.identite.nom] + sorted({e.nom for e in maison.inventaire.entites})[:60]
+        async with verrou_transcription:
+            t = await voix.transcrire(audio, ", ".join(noms))
+        r = reveil.analyser(t.texte, cfg.identite.wake_word_effectif, conversation)
+        if r["action"] != "ignorer":
+            journal.info("écoute : « %s » -> %s (%d ms)", t.texte[:120], r["action"], t.duree_ms)
+        return {"texte": t.texte, "duree_ms": t.duree_ms, "wake_word": cfg.identite.wake_word_effectif,
+                "toujours": reveil.toujours, **r}
+
+    @app.post("/api/voix/endormir")
+    def endormir(c: Conv) -> dict:
+        reveil.endormir(c.conversation)
+        return {"ok": True}
 
     @app.post("/api/voix/parler")
     async def parler(p: Parole) -> Response:

@@ -519,3 +519,12 @@ def test_serie_arretee_par_une_question(maison):
 
 def test_anule_mal_transcrit():
     assert par_regles("Anule").action == "restaurer"
+
+
+def test_transcription_approchee(maison):
+    m, ha = maison
+    dire(m, "allume le plafonnier et éteint la lampe sur pieds")
+    assert ha.appels == [("light", "turn_on", {"entity_id": "light.plafonnier"}),
+                         ("light", "turn_off", {"entity_id": "light.lampe_pied"})]
+    dire(m, "éteins le plafonier")   # une lettre manquante
+    assert ha.appels[-1] == ("light", "turn_off", {"entity_id": "light.plafonnier"})

@@ -75,7 +75,7 @@ _POLI = r"(?:(?:peux[- ]tu|tu peux|pourrais[- ]tu|merci de|veux[- ]tu|est[- ]ce 
 _T = r"(?:e|es|ez|er|ons|ent)?"
 _VERBES = [
     ("allumer", rf"allum{_T}|activ{_T}|d[ée]marr{_T}|lanc{_T}|mets? en marche"),
-    ("eteindre", rf"[ée]teins?|[ée]teindre|[ée]teign(?:ez|ons|ent)|coup{_T}|d[ée]sactiv{_T}|arr[êeé]t{_T}|stopp?{_T}"),
+    ("eteindre", rf"[ée]teins?|[ée]teint|[ée]teindre|[ée]teign(?:ez|ons|ent)|coup{_T}|d[ée]sactiv{_T}|arr[êeé]t{_T}|stopp?{_T}"),
     ("ouvrir", rf"ouvr(?:e|es|ez|ir|ons|ent)?|l[èe]v{_T} (?:le|les) (?:volets?|stores?)|remont{_T}|mont{_T} (?:le|les) (?:volets?|stores?)"),
     ("fermer", rf"ferm{_T}|baiss{_T} (?:le|les) (?:volets?|stores?)|descend(?:s|ez|re|ons|ent)?"),
     ("regler", rf"r[éeè]gl{_T}|(?:re)?mets?|(?:re)?mettre|mont{_T}|baiss{_T}|augment{_T}|diminu{_T}|(?:re)?pass{_T}"),
@@ -120,7 +120,7 @@ _VERBES_CANONIQUES = [
     ("desactiv", "désactive"), ("activ", "active"), ("demar", "démarre"), ("aret", "arrête"),
     ("anul", "annule"),
 ]
-_TERMINAISONS = {"", "e", "es", "ez", "er", "s", "ns", "nt", "ent", "r", "re", "ons"}
+_TERMINAISONS = {"", "e", "es", "ez", "er", "s", "ns", "nt", "ent", "r", "re", "ons", "t"}
 
 
 def _canon(mot: str) -> str:

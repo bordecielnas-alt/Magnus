@@ -43,6 +43,13 @@ class Resultat:
 MOTS_LUMIERE = {m for m, d in INDICES_DOMAINE.items() if d == {"light", "switch"}}
 
 
+def _proche(a: str, b: str) -> bool:
+    if abs(len(a) - len(b)) > 1:
+        return False
+    from ..reveil import distance
+    return distance(a, b) <= (1 if len(b) <= 7 else 2)
+
+
 def score(e: Entite, cible_mots: set[str], domaines_evoques: set[str]) -> float:
     s = 0.0
     if domaines_evoques:
@@ -60,7 +67,12 @@ def score(e: Entite, cible_mots: set[str], domaines_evoques: set[str]) -> float:
     specifiques = cible_mots - set(INDICES_DOMAINE)
     # Un mot générique (« lumière ») compte peu s'il y a des mots précis (« salon ») ;
     # s'il n'y en a pas (« le plafonnier »), le mot générique sert de nom.
-    for w in nom & cible_mots:
+    communs = nom & cible_mots
+    # mots presque identiques (une lettre d'écart pour 4 lettres et plus) : fautes de transcription
+    for w in cible_mots - communs - set(INDICES_DOMAINE):
+        if len(w) >= 4 and any(len(n) >= 4 and _proche(w, n) for n in nom):
+            communs = communs | {w}
+    for w in communs:
         s += 0.75 if specifiques and w in INDICES_DOMAINE else 2.5 / max(1, len(specifiques) or len(cible_mots))
     # le nom contient la pièce (« Lampe salon ») sans que la pièce soit renseignée
     if not piece and nom & specifiques:

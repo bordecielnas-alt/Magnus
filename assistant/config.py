@@ -124,6 +124,10 @@ class VoixConfig(BaseModel):
     piper: str = ""            # voix Piper (.onnx) ; vide = modeles/piper/fr_FR-siwis-medium.onnx
     lenteur: float = Field(default=1.0, gt=0.3, lt=3)   # > 1 = parle plus lentement
     max_audio_mo: float = Field(default=10, gt=0)
+    # Écoute continue : après le wake word, on peut parler sans le répéter pendant fenetre_s secondes
+    # (prolongée à chaque phrase). toujours_a_l_ecoute = plus besoin du wake word du tout.
+    fenetre_s: float = Field(default=10, ge=0, le=3600)
+    toujours_a_l_ecoute: bool = False
 
     def chemin_whisper(self) -> str:
         if self.whisper:
