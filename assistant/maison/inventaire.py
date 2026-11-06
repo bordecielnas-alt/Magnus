@@ -50,26 +50,52 @@ class Entite:
         return m
 
 
+@dataclass
+class Ecartee:
+    entity_id: str
+    nom: str
+    raison: str   # « type non autorisé (script) », « masquée », « désactivée », « réglage interne »
+
+
 def construire(resultats: dict, domaines: set[str]) -> tuple[list[Entite], bool]:
     """Assemble les entités à partir des réponses WebSocket. Renvoie (entités, registres_lus)."""
+    entites, registres, _ = construire_detail(resultats, domaines)
+    return entites, registres
+
+
+def construire_detail(resultats: dict, domaines: set[str]) -> tuple[list[Entite], bool, list[Ecartee]]:
+    """Comme construire, avec en plus les entités écartées (pour expliquer un « introuvable »)."""
+    ecartees: list[Ecartee] = []
     etats = {s["entity_id"]: s for s in (resultats.get(CMD_ETATS) or [])}
     pieces = {a["area_id"]: a for a in (resultats.get(CMD_PIECES) or [])}
     appareils = {d["id"]: d for d in (resultats.get(CMD_APPAREILS) or [])}
     registre = resultats.get(CMD_ENTITES)
     sortie: list[Entite] = []
 
+    def depuis_etat(eid: str, s: dict) -> None:
+        a = s.get("attributes") or {}
+        nom = a.get("friendly_name") or eid
+        if eid.split(".", 1)[0] in domaines:
+            sortie.append(Entite(eid, nom, etat=s.get("state", ""), attributs=a))
+        else:
+            ecartees.append(Ecartee(eid, nom, f"type non autorisé ({eid.split('.', 1)[0]})"))
+
     if registre is None:  # pas les droits : états seuls
         for eid, s in etats.items():
-            if eid.split(".", 1)[0] in domaines:
-                a = s.get("attributes") or {}
-                sortie.append(Entite(eid, a.get("friendly_name") or eid, etat=s.get("state", ""), attributs=a))
-        return sortie, False
+            depuis_etat(eid, s)
+        return sortie, False, ecartees
 
+    vus = set()
     for r in registre:
         eid = r["entity_id"]
+        vus.add(eid)
+        nom_reg = r.get("name") or r.get("original_name") or (etats.get(eid, {}).get("attributes") or {}).get("friendly_name") or eid
         if eid.split(".", 1)[0] not in domaines:
+            ecartees.append(Ecartee(eid, nom_reg, f"type non autorisé ({eid.split('.', 1)[0]})"))
             continue
         if r.get("disabled_by") or r.get("hidden_by") or r.get("entity_category"):
+            raison = "désactivée" if r.get("disabled_by") else "masquée" if r.get("hidden_by") else "réglage interne"
+            ecartees.append(Ecartee(eid, nom_reg, raison))
             continue
         s = etats.get(eid) or {}
         a = s.get("attributes") or {}
@@ -82,7 +108,11 @@ def construire(resultats: dict, domaines: set[str]) -> tuple[list[Entite], bool]
             eid, nom, piece.get("name", ""), list(r.get("aliases") or []),
             list(piece.get("aliases") or []), s.get("state", ""), a,
         ))
-    return sortie, True
+    # entités sans unique_id (définies en YAML : groupes, modèles…) : absentes du registre
+    for eid, s in etats.items():
+        if eid not in vus:
+            depuis_etat(eid, s)
+    return sortie, True, ecartees
 
 
 class Inventaire:
@@ -91,6 +121,7 @@ class Inventaire:
         self.domaines = set(domaines)
         self.rafraichir_s = rafraichir_s
         self.entites: list[Entite] = []
+        self.ecartees: list[Ecartee] = []
         self.registres_lus = False
         self.lu_a = 0.0
         self.erreur = ""
@@ -111,7 +142,7 @@ class Inventaire:
         except ConnectionError as e:
             self.erreur = f"inventaire impossible : {e}"
             return
-        self.entites, self.registres_lus = construire(res, self.domaines)
+        self.entites, self.registres_lus, self.ecartees = construire_detail(res, self.domaines)
         self.lu_a = time.monotonic()
         self.erreur = ""
 

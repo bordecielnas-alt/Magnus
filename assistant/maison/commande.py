@@ -38,7 +38,9 @@ _RE_VALEUR = re.compile(r"(\d+(?:[.,]\d+)?)\s*(%|pour ?cent|degr[ée]s?|°)?", r
 _RE_ETAT = re.compile(
     r"^\s*(?:est[- ]ce que\s+)?(.+?)\s+(?:est|sont)(?:[- ](?:elle|il|elles|ils))?\s+"
     r"(allum\w*|[ée]teint\w*|ouvert\w*|ferm\w*|en marche|arr[êeé]t\w*)\s*\??\s*$"
-    r"|^\s*(?:quel est l.[ée]tat|[ée]tat)\s+(?:de |du |des |d.)?(.+?)\s*\??\s*$",
+    r"|^\s*(?:quel est l.[ée]tat|[ée]tat)\s+(?:de |du |des |d.)?(.+?)\s*\??\s*$"
+    r"|^\s*(?:[àa] combien (?:est|sont)|quelle est la (?:luminosit[ée]|temp[ée]rature|position) (?:de |du |des |d.))\s*(.+?)"
+    r"(?:\s+en\s+(?:luminosit[ée]|temp[ée]rature|position))?\s*\??\s*$",
     re.IGNORECASE,
 )
 _RE_TOUS = re.compile(r"\b(tou(?:te)?s?)\b", re.IGNORECASE)
@@ -78,7 +80,7 @@ def par_regles(texte: str) -> Commande | None:
     t = corriger_verbe(t)
     m = _RE_ETAT.match(t)
     if m:
-        cible = (m.group(1) or m.group(3) or "").strip()
+        cible = (m.group(1) or m.group(3) or m.group(4) or "").strip()
         return Commande("etat", cible) if cible else None
     for action, r in _RE_ORDRE:
         m = r.match(t)

@@ -118,3 +118,17 @@ def test_api_note_maison_pour_les_modeles():
     c.post("/api/chat", json={"message": "Merci beaucoup", "role": "rapide"})
     systeme = " ".join(m.content for m in rapide.appels[-1][0] if m.role == "system")
     assert "module maison" in systeme
+
+
+def test_api_introuvable_ne_passe_pas_par_le_modele(tmp_path):
+    from assistant.maison.alias import AliasAppris
+    from tests.test_maison import FauxHA
+    r, rapide = routeur()
+    cfg = charger(env={}, fichier=Path("inexistant.yaml")).model_copy(update={"home_assistant": CFG_HA})
+    ha = faux_ha("error", "?", "no_valid_targets")
+    faux = FauxHA()
+    ha.ws = faux.ws  # inventaire de la fausse maison, Assist simulé par faux_ha
+    c = TestClient(creer_app(cfg, r.registre, ha, AliasAppris(tmp_path / "a.json")))
+    rep = c.post("/api/chat", json={"message": "allume la licorne"}).json()
+    assert rep["fournisseur"] == "maison" and "Rien n'a été fait" in rep["reponse"]
+    assert not rapide.appels

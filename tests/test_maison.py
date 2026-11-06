@@ -221,3 +221,33 @@ def test_fautes_de_frappe_et_tournures(texte, action):
 @pytest.mark.parametrize("texte", ["Activités pour le week-end ?", "Fermeture des magasins dimanche ?"])
 def test_pas_de_fausse_correction(texte):
     assert par_regles(texte) is None
+
+
+def test_licorne_reponse_honnete_sans_modele(maison):
+    m, ha = maison
+    r = dire(m, "Allume la licorne")
+    assert not r.traite and "Rien n'a été fait" in r.texte and "licorne" in r.texte and not ha.appels
+
+
+def test_introuvable_suggere_des_noms_proches(maison):
+    m, _ = maison
+    assert "Lampe bureau" in dire(m, "Allume la lampe du grenier").texte
+
+
+def test_entite_ecartee_expliquee(maison):
+    m, _ = maison
+    r = dire(m, "Ouvre la serrure de l'entrée")
+    assert "lock.porte" in r.texte and "non autorisé" in r.texte
+
+
+def test_entite_yaml_hors_registre_incluse():
+    etats = ETATS + [{"entity_id": "light.l3", "state": "off", "attributes": {"friendly_name": "L3"}}]
+    res = {CMD_ETATS: etats, CMD_PIECES: PIECES, CMD_APPAREILS: APPAREILS, CMD_ENTITES: ENTITES}
+    entites, _ = construire(res, set(DOMAINES))
+    assert "light.l3" in {e.entity_id for e in entites}
+
+
+@pytest.mark.parametrize("texte", ["a combien est le projo en luminosité ?", "Quelle est la luminosité du projo ?"])
+def test_question_de_niveau(texte):
+    c = par_regles(texte)
+    assert c.action == "etat" and c.cible.strip(" ?") == ("le projo" if "combien" in texte else "projo")

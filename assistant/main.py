@@ -163,15 +163,20 @@ def creer_app(config: Config | None = None, registre: Registre | None = None,
             if "commande" in rm.detail and cfg.maison.assist_en_secours:
                 # commande comprise mais appareil introuvable : l'agent Assist de HA tente sa chance
                 debut_ha = time.perf_counter()
-                rha = await ha.conversation(d.message)
+                rha = await ha.conversation(maison.texte_pour_assist(d.message))
                 duree = round((time.perf_counter() - debut_ha) * 1000)
                 route["home_assistant"] = {"compris": rha.compris, "type": rha.type, "code": rha.code, "duree_ms": duree}
                 if rha.compris:
                     _tracer(route, d.message)
                     return _reponse_ha(d.flux, rha.texte, route, "home-assistant", "assist", duree)
                 echec_ha = rha.code or rha.type
-            elif "commande" in rm.detail:
-                echec_ha = "appareil introuvable"
+            if "commande" in rm.detail and rm.texte:
+                # Commande de maison comprise mais appareil introuvable : réponse factuelle,
+                # jamais confiée à un modèle (il inventerait « c'est allumé »).
+                _tracer(route, d.message)
+                return _reponse_ha(d.flux, rm.texte, route, "maison", "inventaire", rm.detail.get("duree_ms", 0))
+            if "commande" in rm.detail and not echec_ha:
+                echec_ha = rm.detail.get("raison", "appareil introuvable")
         _tracer(route, d.message)
 
         msgs = _messages(cfg, d)

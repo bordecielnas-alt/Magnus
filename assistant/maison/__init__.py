@@ -10,7 +10,7 @@ from ..config import MaisonConfig
 from ..fournisseurs import Fournisseur
 from ..home_assistant import HomeAssistant
 from .alias import AliasAppris
-from .commande import Commande, par_modele, par_regles
+from .commande import Commande, corriger_verbe, par_modele, par_regles
 from .inventaire import Entite, Inventaire
 from .resolution import resoudre
 from .texte import mots, normaliser
@@ -134,10 +134,28 @@ class Maison:
             q = "Lequel ? " + " ; ".join(noms) + ". Réponds par le numéro ou le nom (ou « tous »)."
             return ReponseMaison(True, q, {**detail, "candidats": [e.entity_id for e in res.ambigues], "duree_ms": ms()})
         if not res.entites:
-            return ReponseMaison(False, detail={**detail, "duree_ms": ms()})
+            return ReponseMaison(False, self.introuvable(cmd.cible), {**detail, "duree_ms": ms()})
         r = await self._executer(cmd, res.entites)
         r.detail.update(detail, duree_ms=ms())
         return r
+
+    def introuvable(self, cible: str) -> str:
+        """Phrase honnête quand aucun appareil ne correspond : explication si l'appareil est écarté,
+        sinon les noms les plus proches."""
+        c = mots(cible) - {"tou", "tout", "toute"}
+        propre = cible.strip().rstrip(" ?!.")
+        for e in self.inventaire.ecartees:
+            if c and c <= (mots(e.nom) | mots(e.entity_id.split(".", 1)[1].replace("_", " "))):
+                return (f"Je trouve « {e.nom} » ({e.entity_id}), mais je ne le pilote pas : {e.raison}. "
+                        "Rien n'a été fait.")
+        proches = sorted(self.inventaire.entites, key=lambda e: -len(c & (e.mots_nom() | e.mots_piece())))
+        proches = [e for e in proches[:3] if c & (e.mots_nom() | e.mots_piece())]
+        suite = f" Tu voulais dire : {', '.join(e.libelle for e in proches)} ?" if proches else ""
+        return f"Je ne trouve aucun appareil qui corresponde à « {propre} ». Rien n'a été fait.{suite}"
+
+    def texte_pour_assist(self, texte: str) -> str:
+        """Phrase envoyée à l'agent Assist : verbe mal tapé corrigé."""
+        return corriger_verbe(texte.strip())
 
     def _choisir(self, texte: str, candidats: list[Entite]) -> list[Entite]:
         t = normaliser(texte)
