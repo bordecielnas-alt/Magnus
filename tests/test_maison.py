@@ -1,0 +1,210 @@
+"""Pilotage de la maison avec un faux Home Assistant (inventaire, résolution, ambiguïté, alias)."""
+
+import asyncio
+
+import pytest
+
+from assistant.config import HomeAssistantConfig, MaisonConfig
+from assistant.maison import Maison
+from assistant.maison.alias import AliasAppris
+from assistant.maison.commande import par_regles
+from assistant.maison.inventaire import CMD_APPAREILS, CMD_ENTITES, CMD_ETATS, CMD_PIECES, construire
+
+PIECES = [{"area_id": "salon", "name": "Salon", "aliases": ["séjour"]},
+          {"area_id": "cuisine", "name": "Cuisine", "aliases": []},
+          {"area_id": "bureau", "name": "Bureau", "aliases": []},
+          {"area_id": "chambre", "name": "Chambre", "aliases": []}]
+APPAREILS = [{"id": "d1", "area_id": "salon", "name": "Hue plafond", "name_by_user": None}]
+ENTITES = [
+    {"entity_id": "light.plafonnier", "device_id": "d1", "area_id": None, "name": "Plafonnier", "aliases": []},
+    {"entity_id": "light.lampe_pied", "area_id": "salon", "name": "Lampe sur pied", "aliases": []},
+    {"entity_id": "light.cuisine", "area_id": "cuisine", "name": "Lumière cuisine", "aliases": []},
+    {"entity_id": "light.lampe_bureau", "area_id": "bureau", "name": "Lampe bureau", "aliases": []},
+    {"entity_id": "switch.prise_tv", "area_id": "salon", "name": "Prise TV", "aliases": []},
+    {"entity_id": "cover.volet_chambre", "area_id": "chambre", "name": "Volet", "aliases": []},
+    {"entity_id": "climate.salon", "area_id": "salon", "name": "Thermostat", "aliases": ["chauffage"]},
+    {"entity_id": "lock.porte", "area_id": "salon", "name": "Serrure entrée", "aliases": []},
+    {"entity_id": "light.cachee", "area_id": "salon", "name": "Cachée", "hidden_by": "user", "aliases": []},
+    {"entity_id": "switch.config", "area_id": "salon", "name": "Mode", "entity_category": "config", "aliases": []},
+]
+ETATS = [
+    {"entity_id": "light.plafonnier", "state": "on", "attributes": {"friendly_name": "Plafonnier", "brightness": 128}},
+    {"entity_id": "light.lampe_pied", "state": "off", "attributes": {"friendly_name": "Lampe sur pied"}},
+    {"entity_id": "light.cuisine", "state": "off", "attributes": {"friendly_name": "Lumière cuisine"}},
+    {"entity_id": "light.lampe_bureau", "state": "off", "attributes": {"friendly_name": "Lampe bureau"}},
+    {"entity_id": "switch.prise_tv", "state": "on", "attributes": {"friendly_name": "Prise TV"}},
+    {"entity_id": "cover.volet_chambre", "state": "open", "attributes": {"friendly_name": "Volet", "current_position": 100}},
+    {"entity_id": "climate.salon", "state": "heat",
+     "attributes": {"friendly_name": "Thermostat", "current_temperature": 19.5, "temperature": 20}},
+    {"entity_id": "lock.porte", "state": "locked", "attributes": {"friendly_name": "Serrure entrée"}},
+]
+DOMAINES = MaisonConfig().domaines_autorises
+
+
+class FauxHA:
+    """Imite l'API utilisée par Maison/Inventaire : ws, appeler_service, etat_entite."""
+
+    def __init__(self, registres=True):
+        self.cfg = HomeAssistantConfig(url="https://ha.test")
+        self.configure = True
+        self.registres = registres
+        self.appels = []
+
+    async def ws(self, commandes):
+        base = {CMD_ETATS: ETATS, CMD_PIECES: PIECES, CMD_APPAREILS: APPAREILS, CMD_ENTITES: ENTITES}
+        if not self.registres:
+            base = {CMD_ETATS: ETATS, CMD_PIECES: None, CMD_APPAREILS: None, CMD_ENTITES: None}
+        return {c: base[c] for c in commandes}
+
+    async def appeler_service(self, domaine, service, donnees):
+        self.appels.append((domaine, service, donnees))
+        return True
+
+    async def etat_entite(self, eid):
+        return next((s for s in ETATS if s["entity_id"] == eid), None)
+
+
+@pytest.fixture
+def maison(tmp_path):
+    ha = FauxHA()
+    return Maison(MaisonConfig(), ha, AliasAppris(tmp_path / "alias.json")), ha
+
+
+def dire(m, texte, conv="c1"):
+    return asyncio.run(m.traiter(texte, conv))
+
+
+# --- inventaire --------------------------------------------------------------
+
+def test_inventaire_filtre_domaines_caches_et_config():
+    res = asyncio.run(FauxHA().ws([CMD_ETATS, CMD_PIECES, CMD_APPAREILS, CMD_ENTITES]))
+    entites, registres = construire(res, set(DOMAINES))
+    ids = {e.entity_id for e in entites}
+    assert registres and "lock.porte" not in ids and "light.cachee" not in ids and "switch.config" not in ids
+    plaf = next(e for e in entites if e.entity_id == "light.plafonnier")
+    assert plaf.piece == "Salon"  # pièce héritée de l'appareil
+
+
+def test_inventaire_sans_droits_registres():
+    res = asyncio.run(FauxHA(registres=False).ws([CMD_ETATS, CMD_PIECES, CMD_APPAREILS, CMD_ENTITES]))
+    entites, registres = construire(res, set(DOMAINES))
+    assert not registres and len(entites) == 7 and all(not e.piece for e in entites)
+
+
+# --- compréhension -------------------------------------------------------------
+
+@pytest.mark.parametrize("texte,action,cible,valeur", [
+    ("Allume la lumière du salon", "allumer", "la lumière du salon", None),
+    ("peux-tu éteindre le plafonnier ?", "eteindre", "le plafonnier ?", None),
+    ("Baisse le chauffage à 19 degrés", "regler", "le chauffage", 19),
+    ("Mets la lampe du bureau à 30 %", "regler", "la lampe du bureau", 30),
+    ("Ferme le volet de la chambre", "fermer", "le volet de la chambre", None),
+    ("La lumière du salon est-elle allumée ?", "etat", "La lumière du salon", None),
+    ("est-ce que le volet de la chambre est ouvert", "etat", "le volet de la chambre", None),
+])
+def test_regles_commande(texte, action, cible, valeur):
+    c = par_regles(texte)
+    assert (c.action, c.cible.rstrip(" ?"), c.valeur) == (action, cible.rstrip(" ?"), valeur)
+
+
+@pytest.mark.parametrize("texte", ["Merci", "Pourquoi la mer est salée ?", "Mets la musique", "Bonjour"])
+def test_pas_une_commande(texte):
+    assert par_regles(texte) is None
+
+
+# --- résolution et actions ---------------------------------------------------
+
+def test_nom_exact(maison):
+    m, ha = maison
+    r = dire(m, "Éteins le plafonnier")
+    assert r.traite and ha.appels == [("light", "turn_off", {"entity_id": "light.plafonnier"})]
+
+
+def test_piece_et_type_sans_accents(maison):
+    m, ha = maison
+    r = dire(m, "allume la lumiere de la cuisine")
+    assert r.traite and ha.appels[0][2]["entity_id"] == "light.cuisine"
+
+
+def test_nom_qui_contient_la_piece(maison):
+    m, ha = maison
+    dire(m, "Allume la lampe du bureau")
+    assert ha.appels[0][2]["entity_id"] == "light.lampe_bureau"
+
+
+def test_alias_de_piece(maison):
+    m, ha = maison
+    r = dire(m, "Quelle température dans le séjour ?") or None
+    # pas une phrase reconnue par les règles d'état, mais « règle le chauffage du séjour à 21 » l'est
+    dire(m, "Règle le chauffage du séjour à 21")
+    assert ("climate", "set_temperature", {"entity_id": "climate.salon", "temperature": 21.0}) in ha.appels
+
+
+def test_ambigu_puis_choix_et_alias_appris(maison):
+    m, ha = maison
+    q = dire(m, "Allume la lumière du salon")
+    assert q.traite and q.texte.startswith("Lequel ?") and not ha.appels
+    assert set(q.detail["candidats"]) == {"light.plafonnier", "light.lampe_pied"}
+    assert m.en_attente("c1")
+    r = dire(m, "le plafonnier")
+    assert ha.appels == [("light", "turn_on", {"entity_id": "light.plafonnier"})]
+    assert r.detail["alias_appris"] == "la lumiere du salon"
+    # la fois suivante, plus de question
+    dire(m, "Éteins la lumière du salon")
+    assert ha.appels[-1] == ("light", "turn_off", {"entity_id": "light.plafonnier"})
+
+
+def test_choix_par_numero(maison):
+    m, ha = maison
+    q = dire(m, "Allume la lumière du salon")
+    dire(m, "2")
+    assert ha.appels[0][2]["entity_id"] == q.detail["candidats"][1]
+
+
+def test_choix_dans_une_autre_conversation_ignore(maison):
+    m, ha = maison
+    dire(m, "Allume la lumière du salon", conv="tablette")
+    assert not m.en_attente("telephone")
+
+
+def test_toutes_les_lumieres(maison):
+    m, ha = maison
+    dire(m, "Éteins toutes les lumières du salon")
+    assert {a[2]["entity_id"] for a in ha.appels} == {"light.plafonnier", "light.lampe_pied"}
+
+
+def test_etat(maison):
+    m, ha = maison
+    r = dire(m, "Le plafonnier est-il allumé ?")
+    assert r.traite and "allumé à 50 %" in r.texte and not ha.appels
+
+
+def test_etat_chauffage(maison):
+    m, _ = maison
+    assert "19.5 °C" in dire(m, "Est-ce que le thermostat est allumé ?").texte
+
+
+def test_serrure_jamais_pilotee(maison):
+    m, ha = maison
+    r = dire(m, "Ouvre la serrure de l'entrée")
+    assert not any(a[2].get("entity_id") == "lock.porte" for a in ha.appels)
+    assert not r.traite or "serrure" not in r.texte.lower()
+
+
+def test_appareil_inconnu(maison):
+    m, ha = maison
+    r = dire(m, "Allume la licorne")
+    assert not r.traite and not ha.appels and "commande" in r.detail
+
+
+def test_alias_oublie(maison, tmp_path):
+    m, ha = maison
+    dire(m, "Allume la lumière du salon")
+    dire(m, "1")
+    assert m.alias.oublier("la lumière du salon")
+    assert AliasAppris(tmp_path / "alias.json").table() == {}
+
+
+def test_config_refuse_domaine_sensible():
+    with pytest.raises(ValueError, match="sensibles"):
+        MaisonConfig(domaines_autorises=["light", "lock"])

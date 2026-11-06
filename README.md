@@ -62,6 +62,24 @@ La page affiche sous chaque réponse la catégorie, la raison et le temps de dé
 
 Évaluation sur les vrais modèles : `python -m assistant.eval_routeur` (ou le bouton du tableau de suivi). Les phrases sont dans `assistant/donnees/phrases_routeur.yaml` : ajoutes-y celles qui sont mal routées.
 
+## Maison (Home Assistant)
+
+L'assistant trouve lui-même l'appareil visé, sans qu'il faille l'exposer à Assist :
+
+1. **Inventaire** : au démarrage puis toutes les 5 minutes, il lit dans HA (WebSocket) les entités, leurs pièces et leurs alias. Seuls les domaines de `maison.domaines_autorises` sont gardés (lumières, prises, volets, chauffage, médias, ventilateurs) ; serrures, alarme, caméras, scripts et automatisations sont refusés par la config jusqu'aux niveaux de risque (phase 3).
+2. **Commande** : des règles en français reconnaissent « allume / éteins / ouvre / ferme / règle … à 50 % / … est-elle allumée ? » ; sinon le modèle `maison.extracteur` (qwen2.5:3b) extrait la commande en JSON.
+3. **Correspondance** : pièce (et ses alias), type d'appareil (« lumière », « volet », « chauffage »…), nom approché, sans accents ni pluriels.
+4. **Ambiguïté** : s'il y a plusieurs candidats, il demande « Lequel ? » ; la réponse (numéro, nom, « tous ») est retenue comme **alias appris** dans `config/alias_appris.json` (lisible, modifiable, jamais versionné).
+5. **Action** : appel de service via l'API REST de HA. Si l'appareil reste introuvable, l'agent Assist de HA tente sa chance, puis le modèle rapide répond en le disant.
+
+Avec un jeton d'utilisateur HA non administrateur, les registres (pièces, alias) peuvent être refusés : la reconnaissance se fait alors sur les noms seuls.
+
+| Point d'accès | Rôle |
+| --- | --- |
+| `GET /api/maison` | Résumé de l'inventaire et alias appris |
+| `POST /api/maison/rafraichir` | Relire l'inventaire tout de suite |
+| `DELETE /api/maison/alias/{phrase}` | Oublier un alias appris |
+
 ## Tests
 
 ```powershell

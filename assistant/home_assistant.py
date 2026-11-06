@@ -87,6 +87,55 @@ class HomeAssistant:
         e["entites_exposees"] = await self._compter_exposees()
         return e
 
+    async def ws(self, commandes: list[str]) -> dict[str, Any]:
+        """Envoie des commandes WebSocket (sans paramètre) sur une seule connexion.
+
+        Renvoie {commande: résultat} ; une commande refusée (droits) vaut None.
+        Lève ConnectionError si la connexion ou l'authentification échoue.
+        """
+        import websockets
+        url = self.cfg.url.rstrip("/").replace("https://", "wss://").replace("http://", "ws://") + "/api/websocket"
+        sortie: dict[str, Any] = {}
+        try:
+            async with websockets.connect(url, open_timeout=self.cfg.timeout, close_timeout=1,
+                                          max_size=32 * 1024 * 1024) as ws:
+                await ws.recv()  # auth_required
+                await ws.send(json.dumps({"type": "auth", "access_token": self.jeton}))
+                if json.loads(await ws.recv()).get("type") != "auth_ok":
+                    raise ConnectionError("jeton refusé")
+                for i, cmd in enumerate(commandes, start=1):
+                    await ws.send(json.dumps({"id": i, "type": cmd}))
+                    while True:
+                        rep = json.loads(await ws.recv())
+                        if rep.get("id") == i:
+                            break
+                    sortie[cmd] = rep.get("result") if rep.get("success") else None
+        except (OSError, ValueError) as e:
+            raise ConnectionError(str(e)) from e
+        except Exception as e:  # noqa: BLE001 - erreurs de la bibliothèque websockets
+            if isinstance(e, ConnectionError):
+                raise
+            raise ConnectionError(e.__class__.__name__) from e
+        return sortie
+
+    async def appeler_service(self, domaine: str, service: str, donnees: dict) -> bool:
+        if not self.configure:
+            return False
+        try:
+            r = await self._client.post(f"/api/services/{domaine}/{service}", json=donnees)
+            return r.status_code < 300
+        except httpx.HTTPError:
+            return False
+
+    async def etat_entite(self, entity_id: str) -> dict | None:
+        if not self.configure:
+            return None
+        try:
+            r = await self._client.get(f"/api/states/{entity_id}")
+            return r.json() if r.status_code == 200 else None
+        except (httpx.HTTPError, ValueError):
+            return None
+
     async def _compter_exposees(self) -> int | None:
         """Via l'API WebSocket (homeassistant/expose_entity/list). None si indisponible."""
         try:

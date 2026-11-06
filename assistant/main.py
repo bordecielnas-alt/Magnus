@@ -15,9 +15,11 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from . import __version__
-from .config import Config, charger, charger_secrets
+from .config import Config, charger, charger_secrets, chemin_alias
 from .fournisseurs import FournisseurIndisponible, Message, Registre, Reponse
 from .home_assistant import HomeAssistant
+from .maison import Maison
+from .maison.alias import AliasAppris
 from .routeur import SIMPLE, Decision, Routeur
 
 STATIC = Path(__file__).resolve().parent / "static"
@@ -42,6 +44,7 @@ class DemandeChat(BaseModel):
     historique: list[Tour] = Field(default_factory=list)
     role: str = ROLE_AUTO   # "auto" = le routeur choisit
     flux: bool = False
+    conversation: str = Field(default="", max_length=64)   # identifiant choisi par la page
 
 
 def _messages(cfg: Config, d: DemandeChat) -> list[Message]:
@@ -52,11 +55,13 @@ def _messages(cfg: Config, d: DemandeChat) -> list[Message]:
 
 
 def creer_app(config: Config | None = None, registre: Registre | None = None,
-              ha: HomeAssistant | None = None) -> FastAPI:
+              ha: HomeAssistant | None = None, alias: AliasAppris | None = None) -> FastAPI:
     cfg = config or charger()
     reg = registre or Registre.depuis_config(cfg)
     routeur = Routeur(cfg.routeur, reg)
     ha = ha or HomeAssistant(cfg.home_assistant)
+    extracteur = reg.pour_role(cfg.maison.extracteur) if cfg.maison.extracteur in reg.roles else None
+    maison = Maison(cfg.maison, ha, alias or AliasAppris(chemin_alias(cfg)), extracteur)
 
     @asynccontextmanager
     async def cycle(app: FastAPI):
@@ -69,6 +74,7 @@ def creer_app(config: Config | None = None, registre: Registre | None = None,
     app.state.registre = reg
     app.state.routeur = routeur
     app.state.ha = ha
+    app.state.maison = maison
 
     @app.get("/health")
     def health() -> dict:
@@ -92,6 +98,23 @@ def creer_app(config: Config | None = None, registre: Registre | None = None,
     async def etat_ha() -> dict:
         return await ha.etat()
 
+    @app.get("/api/maison")
+    async def etat_maison() -> dict:
+        if ha.configure and not maison.inventaire.entites:
+            await maison.inventaire.obtenir()
+        return {"inventaire": maison.inventaire.resume(), "alias": maison.alias.liste()}
+
+    @app.post("/api/maison/rafraichir")
+    async def rafraichir_maison() -> dict:
+        await maison.inventaire.obtenir(forcer=True)
+        return maison.inventaire.resume()
+
+    @app.delete("/api/maison/alias/{phrase}")
+    def oublier_alias(phrase: str) -> dict:
+        if not maison.alias.oublier(phrase):
+            raise HTTPException(404, "alias inconnu")
+        return {"ok": True}
+
     @app.post("/api/route")
     async def route(d: DemandeChat) -> dict:
         """Décision du routeur seule, sans appeler le modèle choisi (tests, réglages)."""
@@ -113,19 +136,28 @@ def creer_app(config: Config | None = None, registre: Registre | None = None,
             raise HTTPException(400, f"rôle inconnu : {d.role}")
         route = decision.en_dict() if decision else {"role": role, "raison": "choisi à la main"}
 
-        # Demande simple : l'agent Assist de Home Assistant d'abord (exécute l'action, sans LLM)
-        rha, echec_ha = None, ""
-        if decision and decision.categorie == SIMPLE and cfg.home_assistant.pour_simples and ha.configure:
-            debut_ha = time.perf_counter()
-            rha = await ha.conversation(d.message)
-            route["home_assistant"] = {"compris": rha.compris, "type": rha.type, "code": rha.code,
-                                       "duree_ms": round((time.perf_counter() - debut_ha) * 1000)}
-            if not rha.compris:
+        # Maison : réponse à une question « lequel ? » en cours, ou demande simple
+        echec_ha = ""
+        simple = decision is not None and decision.categorie == SIMPLE
+        if ha.configure and cfg.home_assistant.pour_simples and (simple or maison.en_attente(d.conversation)):
+            rm = await maison.traiter(d.message, d.conversation)
+            route["maison"] = {"traite": rm.traite, **{k: v for k, v in rm.detail.items() if k != "commande"}}
+            if rm.traite:
+                _tracer(route, d.message)
+                return _reponse_ha(d.flux, rm.texte, route, "maison", "inventaire", rm.detail.get("duree_ms", 0))
+            if "commande" in rm.detail and cfg.maison.assist_en_secours:
+                # commande comprise mais appareil introuvable : l'agent Assist de HA tente sa chance
+                debut_ha = time.perf_counter()
+                rha = await ha.conversation(d.message)
+                duree = round((time.perf_counter() - debut_ha) * 1000)
+                route["home_assistant"] = {"compris": rha.compris, "type": rha.type, "code": rha.code, "duree_ms": duree}
+                if rha.compris:
+                    _tracer(route, d.message)
+                    return _reponse_ha(d.flux, rha.texte, route, "home-assistant", "assist", duree)
                 echec_ha = rha.code or rha.type
-                rha = None
+            elif "commande" in rm.detail:
+                echec_ha = "appareil introuvable"
         _tracer(route, d.message)
-        if rha:
-            return _reponse_ha(d.flux, rha.texte, route)
 
         msgs = _messages(cfg, d)
         if echec_ha:
@@ -183,13 +215,17 @@ def _tracer(route: dict, message: str) -> None:
     """Une ligne par demande dans la console : par où elle est passée et pourquoi."""
     h = route.get("home_assistant")
     ha = f" | HA : {'compris' if h['compris'] else 'non compris'} ({h['type']}{' ' + h['code'] if h['code'] else ''}, {h['duree_ms']} ms)" if h else ""
+    m = route.get("maison")
+    if m:
+        appris = f", alias appris « {m['alias_appris']} »" if m.get("alias_appris") else ""
+        etat = "traité" if m["traite"] else "non traité"
+        ha = f" | maison : {etat} ({m.get('resolution') or m.get('raison', '')}{appris}, {m.get('duree_ms', 0)} ms)" + ha
     cat = route.get("categorie", "forcé")
     journal.info("route %s (%s) -> %s%s | « %s »", cat, route.get("raison", ""), route.get("role", ""), ha, message[:80])
 
 
-def _reponse_ha(flux: bool, texte: str, route: dict):
-    fin = {"fournisseur": "home-assistant", "modele": "assist", "secours": False,
-           "duree_ms": route["home_assistant"]["duree_ms"]}
+def _reponse_ha(flux: bool, texte: str, route: dict, fournisseur: str, modele: str, duree_ms: int):
+    fin = {"fournisseur": fournisseur, "modele": modele, "secours": False, "duree_ms": duree_ms}
     if not flux:
         return {"reponse": texte, **fin, "route": route}
 

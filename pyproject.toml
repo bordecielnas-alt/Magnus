@@ -1,6 +1,6 @@
 [project]
 name = "homelab-assistant"
-version = "0.5.0"
+version = "0.6.0"
 description = "Assistant personnel homelab : orchestrateur, voix, domotique."
 requires-python = ">=3.12"
 dependencies = [

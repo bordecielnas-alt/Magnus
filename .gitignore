@@ -8,3 +8,4 @@ dist/
 .env
 config/config.yaml
 config-local/
+config/alias_appris.json

@@ -55,6 +55,7 @@
 <script>
 const $ = id => document.getElementById(id);
 const historique = [];
+const conversation = (crypto.randomUUID ? crypto.randomUUID() : String(Math.random())).slice(0, 36);
 
 fetch('/api/info').then(r => r.json()).then(i => {
   document.title = i.nom;
@@ -91,7 +92,7 @@ $('form').addEventListener('submit', async ev => {
   try {
     const r = await fetch('/api/chat', {
       method: 'POST', headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({message, historique, flux: true, role: $('role').value}),
+      body: JSON.stringify({message, historique, flux: true, role: $('role').value, conversation}),
     });
     if (!r.ok) throw new Error((await r.json()).detail || r.statusText);
     const lecteur = r.body.getReader();
@@ -114,7 +115,7 @@ $('form').addEventListener('submit', async ev => {
           let r = '';
           if (route && route.categorie) r = route.categorie + ' (' + route.raison.replace(/^règle : .*/, 'règle') + ', ' + Math.round(route.duree_ms) + ' ms) → ';
           else if (route) r = 'forcé → ';
-          s.textContent = r + (o.fournisseur === 'home-assistant' ? 'Home Assistant' : o.modele) + (o.secours ? ' (secours)' : '') + ' · 1er mot ' + o.premier_ms + ' ms · ' + o.duree_ms + ' ms';
+          s.textContent = r + ({'home-assistant': 'Home Assistant (Assist)', 'maison': 'Maison'}[o.fournisseur] || o.modele) + (o.secours ? ' (secours)' : '') + ' · 1er mot ' + o.premier_ms + ' ms · ' + o.duree_ms + ' ms';
           if (route && route.raison) s.title = route.raison;
           rep.appendChild(s);
         }

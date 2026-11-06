@@ -86,6 +86,27 @@ class HomeAssistantConfig(BaseModel):
     pour_simples: bool = True             # les demandes simples passent d'abord par HA
 
 
+class MaisonConfig(BaseModel):
+    # Domaines HA que l'assistant peut lire et piloter. Serrures, alarme, etc. exclues
+    # tant que les niveaux de risque (phase 3) n'existent pas.
+    domaines_autorises: list[str] = Field(default_factory=lambda: [
+        "light", "switch", "cover", "climate", "media_player", "fan"])
+    rafraichir_s: float = Field(default=300, ge=10)   # relecture de l'inventaire
+    extraction_par_modele: bool = True                # si les règles ne comprennent pas
+    extracteur: str = "rapide"                        # rôle du modèle qui extrait la commande
+    fichier_alias: str = ""                           # vide = <config>/alias_appris.json
+    assist_en_secours: bool = True                    # agent Assist de HA si l'appareil n'est pas trouvé
+
+    @field_validator("domaines_autorises")
+    @classmethod
+    def _pas_de_domaine_sensible(cls, v: list[str]) -> list[str]:
+        interdits = {"lock", "alarm_control_panel", "camera", "script", "automation", "shell_command"}
+        refuses = sorted(set(v) & interdits)
+        if refuses:
+            raise ValueError(f"domaines sensibles interdits avant la phase 3 : {refuses}")
+        return v
+
+
 class RouteurConfig(BaseModel):
     role_simple: str = "rapide"
     role_complexe: str = "raisonnement"
@@ -105,6 +126,7 @@ class Config(BaseModel):
     roles: dict[str, str] = Field(default_factory=dict)
     routeur: RouteurConfig = Field(default_factory=RouteurConfig)
     home_assistant: HomeAssistantConfig = Field(default_factory=HomeAssistantConfig)
+    maison: MaisonConfig = Field(default_factory=MaisonConfig)
 
     @model_validator(mode="after")
     def _roles_valides(self) -> "Config":
@@ -115,6 +137,8 @@ class Config(BaseModel):
         manquants = [x for x in (r.role_simple, r.role_complexe, r.classeur) if x and x not in self.roles]
         if manquants:
             raise ValueError(f"routeur : rôles inconnus {manquants}")
+        if self.maison.extracteur and self.maison.extracteur not in self.roles:
+            raise ValueError(f"maison : rôle extracteur inconnu {self.maison.extracteur}")
         for motif in r.regles_simples + r.regles_complexes:
             try:
                 re.compile(motif)
@@ -190,3 +214,11 @@ def charger_secrets(chemin: Path | None = None, env: dict[str, str] | None = Non
                     env[cle] = valeur
             return c
     return None
+
+
+def chemin_alias(cfg: "Config") -> Path:
+    if cfg.maison.fichier_alias:
+        return Path(cfg.maison.fichier_alias)
+    if os.name != "nt" and Path("/config").is_dir():
+        return Path("/config/alias_appris.json")
+    return RACINE / "config" / "alias_appris.json"
