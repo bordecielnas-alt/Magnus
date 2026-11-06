@@ -1,0 +1,7 @@
+# Copie ce fichier en config.yaml et ne garde que ce que tu veux changer (les défauts sont dans assistant/defaults.yaml).
+# Ordre de priorité : variables d'environnement > config.yaml > assistant/defaults.yaml
+#   ASSISTANT_NOM, ASSISTANT_WAKE_WORD, ASSISTANT_LANGUE, ASSISTANT_PORT
+
+identite:
+  nom: "Magnus"
+  wake_word: ""   # vide = suit le nom

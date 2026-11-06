@@ -1,0 +1,38 @@
+<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Assistant</title>
+<style>
+  :root { --bg:#f6f7f8; --fg:#14181c; --muted:#5b6670; --accent:#0f8b8d; }
+  @media (prefers-color-scheme: dark) { :root { --bg:#0d1114; --fg:#e8ecef; --muted:#8a96a0; --accent:#3cc6c8; } }
+  html,body { height:100%; margin:0; }
+  body { background:var(--bg); color:var(--fg); font-family:system-ui,sans-serif;
+         display:flex; align-items:center; justify-content:center; text-align:center; padding:16px; }
+  .orbe { width:120px; height:120px; margin:0 auto 24px; border-radius:50%;
+          background:radial-gradient(circle at 40% 35%, var(--accent), transparent 70%);
+          filter:blur(6px); animation:respire 4s ease-in-out infinite; }
+  @keyframes respire { 50% { transform:scale(1.12); opacity:.75; } }
+  h1 { margin:0 0 8px; font-size:2.4rem; letter-spacing:.02em; }
+  p { margin:4px 0; color:var(--muted); }
+  code { color:var(--fg); }
+</style>
+</head>
+<body>
+<main>
+  <div class="orbe" aria-hidden="true"></div>
+  <h1 id="nom">…</h1>
+  <p>Wake word : <code id="wake">…</code></p>
+  <p id="version"></p>
+</main>
+<script>
+fetch('/api/info').then(r => r.json()).then(i => {
+  document.title = i.nom;
+  document.getElementById('nom').textContent = i.nom;
+  document.getElementById('wake').textContent = i.wake_word;
+  document.getElementById('version').textContent = 'version ' + i.version;
+}).catch(() => { document.getElementById('nom').textContent = 'Orchestrateur injoignable'; });
+</script>
+</body>
+</html>

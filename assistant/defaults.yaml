@@ -1,0 +1,14 @@
+# Valeurs par défaut de l'assistant.
+# C'est le SEUL endroit où le nom par défaut est écrit : le code le lit d'ici.
+# Ne modifie pas ce fichier pour ta config : copie config/config.example.yaml
+# vers config/config.yaml (ou /config/config.yaml dans le conteneur).
+
+identite:
+  nom: "Magnus"
+  # Vide = le wake word suit le nom (en minuscules).
+  wake_word: ""
+  langue: "fr"
+
+serveur:
+  hote: "0.0.0.0"
+  port: 8080
