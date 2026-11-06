@@ -118,6 +118,7 @@ _VERBES_CANONIQUES = [
     ("alum", "allume"), ("eteign", "éteins"), ("etein", "éteins"), ("etei", "éteins"),
     ("ouvr", "ouvre"), ("ferm", "ferme"), ("regl", "règle"), ("coup", "coupe"),
     ("desactiv", "désactive"), ("activ", "active"), ("demar", "démarre"), ("aret", "arrête"),
+    ("anul", "annule"),
 ]
 _TERMINAISONS = {"", "e", "es", "ez", "er", "s", "ns", "nt", "ent", "r", "re", "ons"}
 

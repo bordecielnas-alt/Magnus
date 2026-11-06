@@ -36,7 +36,8 @@ def test_texte_pour_la_voix():
 
 def test_chemins_par_defaut():
     c = VoixConfig()
-    assert c.chemin_whisper().endswith("whisper-small") and c.chemin_piper().endswith(".onnx")
+    assert c.chemin_whisper().endswith(("whisper-small", "whisper-large-v3-turbo")) and c.chemin_piper().endswith(".onnx")
+    assert c.moteur_effectif() in ("kokoro", "piper") and c.appareil == "auto" and c.calcul == "int8"
 
 
 class FausseVoix:
@@ -76,3 +77,22 @@ def test_api_parler(tmp_path, monkeypatch):
     r = c.post("/api/voix/parler", json={"texte": "Bonjour"})
     assert r.status_code == 200 and r.headers["content-type"] == "audio/wav" and r.content[:4] == b"RIFF"
     assert r.headers["x-duree-ms"] == "12"
+
+
+def test_partielle_sautee_si_occupe(tmp_path, monkeypatch):
+    import asyncio
+    c, v, _ = _client(tmp_path, monkeypatch)
+
+    async def lent(audio, indices=""):
+        await asyncio.sleep(0.3)
+        return Transcription("x", "fr", 1, 1)
+    v.transcrire = lent
+    import threading
+    res = {}
+    t = threading.Thread(target=lambda: res.setdefault("final", c.post("/api/voix/transcrire", content=b"x" * 3000).json()))
+    t.start()
+    import time
+    time.sleep(0.1)
+    partiel = c.post("/api/voix/transcrire?partiel=1", content=b"x" * 3000).json()
+    t.join()
+    assert partiel["saute"] is True and res["final"]["texte"] == "x"

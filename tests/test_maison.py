@@ -493,3 +493,29 @@ def test_question_lequel_courte(maison):
     m, _ = maison
     q = dire(m, "allume la lumière du salon").texte
     assert q in ("Lequel : Plafonnier ou Lampe sur pied ?", "Lequel : Lampe sur pied ou Plafonnier ?")
+
+
+def test_plusieurs_ordres_dans_une_phrase(maison):
+    m, ha = maison
+    assert m.reconnait("allume le plafonnier et éteins la lumière de la cuisine")
+    r = dire(m, "allume le plafonnier et éteins la lumière de la cuisine, puis ferme le volet")
+    assert ha.appels == [("light", "turn_on", {"entity_id": "light.plafonnier"}),
+                         ("light", "turn_off", {"entity_id": "light.cuisine"}),
+                         ("cover", "close_cover", {"entity_id": "cover.volet_chambre"})]
+    assert r.texte.count("C'est fait") == 3
+
+
+def test_un_seul_ordre_avec_et_reste_groupe(maison):
+    m, _ = maison
+    assert m.decouper_ordres("allume le plafonnier et la lumière de la cuisine") == [
+        "allume le plafonnier et la lumière de la cuisine"]
+
+
+def test_serie_arretee_par_une_question(maison):
+    m, ha = maison
+    r = dire(m, "allume la lumière du salon et éteins la lumière de la cuisine")
+    assert r.texte.startswith("Lequel") and not ha.appels
+
+
+def test_anule_mal_transcrit():
+    assert par_regles("Anule").action == "restaurer"

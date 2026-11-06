@@ -7,7 +7,10 @@ Les calculs tournent dans un thread pour ne pas bloquer l'orchestrateur.
 from __future__ import annotations
 
 import asyncio
+import glob
 import io
+import os
+import sys
 import re
 import threading
 import time
@@ -25,23 +28,54 @@ class Transcription:
     duree_ms: int
 
 
+def preparer_cuda() -> None:
+    """Windows : rend visibles les DLL CUDA installées par pip (nvidia-cublas-cu12, nvidia-cudnn-cu12).
+    Sous Linux (conteneur), les bibliothèques sont trouvées sans aide."""
+    if os.name != "nt":
+        return
+    for d in glob.glob(os.path.join(sys.prefix, "Lib", "site-packages", "nvidia", "*", "bin")):
+        try:
+            os.add_dll_directory(d)
+        except OSError:
+            continue
+        if d not in os.environ.get("PATH", ""):
+            os.environ["PATH"] = d + os.pathsep + os.environ.get("PATH", "")
+
+
+def appareil_effectif(demande: str) -> str:
+    if demande != "auto":
+        return demande
+    try:
+        preparer_cuda()
+        import ctranslate2
+        return "cuda" if ctranslate2.get_cuda_device_count() > 0 else "cpu"
+    except Exception:  # noqa: BLE001
+        return "cpu"
+
+
 class Voix:
     def __init__(self, cfg: VoixConfig) -> None:
         self.cfg = cfg
         self._whisper = None
         self._piper = None
+        self._kokoro = None
+        self.appareil = ""
         self._verrou_w = threading.Lock()
         self._verrou_p = threading.Lock()
         self.erreur = ""
 
     # --- état ------------------------------------------------------------------------
     def etat(self) -> dict:
+        moteur = self.cfg.moteur_effectif()
         return {
             "active": self.cfg.active,
-            "whisper": {"modele": self.cfg.chemin_whisper(), "present": self.cfg.whisper_present(),
-                        "charge": self._whisper is not None, "appareil": self.cfg.appareil},
-            "piper": {"voix": self.cfg.chemin_piper(), "presente": self.cfg.piper_presente(),
-                      "chargee": self._piper is not None},
+            "whisper": {"modele": os.path.basename(self.cfg.chemin_whisper()), "present": self.cfg.whisper_present(),
+                        "charge": self._whisper is not None, "appareil": self.appareil or self.cfg.appareil},
+            # « piper » garde son nom pour la page Outils : c'est la synthèse, quel que soit le moteur
+            "piper": {"voix": moteur + (f" ({self.cfg.voix_kokoro})" if moteur == "kokoro" else ""),
+                      "presente": self.cfg.synthese_presente(),
+                      "chargee": (self._kokoro if moteur == "kokoro" else self._piper) is not None},
+            "moteur": moteur,
             "erreur": self.erreur,
         }
 
@@ -49,8 +83,9 @@ class Voix:
     def _modele_whisper(self):
         with self._verrou_w:
             if self._whisper is None:
+                self.appareil = appareil_effectif(self.cfg.appareil)
                 from faster_whisper import WhisperModel
-                self._whisper = WhisperModel(self.cfg.chemin_whisper(), device=self.cfg.appareil,
+                self._whisper = WhisperModel(self.cfg.chemin_whisper(), device=self.appareil,
                                              compute_type=self.cfg.calcul)
             return self._whisper
 
@@ -77,7 +112,37 @@ class Voix:
                 self._piper = PiperVoice.load(self.cfg.chemin_piper())
             return self._piper
 
+    def _voix_kokoro(self):
+        with self._verrou_p:
+            if self._kokoro is None:
+                from kokoro_onnx import Kokoro
+                d = self.cfg.chemin_kokoro()
+                self._kokoro = Kokoro(str(d / "kokoro-v1.0.onnx"), str(d / "voices-v1.0.bin"))
+            return self._kokoro
+
+    def _voix(self):
+        return self._voix_kokoro() if self.cfg.moteur_effectif() == "kokoro" else self._voix_piper()
+
     def _parler(self, texte: str) -> tuple[bytes, int]:
+        if self.cfg.moteur_effectif() == "kokoro":
+            return self._parler_kokoro(texte)
+        return self._parler_piper(texte)
+
+    def _parler_kokoro(self, texte: str) -> tuple[bytes, int]:
+        import numpy as np
+        debut = time.perf_counter()
+        echantillons, taux = self._voix_kokoro().create(
+            texte_pour_la_voix(texte), voice=self.cfg.voix_kokoro, speed=1 / self.cfg.lenteur,
+            lang="fr-fr" if self.cfg.langue == "fr" else self.cfg.langue)
+        tampon = io.BytesIO()
+        with wave.open(tampon, "wb") as w:
+            w.setnchannels(1)
+            w.setsampwidth(2)
+            w.setframerate(taux)
+            w.writeframes((np.clip(echantillons, -1, 1) * 32767).astype("<i2").tobytes())
+        return tampon.getvalue(), round((time.perf_counter() - debut) * 1000)
+
+    def _parler_piper(self, texte: str) -> tuple[bytes, int]:
         from piper import SynthesisConfig
         debut = time.perf_counter()
         voix = self._voix_piper()
@@ -95,7 +160,7 @@ class Voix:
         """Charge les modèles en arrière-plan pour que la première phrase ne soit pas lente."""
         try:
             await asyncio.to_thread(self._modele_whisper)
-            await asyncio.to_thread(self._voix_piper)
+            await asyncio.to_thread(self._voix)
             self.erreur = ""
         except Exception as e:  # noqa: BLE001 - affiché dans Outils, ne doit pas arrêter l'assistant
             self.erreur = f"{e.__class__.__name__} : {e}"

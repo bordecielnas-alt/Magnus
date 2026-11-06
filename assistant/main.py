@@ -120,6 +120,8 @@ def creer_app(config: Config | None = None, registre: Registre | None = None,
     extracteur = reg.pour_role(cfg.maison.extracteur) if cfg.maison.extracteur in reg.roles else None
     maison = Maison(cfg.maison, ha, alias or AliasAppris(chemin_alias(cfg)), extracteur)
     voix = voix or Voix(cfg.voix)
+    import asyncio as _asyncio
+    verrou_transcription = _asyncio.Lock()   # une transcription à la fois (sinon CPU/GPU saturé)
     jeton_interne = secrets.token_urlsafe(24)   # pour le serveur MCP « maison », change à chaque démarrage
 
     def outils_maison(conversation: str) -> dict:
@@ -138,7 +140,7 @@ def creer_app(config: Config | None = None, registre: Registre | None = None,
     @asynccontextmanager
     async def cycle(app: FastAPI):
         import asyncio
-        if cfg.voix.active and cfg.voix.whisper_present() and cfg.voix.piper_presente():
+        if cfg.voix.active and cfg.voix.whisper_present() and cfg.voix.synthese_presente():
             app.state.prechauffage = asyncio.create_task(voix.prechauffer())
         yield
         await reg.fermer()
@@ -238,8 +240,11 @@ def creer_app(config: Config | None = None, registre: Registre | None = None,
         # Mots probables : nom de l'assistant, appareils et pièces (aide Whisper sur « Globe », « L3 »…)
         noms = [cfg.identite.nom] + sorted({e.nom for e in maison.inventaire.entites} |
                                            {e.piece for e in maison.inventaire.entites if e.piece})[:60]
+        if partiel and verrou_transcription.locked():
+            return {"texte": "", "saute": True, "duree_audio_s": 0, "duree_ms": 0}
         try:
-            t = await voix.transcrire(audio, ", ".join(noms))
+            async with verrou_transcription:
+                t = await voix.transcrire(audio, ", ".join(noms))
         except Exception as e:  # noqa: BLE001 - audio illisible, modèle en erreur
             raise HTTPException(422, f"transcription impossible ({e.__class__.__name__})") from e
         if not partiel:   # les transcriptions partielles (mots en direct) ne sont pas tracées
@@ -248,7 +253,7 @@ def creer_app(config: Config | None = None, registre: Registre | None = None,
 
     @app.post("/api/voix/parler")
     async def parler(p: Parole) -> Response:
-        if not cfg.voix.active or not cfg.voix.piper_presente():
+        if not cfg.voix.active or not cfg.voix.synthese_presente():
             raise HTTPException(503, "synthèse vocale indisponible")
         wav, duree = await voix.parler(p.texte)
         return Response(wav, media_type="audio/wav", headers={"X-Duree-Ms": str(duree), "Cache-Control": "no-store"})

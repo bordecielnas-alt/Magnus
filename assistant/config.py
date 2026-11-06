@@ -110,16 +110,41 @@ class MaisonConfig(BaseModel):
 
 class VoixConfig(BaseModel):
     active: bool = True
-    whisper: str = ""          # dossier du modèle faster-whisper ; vide = modeles/whisper-small
-    appareil: Literal["cpu", "cuda", "auto"] = "cpu"
-    calcul: str = "int8"       # int8 sur processeur, float16 sur GPU
+    # dossier du modèle faster-whisper ; vide = large-v3-turbo s'il est là, sinon small
+    whisper: str = ""
+    # auto = GPU NVIDIA s'il y en a un (RTX, Quadro P2000…), sinon processeur
+    appareil: Literal["cpu", "cuda", "auto"] = "auto"
+    # int8 : même comportement sur RTX 3080 et Quadro P2000 (Pascal), ~1 Go de VRAM pour turbo
+    calcul: str = "int8"
     langue: str = "fr"
+    # synthèse : auto = Kokoro s'il est là (plus naturel), sinon Piper
+    moteur_voix: Literal["auto", "kokoro", "piper"] = "auto"
+    kokoro: str = ""           # dossier kokoro-v1.0.onnx + voices-v1.0.bin ; vide = modeles/kokoro
+    voix_kokoro: str = "ff_siwis"
     piper: str = ""            # voix Piper (.onnx) ; vide = modeles/piper/fr_FR-siwis-medium.onnx
     lenteur: float = Field(default=1.0, gt=0.3, lt=3)   # > 1 = parle plus lentement
     max_audio_mo: float = Field(default=10, gt=0)
 
     def chemin_whisper(self) -> str:
-        return self.whisper or str(RACINE / "modeles" / "whisper-small")
+        if self.whisper:
+            return self.whisper
+        turbo = RACINE / "modeles" / "whisper-large-v3-turbo"
+        return str(turbo if (turbo / "model.bin").is_file() else RACINE / "modeles" / "whisper-small")
+
+    def chemin_kokoro(self) -> Path:
+        return Path(self.kokoro) if self.kokoro else RACINE / "modeles" / "kokoro"
+
+    def kokoro_present(self) -> bool:
+        d = self.chemin_kokoro()
+        return (d / "kokoro-v1.0.onnx").is_file() and (d / "voices-v1.0.bin").is_file()
+
+    def moteur_effectif(self) -> str:
+        if self.moteur_voix == "auto":
+            return "kokoro" if self.kokoro_present() else "piper"
+        return self.moteur_voix
+
+    def synthese_presente(self) -> bool:
+        return self.kokoro_present() if self.moteur_effectif() == "kokoro" else self.piper_presente()
 
     def chemin_piper(self) -> str:
         return self.piper or str(RACINE / "modeles" / "piper" / "fr_FR-siwis-medium.onnx")

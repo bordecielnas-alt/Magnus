@@ -182,13 +182,48 @@ class Maison:
     def reconnait(self, texte: str, conversation: str = "") -> bool:
         """La phrase ressemble-t-elle à une commande ou une question sur un appareil ?
         Avec un contexte récent, les suites (« éteins-le », « plus fort ») comptent aussi."""
-        return par_regles(texte, avec_contexte=self._contexte(conversation) is not None) is not None
+        return (par_regles(texte, avec_contexte=self._contexte(conversation) is not None) is not None
+                or self.reconnait_plusieurs(texte))
 
     def en_attente(self, conversation: str) -> bool:
         a = self._attentes.get(conversation)
         return bool(a and time.monotonic() - a.depuis < ATTENTE_MAX_S)
 
+    def decouper_ordres(self, texte: str) -> list[str]:
+        """« allume le globe et éteins le projo, puis ferme le volet » -> trois ordres.
+        On ne coupe que devant un verbe d'ordre : « allume le globe et le projo » reste un seul ordre."""
+        from .commande import _RE_ORDRE_DEBUT, corriger_verbe
+        morceaux = re.split(r"\s*(?:,|;|\bet\b|\bpuis\b|\bensuite\b)\s+", texte.strip())
+        ordres: list[str] = []
+        for m in morceaux:
+            if not m:
+                continue
+            if ordres and not _RE_ORDRE_DEBUT.match(corriger_verbe(m)):
+                ordres[-1] += " et " + m   # pas un nouveau verbe : suite de l'ordre précédent
+            else:
+                ordres.append(m)
+        return ordres
+
+    def reconnait_plusieurs(self, texte: str) -> bool:
+        ordres = self.decouper_ordres(texte)
+        return len(ordres) > 1 and all(par_regles(o) is not None for o in ordres)
+
     async def traiter(self, texte: str, conversation: str = "") -> ReponseMaison:
+        ordres = self.decouper_ordres(texte)
+        if len(ordres) > 1 and all(par_regles(o) is not None for o in ordres):
+            # exécutés dans l'ordre ; une question (« Lequel ? ») arrête la série
+            debut = time.perf_counter()
+            textes = []
+            for o in ordres:
+                r = await self._traiter_un(o, conversation)
+                textes.append(r.texte or f"« {o} » : pas compris.")
+                if self.en_attente(conversation):
+                    break
+            return ReponseMaison(True, " ".join(textes),
+                                 {"resolution": f"{len(ordres)} ordres", "duree_ms": round((time.perf_counter() - debut) * 1000)})
+        return await self._traiter_un(texte, conversation)
+
+    async def _traiter_un(self, texte: str, conversation: str = "") -> ReponseMaison:
         debut = time.perf_counter()
         ms = lambda: round((time.perf_counter() - debut) * 1000)  # noqa: E731
 
