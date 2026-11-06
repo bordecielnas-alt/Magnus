@@ -143,7 +143,7 @@ def test_alias_de_piece(maison):
 def test_ambigu_puis_choix_et_alias_appris(maison):
     m, ha = maison
     q = dire(m, "Allume la lumière du salon")
-    assert q.traite and q.texte.startswith("Lequel ?") and not ha.appels
+    assert q.traite and q.texte.startswith("Lequel") and not ha.appels
     assert set(q.detail["candidats"]) == {"light.plafonnier", "light.lampe_pied"}
     assert m.en_attente("c1")
     r = dire(m, "le plafonnier")
@@ -453,8 +453,8 @@ def test_couleur_seule_sur_le_dernier_appareil(maison):
 def test_tout_sans_piece_demande_la_piece(maison):
     m, ha = maison
     q = dire(m, "éteins toutes les lumières")
-    assert q.texte.startswith("Dans quelle pièce ?") and not ha.appels
-    assert "Salon (2)" in q.texte and "Cuisine (1)" in q.texte
+    assert q.texte.startswith("Quelle pièce") and not ha.appels
+    assert "Salon" in q.texte and "Cuisine" in q.texte and "toute la maison" in q.texte and len(q.texte) < 80
     dire(m, "le salon")
     assert {a[2]["entity_id"] for a in ha.appels} == {"light.plafonnier", "light.lampe_pied"}
 
@@ -483,6 +483,13 @@ def test_tout_reponse_sans_piece_devient_nouvelle_demande(maison):
 
 def test_eteins_tout_demande_la_piece(maison):
     m, ha = maison
-    assert dire(m, "éteins tout").texte.startswith("Dans quelle pièce ?") and not ha.appels
+    assert dire(m, "éteins tout").texte.startswith("Quelle pièce") and not ha.appels
     dire(m, "cuisine")
     assert ha.appels == [("light", "turn_off", {"entity_id": "light.cuisine"})]
+
+
+
+def test_question_lequel_courte(maison):
+    m, _ = maison
+    q = dire(m, "allume la lumière du salon").texte
+    assert q in ("Lequel : Plafonnier ou Lampe sur pied ?", "Lequel : Lampe sur pied ou Plafonnier ?")

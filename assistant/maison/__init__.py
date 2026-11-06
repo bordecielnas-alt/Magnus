@@ -252,18 +252,13 @@ class Maison:
         detail = {"commande": cmd.__dict__, "analyse": origine, "resolution": res.raison}
         if res.ambigues:
             self._attentes[conversation] = _Attente(cmd, res.ambigues, time.monotonic())
-            noms = [f"{i}. {e.libelle}" for i, e in enumerate(res.ambigues[:6], 1)]
-            if len(res.ambigues) > 6:
-                noms.append(f"et {len(res.ambigues) - 6} autres")
-            q = "Lequel ? " + " ; ".join(noms) + ". Réponds par le numéro ou le nom (ou « tous »)."
+            q = f"Lequel : {_ou(_noms_courts(res.ambigues))} ?"
             return ReponseMaison(True, q, {**detail, "candidats": [e.entity_id for e in res.ambigues], "duree_ms": ms()})
         pieces = sorted({e.piece or "Sans pièce" for e in res.entites})
         if cmd.tous and cmd.action != "etat" and len(pieces) > 1 and not self._piece_precisee(cmd.cible):
             # Sécurité : « éteins toutes les lumières » sans pièce -> on demande où avant d'agir sur toute la maison
             self._attentes[conversation] = _Attente(cmd, res.entites, time.monotonic(), "piece")
-            compte = [f"{p} ({sum(1 for e in res.entites if (e.piece or 'Sans pièce') == p)})" for p in pieces]
-            q = (f"Dans quelle pièce ? {', '.join(compte)}. "
-                 f"Réponds par une ou plusieurs pièces, ou « toute la maison » ({len(res.entites)} appareils).")
+            q = f"Quelle pièce : {_ou(pieces + ['toute la maison'])} ?"
             return ReponseMaison(True, q, {**detail, "resolution": "pièce demandée", "duree_ms": ms()})
         if not res.entites:
             if suite_meme:  # « moi aussi » n'était sans doute pas une commande : on laisse le modèle répondre
@@ -331,8 +326,7 @@ class Maison:
             p, cands = ambigues[0]
             self._attentes[conversation] = _Attente(Commande(cmd.action, p, cmd.valeur, False, cmd.couleur, cmd.kelvin),
                                                     cands, time.monotonic())
-            noms = " ; ".join(f"{i}. {e.libelle}" for i, e in enumerate(cands, 1))
-            textes.append(f"Pour « {p} », lequel ? {noms}.")
+            textes.append(f"Pour « {p} », lequel : {_ou(_noms_courts(cands))} ?")
             detail["candidats"] = [e.entity_id for e in cands]
         return ReponseMaison(True, " ".join(textes), detail)
 
@@ -544,6 +538,19 @@ class Maison:
         ctx.avant = []
         return r
 
+
+
+def _noms_courts(entites: list[Entite], maxi: int = 4) -> list[str]:
+    """Noms sans la pièce quand tous les candidats sont dans la même pièce ; au plus `maxi`."""
+    meme_piece = len({e.piece for e in entites}) == 1
+    noms = [e.nom if meme_piece else e.libelle for e in entites[:maxi]]
+    if len(entites) > maxi:
+        noms.append(f"les {len(entites)}")
+    return noms
+
+
+def _ou(elements: list[str]) -> str:
+    return elements[0] if len(elements) == 1 else ", ".join(elements[:-1]) + " ou " + elements[-1]
 
 NOMS_COULEURS = {"red": "rouge", "blue": "bleu", "green": "vert", "yellow": "jaune", "orange": "orange",
                  "purple": "violet", "pink": "rose", "cyan": "cyan", "turquoise": "turquoise",

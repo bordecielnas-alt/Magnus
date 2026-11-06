@@ -225,7 +225,7 @@ def creer_app(config: Config | None = None, registre: Registre | None = None,
         return voix.etat()
 
     @app.post("/api/voix/transcrire")
-    async def transcrire(requete: Request) -> dict:
+    async def transcrire(requete: Request, partiel: bool = False) -> dict:
         if not cfg.voix.active:
             raise HTTPException(503, "voix désactivée (voix.active)")
         if not cfg.voix.whisper_present():
@@ -242,7 +242,8 @@ def creer_app(config: Config | None = None, registre: Registre | None = None,
             t = await voix.transcrire(audio, ", ".join(noms))
         except Exception as e:  # noqa: BLE001 - audio illisible, modèle en erreur
             raise HTTPException(422, f"transcription impossible ({e.__class__.__name__})") from e
-        journal.info("voix : « %s » (%.1f s d'audio, %d ms)", t.texte[:120], t.duree_audio_s, t.duree_ms)
+        if not partiel:   # les transcriptions partielles (mots en direct) ne sont pas tracées
+            journal.info("voix : « %s » (%.1f s d'audio, %d ms)", t.texte[:120], t.duree_audio_s, t.duree_ms)
         return {"texte": t.texte, "duree_audio_s": t.duree_audio_s, "duree_ms": t.duree_ms}
 
     @app.post("/api/voix/parler")

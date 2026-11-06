@@ -20,10 +20,18 @@
                   border:1px solid var(--bord); font-size:1.1rem; line-height:1; }
   #reglagesOrbe:hover { color:var(--fg); }
   dialog { border:1px solid var(--bord); border-radius:14px; background:var(--bg); color:var(--fg); padding:18px 20px; width:min(92vw, 380px); }
-  #micro, #hautParleur { padding:0 12px; background:var(--bulle); color:var(--fg); border:1px solid var(--bord); font-size:1.1rem; }
-  #micro.actif { background:#c0392b; color:#fff; border-color:#c0392b; animation:clignote 1s ease-in-out infinite; }
-  #hautParleur[aria-pressed="true"] { border-color:var(--accent); outline:1px solid var(--accent); }
-  @keyframes clignote { 50% { opacity:.6; } }
+  #micro { padding:0 14px; background:var(--bulle); color:var(--fg); border:1px solid var(--bord); font-size:1.1rem; }
+  #micro.actif { background:#c0392b; color:#fff; border-color:#c0392b; }
+  .ecoute { align-self:flex-end; max-width:85%; padding:10px 14px; border-radius:14px; border:2px dashed #c0392b;
+            color:var(--fg); line-height:1.45; }
+  .ecoute .tete { display:flex; align-items:center; gap:8px; font-size:.8rem; color:#c0392b; font-weight:600; }
+  .ecoute .point { width:10px; height:10px; border-radius:50%; background:#c0392b; animation:clignote 1s ease-in-out infinite; }
+  .ecoute .niveau { flex:1; min-width:60px; height:6px; border-radius:3px; background:var(--bord); overflow:hidden; }
+  .ecoute .niveau span { display:block; height:100%; width:0; background:#c0392b; transition:width .08s; }
+  .ecoute .mots { margin-top:4px; min-height:1.4em; }
+  .ecoute .mots:empty::before { content:"Parle, je t'écoute…"; color:var(--muted); font-style:italic; }
+  @keyframes clignote { 50% { opacity:.35; } }
+  dialog .case { display:flex; gap:8px; align-items:center; margin-bottom:14px; font-size:.9rem; color:var(--muted); }
   dialog::backdrop { background:rgba(0,0,0,.45); }
   dialog form { display:block; padding:0; border:0; }
   dialog input[type=range] { width:100%; flex:none; }
@@ -69,8 +77,7 @@
       <option value="raisonnement">Raisonnement</option>
     </select>
     <input id="saisie" autocomplete="off" placeholder="Écris un message…" required>
-    <button type="button" id="micro" title="Parler (clic pour commencer, clic pour envoyer)" aria-label="Parler">🎤</button>
-    <button type="button" id="hautParleur" title="Réponses lues à voix haute" aria-label="Réponses à voix haute" aria-pressed="false">🔈</button>
+    <button type="button" id="micro" title="Parler : je m'arrête tout seul quand tu te tais (re-clic pour arrêter)" aria-label="Parler">🎤</button>
     <button id="envoyer">Envoyer</button>
   </form>
 </main>
@@ -80,6 +87,7 @@
     <div class="ligne">École de magie<div class="ecoles" id="ecoles"></div></div>
     <label class="ligne" for="rgParticules">Particules<input type="range" id="rgParticules" min="0" max="400" step="10"></label>
     <label class="ligne" for="rgBrume">Brume<input type="range" id="rgBrume" min="0" max="100"></label>
+    <label class="case"><input type="checkbox" id="lireTout"> Lire aussi à voix haute les réponses aux messages écrits</label>
     <div class="actions">
       <button type="button" class="discret" id="orbeDefaut">Valeurs par défaut</button>
       <button value="ok">Fermer</button>
@@ -198,7 +206,7 @@ async function envoyerMessage(message, vocal) {
       $('fil').scrollTop = $('fil').scrollHeight;
     }
     historique.push({role: 'user', content: message}, {role: 'assistant', content: texte});
-    if (texte && (vocal || $('hautParleur').getAttribute('aria-pressed') === 'true')) await direAVoixHaute(texte);
+    if (texte && (vocal || $('lireTout').checked)) await direAVoixHaute(texte);
   } catch (e) {
     if (!texte) rep.remove();
     bulle('erreur', 'Erreur : ' + e.message);
@@ -212,16 +220,11 @@ async function envoyerMessage(message, vocal) {
   }
 }
 
-// ----- Voix : micro (clic pour commencer, clic pour envoyer) et lecture des réponses -----
-let enregistreur = null, morceaux = [], fluxMicro = null, lecture = null;
-try { if (localStorage.getItem('voix.hautParleur') === '1') $('hautParleur').setAttribute('aria-pressed', 'true'); } catch (e) {}
-$('hautParleur').onclick = () => {
-  const on = $('hautParleur').getAttribute('aria-pressed') !== 'true';
-  $('hautParleur').setAttribute('aria-pressed', String(on));
-  $('hautParleur').textContent = on ? '🔊' : '🔈';
-  try { localStorage.setItem('voix.hautParleur', on ? '1' : '0'); } catch (e) {}
-};
-if ($('hautParleur').getAttribute('aria-pressed') === 'true') $('hautParleur').textContent = '🔊';
+// ----- Voix : un seul bouton. Clic -> j'écoute ; je m'arrête tout seul après un silence -----
+let enregistreur = null, morceaux = [], fluxMicro = null, lecture = null, bulleEcoute = null;
+let partielEnCours = false, minuteurPartiel = null;
+try { $('lireTout').checked = localStorage.getItem('voix.lireTout') === '1'; } catch (e) {}
+$('lireTout').onchange = () => { try { localStorage.setItem('voix.lireTout', $('lireTout').checked ? '1' : '0'); } catch (e) {} };
 
 $('micro').onclick = async () => {
   if (lecture) { lecture.pause(); lecture = null; }
@@ -230,53 +233,85 @@ $('micro').onclick = async () => {
   try {
     fluxMicro = await navigator.mediaDevices.getUserMedia({audio: {echoCancellation: true, noiseSuppression: true}});
   } catch (e) {
-    bulle('erreur', 'Micro inaccessible : ' + e.message + ' (autorise le micro pour cette page)');
+    bulle('erreur', 'Micro inaccessible : autorise le micro pour cette page.');
     return;
   }
   morceaux = [];
   enregistreur = new MediaRecorder(fluxMicro);
   enregistreur.ondataavailable = ev => { if (ev.data.size) morceaux.push(ev.data); };
   enregistreur.onstop = transcrireEtEnvoyer;
-  enregistreur.start();
+  enregistreur.start(500);   // un morceau toutes les 0,5 s : sert aux mots en direct
   $('micro').classList.add('actif'); $('micro').textContent = '⏹';
+  bulleEcoute = document.createElement('div');
+  bulleEcoute.className = 'ecoute';
+  bulleEcoute.innerHTML = '<div class="tete"><span class="point"></span><span class="temps">0 s</span><span class="niveau"><span></span></span></div><div class="mots"></div>';
+  $('fil').appendChild(bulleEcoute); $('fil').scrollTop = $('fil').scrollHeight;
   orbe.etat('ecoute');
   suivreVolume(fluxMicro);
-  setTimeout(() => { if (enregistreur && enregistreur.state === 'recording') enregistreur.stop(); }, 30000);
+  minuteurPartiel = setInterval(transcriptionPartielle, 1200);
 };
 
+function arreter() { if (enregistreur && enregistreur.state === 'recording') enregistreur.stop(); }
+
 function suivreVolume(flux) {
-  // fait réagir l'orbe à la voix pendant l'enregistrement
+  // niveau du micro, minuteur, et arrêt automatique : 1,2 s de silence après avoir parlé (ou 6 s sans rien)
   try {
     const ctx = new AudioContext(), src = ctx.createMediaStreamSource(flux), an = ctx.createAnalyser();
     an.fftSize = 512; src.connect(an);
-    const buf = new Uint8Array(an.fftSize);
+    const buf = new Uint8Array(an.fftSize), debut = performance.now();
+    let aParle = false, dernierSon = debut;
     const tic = () => {
       if (!enregistreur || enregistreur.state !== 'recording') { ctx.close(); return; }
       an.getByteTimeDomainData(buf);
       let m = 0; for (const v of buf) m = Math.max(m, Math.abs(v - 128));
-      if (m > 12) orbe.impulsion(Math.round(m / 6));
+      const t = performance.now();
+      if (m > 14) { aParle = true; dernierSon = t; orbe.impulsion(Math.round(m / 6)); }
+      if (bulleEcoute) {
+        bulleEcoute.querySelector('.niveau span').style.width = Math.min(100, m * 1.6) + '%';
+        bulleEcoute.querySelector('.temps').textContent = Math.floor((t - debut) / 1000) + ' s';
+      }
+      if ((aParle && t - dernierSon > 1200) || (!aParle && t - debut > 6000) || t - debut > 30000) { arreter(); return; }
       requestAnimationFrame(tic);
     };
     tic();
   } catch (e) {}
 }
 
+async function transcriptionPartielle() {
+  // tes mots s'affichent pendant que tu parles (transcription de tout ce qui a été dit jusqu'ici)
+  if (partielEnCours || !morceaux.length || !enregistreur || enregistreur.state !== 'recording') return;
+  partielEnCours = true;
+  try {
+    const blob = new Blob(morceaux, {type: enregistreur.mimeType || 'audio/webm'});
+    const r = await fetch('/api/voix/transcrire?partiel=1', {method: 'POST', headers: {'Content-Type': blob.type}, body: blob});
+    if (r.ok && bulleEcoute && enregistreur && enregistreur.state === 'recording') {
+      const o = await r.json();
+      if (o.texte) bulleEcoute.querySelector('.mots').textContent = o.texte;
+    }
+  } catch (e) {} finally { partielEnCours = false; }
+}
+
 async function transcrireEtEnvoyer() {
+  clearInterval(minuteurPartiel);
   $('micro').classList.remove('actif'); $('micro').textContent = '🎤';
   if (fluxMicro) fluxMicro.getTracks().forEach(t => t.stop());
   const blob = new Blob(morceaux, {type: enregistreur.mimeType || 'audio/webm'});
   enregistreur = null;
-  if (blob.size < 2000) { orbe.etat('repos'); return; }
+  const finirBulle = () => { if (bulleEcoute) { bulleEcoute.remove(); bulleEcoute = null; } };
+  if (blob.size < 2000) { finirBulle(); orbe.etat('repos'); return; }
+  if (bulleEcoute) bulleEcoute.querySelector('.tete').innerHTML = '<span>Je transcris…</span>';
   orbe.etat('reflexion');
   try {
     const r = await fetch('/api/voix/transcrire', {method: 'POST', headers: {'Content-Type': blob.type}, body: blob});
     const o = await r.json();
+    finirBulle();
     if (!r.ok) throw new Error(o.detail || r.statusText);
     if (!o.texte) { orbe.etat('repos'); bulle('erreur', 'Je n\'ai rien entendu.'); return; }
     await envoyerMessage(o.texte, true);
     const derniere = [...document.querySelectorAll('.msg.moi')].pop();
     if (derniere) derniere.title = 'Transcrit en ' + o.duree_ms + ' ms (' + o.duree_audio_s + ' s d\'audio)';
   } catch (e) {
+    finirBulle();
     bulle('erreur', 'Voix : ' + e.message);
     orbe.etat('erreur');
     setTimeout(() => { if (!occupe) orbe.etat('repos'); }, 4000);
