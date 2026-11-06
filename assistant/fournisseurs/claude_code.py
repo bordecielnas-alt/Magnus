@@ -176,7 +176,7 @@ class FournisseurClaudeCode(Fournisseur):
         if not envoye and resultat.get("result"):
             yield resultat["result"]
 
-    async def repondre(self, messages: list[Message]) -> str:
+    async def repondre(self, messages: list[Message], options: dict | None = None) -> str:
         return "".join([m async for m in self.flux(messages)])
 
     async def disponible(self) -> bool:

@@ -30,17 +30,18 @@ class FournisseurOpenAI(Fournisseur):
             base_url=self.url, headers=entetes, timeout=timeout, transport=transport
         )
 
-    def _corps(self, messages: list[Message], flux: bool) -> dict[str, Any]:
+    def _corps(self, messages: list[Message], flux: bool, options: dict | None = None) -> dict[str, Any]:
         return {
             **self.options,
+            **(options or {}),
             "model": self.modele,
             "messages": [m.en_dict() for m in messages],
             "stream": flux,
         }
 
-    async def repondre(self, messages: list[Message]) -> str:
+    async def repondre(self, messages: list[Message], options: dict | None = None) -> str:
         try:
-            r = await self._client.post("/chat/completions", json=self._corps(messages, False))
+            r = await self._client.post("/chat/completions", json=self._corps(messages, False, options))
             r.raise_for_status()
             return r.json()["choices"][0]["message"]["content"] or ""
         except (httpx.HTTPError, KeyError, IndexError, ValueError) as e:

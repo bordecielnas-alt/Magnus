@@ -31,8 +31,9 @@ class Fournisseur(ABC):
         self.modele = modele
 
     @abstractmethod
-    async def repondre(self, messages: list[Message]) -> str:
-        """Réponse complète. Lève FournisseurIndisponible en cas d'échec."""
+    async def repondre(self, messages: list[Message], options: dict | None = None) -> str:
+        """Réponse complète. `options` surcharge les réglages du fournisseur s'il les gère
+        (temperature, max_tokens…). Lève FournisseurIndisponible en cas d'échec."""
 
     @abstractmethod
     def flux(self, messages: list[Message]) -> AsyncIterator[str]:

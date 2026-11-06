@@ -132,7 +132,7 @@ def _client(**kw):
 
 def test_api_chat_injecte_consigne_avec_nom():
     c, faux = _client(principal="Salut")
-    r = c.post("/api/chat", json={"message": "bonjour",
+    r = c.post("/api/chat", json={"message": "bonjour", "role": "rapide",
                                   "historique": [{"role": "user", "content": "avant"}]}).json()
     assert r["reponse"] == "Salut" and r["fournisseur"] == "a" and r["secours"] is False
     recu = faux["a"].recu
@@ -142,14 +142,15 @@ def test_api_chat_injecte_consigne_avec_nom():
 
 def test_api_chat_flux():
     c, _ = _client(principal="Il fait beau")
-    lignes = [json.loads(l) for l in c.post("/api/chat", json={"message": "météo ?", "flux": True}).text.splitlines()]
+    lignes = [json.loads(l) for l in c.post("/api/chat", json={"message": "météo ?", "flux": True, "role": "rapide"}).text.splitlines()]
+    assert lignes[0]["route"]["raison"] == "choisi à la main"
     assert "".join(l.get("delta", "") for l in lignes) == "Il fait beau "
     assert lignes[-1]["fin"] is True and lignes[-1]["fournisseur"] == "a"
 
 
 def test_api_chat_503_si_tout_en_panne():
     c, _ = _client(principal=None, secours=None)
-    assert c.post("/api/chat", json={"message": "x"}).status_code == 503
+    assert c.post("/api/chat", json={"message": "x", "role": "rapide"}).status_code == 503
 
 
 def test_api_role_inconnu():

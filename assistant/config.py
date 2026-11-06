@@ -8,6 +8,7 @@ ils viennent toujours de la configuration.
 from __future__ import annotations
 
 import os
+import re
 from pathlib import Path
 from typing import Any, Literal, Mapping
 
@@ -76,18 +77,39 @@ class FournisseurConfig(BaseModel):
         return (os.environ if env is None else env).get(self.cle_env, "")
 
 
+class RouteurConfig(BaseModel):
+    role_simple: str = "rapide"
+    role_complexe: str = "raisonnement"
+    classeur: str = "rapide"          # rôle du modèle qui classe ; vide = règles seules
+    delai_classeur_ms: int = Field(default=2500, ge=100)
+    defaut: Literal["simple", "complexe"] = "complexe"
+    longueur_complexe: int = Field(default=220, ge=1)
+    regles_simples: list[str] = Field(default_factory=list)
+    regles_complexes: list[str] = Field(default_factory=list)
+
+
 class Config(BaseModel):
     identite: Identite
     serveur: Serveur = Serveur()
     consigne: str = "Tu es {nom}."
     fournisseurs: dict[str, FournisseurConfig] = Field(default_factory=dict)
     roles: dict[str, str] = Field(default_factory=dict)
+    routeur: RouteurConfig = Field(default_factory=RouteurConfig)
 
     @model_validator(mode="after")
     def _roles_valides(self) -> "Config":
         inconnus = {r: f for r, f in self.roles.items() if f not in self.fournisseurs}
         if inconnus:
             raise ValueError(f"rôles vers des fournisseurs inconnus : {inconnus}")
+        r = self.routeur
+        manquants = [x for x in (r.role_simple, r.role_complexe, r.classeur) if x and x not in self.roles]
+        if manquants:
+            raise ValueError(f"routeur : rôles inconnus {manquants}")
+        for motif in r.regles_simples + r.regles_complexes:
+            try:
+                re.compile(motif)
+            except re.error as e:
+                raise ValueError(f"routeur : règle invalide « {motif} » ({e})") from e
         return self
 
     @property

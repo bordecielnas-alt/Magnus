@@ -52,3 +52,27 @@ roles:
   rapide: ollama-local
   raisonnement: claude
   secours: ollama-local
+
+# Routeur : envoie chaque demande au rôle « rapide » (simple) ou « raisonnement » (complexe).
+# 1. règles ci-dessous (expressions régulières, sans tenir compte des majuscules)
+# 2. sinon le modèle du rôle « classeur » répond SIMPLE ou COMPLEXE
+# 3. sinon « defaut »
+routeur:
+  role_simple: rapide
+  role_complexe: raisonnement
+  classeur: rapide
+  delai_classeur_ms: 4000    # laisse le temps au modèle de se charger s'il dormait
+  defaut: complexe
+  longueur_complexe: 220      # un message plus long que ça part en complexe
+  regles_simples:
+    # commandes de la maison, en début de phrase
+    - '^\s*(peux-tu |tu peux |merci de )?(allume|[ée]teins?|ouvre|ferme|monte|baisse|augmente|diminue|r[ée]gle|mets|coupe|active|d[ée]sactive|lance|arr[êe]te|d[ée]marre|stoppe)\b'
+    - '\b(minuteur|chrono|compte [àa] rebours|r[ée]veil)\b'
+    - '^\s*quelle heure\b'
+    - '^\s*(quelle|combien de) temp[ée]rature\b'
+    - '^\s*il fait (combien|quelle temp[ée]rature)\b'
+    # politesse seule
+    - '^\s*(bonjour|bonsoir|salut|coucou|merci|ok|d.accord|super|parfait|bonne nuit)\b[\s!.,]*\w{0,12}[\s!.]*$'
+  regles_complexes:
+    - '\b(pourquoi|explique|expliquer|analyse|compare|comparer|r[ée]sume|r[ée]sumer|r[ée]dige|[ée]cris|diagnostic|diagnostique|conseille|recommande|planifie|organise)\b'
+    - '\b(aide-moi [àa]|comment (faire|fonctionne|marche|r[ée]parer)|quelle est la diff[ée]rence|quels sont les avantages|que penses-tu)\b'

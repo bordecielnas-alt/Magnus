@@ -1,6 +1,6 @@
 [project]
 name = "homelab-assistant"
-version = "0.3.0"
+version = "0.4.0"
 description = "Assistant personnel homelab : orchestrateur, voix, domotique."
 requires-python = ">=3.12"
 dependencies = [
@@ -21,7 +21,7 @@ build-backend = "setuptools.build_meta"
 include = ["assistant*"]
 
 [tool.setuptools.package-data]
-assistant = ["static/*", "defaults.yaml"]
+assistant = ["static/*", "defaults.yaml", "donnees/*.yaml"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

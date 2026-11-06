@@ -47,7 +47,20 @@ Installation sur le PC : `npm install -g @anthropic-ai/claude-code`, puis `claud
 | Point d'accès | Rôle |
 | --- | --- |
 | `GET /api/fournisseurs` | Fournisseurs, rôles et disponibilité |
-| `POST /api/chat` | `{"message", "historique", "role", "flux"}` ; avec `flux: true`, réponse NDJSON (`delta` puis `fin`) |
+| `POST /api/route` | Décision du routeur seule (sans appeler le modèle) |
+| `POST /api/chat` | `{"message", "historique", "role", "flux"}` (`role` = `auto` par défaut) ; avec `flux: true`, réponse NDJSON (`delta` puis `fin`) |
+
+## Routeur
+
+Avec `role: auto` (par défaut), le routeur choisit le rôle `rapide` (simple) ou `raisonnement` (complexe) :
+
+1. **Règles** de `routeur.regles_simples` / `regles_complexes` (expressions régulières), en moins d'une milliseconde ; un message très long part en complexe.
+2. Sinon, le modèle du rôle `classeur` (qwen2.5:3b par défaut) répond `SIMPLE` ou `COMPLEXE`, en quelques dizaines de ms une fois chargé.
+3. Sinon (classeur absent, trop lent, indécis) : `routeur.defaut` (complexe).
+
+La page affiche sous chaque réponse la catégorie, la raison et le temps de décision.
+
+Évaluation sur les vrais modèles : `python -m assistant.eval_routeur` (ou le bouton du tableau de suivi). Les phrases sont dans `assistant/donnees/phrases_routeur.yaml` : ajoutes-y celles qui sont mal routées.
 
 ## Tests
 

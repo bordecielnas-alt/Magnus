@@ -16,9 +16,11 @@ from pydantic import BaseModel, Field
 from . import __version__
 from .config import Config, charger
 from .fournisseurs import FournisseurIndisponible, Message, Registre, Reponse
+from .routeur import Decision, Routeur
 
 STATIC = Path(__file__).resolve().parent / "static"
 HISTORIQUE_MAX = 20
+ROLE_AUTO = "auto"
 
 
 class Tour(BaseModel):
@@ -29,7 +31,7 @@ class Tour(BaseModel):
 class DemandeChat(BaseModel):
     message: str = Field(min_length=1, max_length=8000)
     historique: list[Tour] = Field(default_factory=list)
-    role: str = "rapide"
+    role: str = ROLE_AUTO   # "auto" = le routeur choisit
     flux: bool = False
 
 
@@ -43,6 +45,7 @@ def _messages(cfg: Config, d: DemandeChat) -> list[Message]:
 def creer_app(config: Config | None = None, registre: Registre | None = None) -> FastAPI:
     cfg = config or charger()
     reg = registre or Registre.depuis_config(cfg)
+    routeur = Routeur(cfg.routeur, reg)
 
     @asynccontextmanager
     async def cycle(app: FastAPI):
@@ -52,6 +55,7 @@ def creer_app(config: Config | None = None, registre: Registre | None = None) ->
     app = FastAPI(title=f"{cfg.identite.nom} — orchestrateur", version=__version__, lifespan=cycle)
     app.state.config = cfg
     app.state.registre = reg
+    app.state.routeur = routeur
 
     @app.get("/health")
     def health() -> dict:
@@ -71,16 +75,32 @@ def creer_app(config: Config | None = None, registre: Registre | None = None) ->
     async def fournisseurs() -> dict:
         return {"roles": reg.roles, "fournisseurs": await reg.etat()}
 
+    @app.post("/api/route")
+    async def route(d: DemandeChat) -> dict:
+        """Décision du routeur seule, sans appeler le modèle choisi (tests, réglages)."""
+        return (await _decider(d)).en_dict()
+
+    async def _decider(d: DemandeChat) -> Decision:
+        precedent = next((t.content for t in reversed(d.historique) if t.role == "user"), "")
+        return await routeur.decider(d.message, precedent)
+
     @app.post("/api/chat")
     async def chat(d: DemandeChat):
-        if d.role not in reg.roles:
+        decision = None
+        if d.role == ROLE_AUTO:
+            decision = await _decider(d)
+            role = decision.role
+        elif d.role in reg.roles:
+            role = d.role
+        else:
             raise HTTPException(400, f"rôle inconnu : {d.role}")
+        route = decision.en_dict() if decision else {"role": role, "raison": "choisi à la main"}
         msgs = _messages(cfg, d)
 
         if not d.flux:
             debut = time.perf_counter()
             try:
-                r = await reg.repondre(d.role, msgs)
+                r = await reg.repondre(role, msgs)
             except FournisseurIndisponible as e:
                 raise HTTPException(503, f"aucun modèle disponible ({e})") from e
             return {
@@ -88,15 +108,17 @@ def creer_app(config: Config | None = None, registre: Registre | None = None) ->
                 "fournisseur": r.fournisseur,
                 "modele": r.modele,
                 "secours": r.secours,
+                "route": route,
                 "duree_ms": round((time.perf_counter() - debut) * 1000),
             }
 
         async def lignes():
-            # NDJSON : {"delta": "..."} puis {"fin": true, ...} ou {"erreur": "..."}
+            # NDJSON : {"route": ...}, puis {"delta": "..."}, puis {"fin": true, ...} ou {"erreur": "..."}
             debut = time.perf_counter()
             premier = None
+            yield _ndjson({"route": route})
             try:
-                async for x in reg.flux(d.role, msgs):
+                async for x in reg.flux(role, msgs):
                     if isinstance(x, Reponse):
                         yield _ndjson({
                             "fin": True,

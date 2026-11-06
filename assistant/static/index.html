@@ -43,7 +43,8 @@
   </header>
   <div id="fil" aria-live="polite"></div>
   <form id="form">
-    <select id="role" aria-label="Rôle du modèle" title="En attendant le routeur : choisis qui répond">
+    <select id="role" aria-label="Rôle du modèle" title="Auto : le routeur choisit. Rapide ou Raisonnement : forcé à la main">
+      <option value="auto" selected>Auto</option>
       <option value="rapide">Rapide</option>
       <option value="raisonnement">Raisonnement</option>
     </select>
@@ -86,7 +87,7 @@ $('form').addEventListener('submit', async ev => {
   $('orbe').classList.add('pense');
   bulle('moi', message);
   const rep = bulle('lui', '');
-  let texte = '';
+  let texte = '', route = null;
   try {
     const r = await fetch('/api/chat', {
       method: 'POST', headers: {'Content-Type': 'application/json'},
@@ -105,11 +106,16 @@ $('form').addEventListener('submit', async ev => {
         const ligne = tampon.slice(0, i); tampon = tampon.slice(i + 1);
         if (!ligne) continue;
         const o = JSON.parse(ligne);
+        if (o.route) route = o.route;
         if (o.delta) { texte += o.delta; rep.firstChild ? rep.firstChild.textContent = texte : rep.textContent = texte; }
         if (o.erreur) throw new Error(o.erreur);
         if (o.fin) {
           const s = document.createElement('small');
-          s.textContent = o.modele + (o.secours ? ' (secours)' : '') + ' · 1er mot ' + o.premier_ms + ' ms · ' + o.duree_ms + ' ms';
+          let r = '';
+          if (route && route.categorie) r = route.categorie + ' (' + route.raison.replace(/^règle : .*/, 'règle') + ', ' + Math.round(route.duree_ms) + ' ms) → ';
+          else if (route) r = 'forcé → ';
+          s.textContent = r + o.modele + (o.secours ? ' (secours)' : '') + ' · 1er mot ' + o.premier_ms + ' ms · ' + o.duree_ms + ' ms';
+          if (route && route.raison) s.title = route.raison;
           rep.appendChild(s);
         }
       }
