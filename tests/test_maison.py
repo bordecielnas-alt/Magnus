@@ -354,3 +354,28 @@ def test_extraction_refuse_cible_inventee():
         async def repondre(self, msgs, options=None):
             return '{"action": "regler", "cible": "Lampe Cristal", "valeur": null}'
     assert asyncio.run(par_modele("plus fort", Modele())) is None
+
+
+@pytest.mark.parametrize("texte,action", [
+    ("plusfort", "relatif"), ("moinsfort", "relatif"), ("reviens", "restaurer"), ("remets", "restaurer"),
+    ("remets la lampe bureau", "restaurer"), ("repasse la lampe bureau en orange", "allumer"),
+    ("remets le plafonnier en bleu", "allumer"),
+])
+def test_suites_tapees_vite(texte, action):
+    assert par_regles(texte, avec_contexte=True).action == action
+
+
+@pytest.mark.parametrize("texte", [
+    "fais l'inventaire des appareils", "liste des lumières de la cave", "quels appareils as-tu ?",
+    "donne-moi la liste des lampes du salon",
+])
+def test_inventaire_reconnu(texte):
+    assert par_regles(texte).action == "inventaire"
+
+
+def test_inventaire_filtre(maison):
+    m, _ = maison
+    tout = dire(m, "fais l'inventaire des appareils").texte
+    assert "Salon" in tout and "Cuisine" in tout and "Serrure" not in tout
+    salon = dire(m, "liste des lumières du salon").texte
+    assert "Plafonnier" in salon and "Lumière cuisine" not in salon and "Prise TV" not in salon

@@ -194,6 +194,8 @@ class Maison:
         ctx = self._contexte(conversation)
         cmd = par_regles(texte, avec_contexte=ctx is not None)
         origine = "règles"
+        if cmd and cmd.action == "inventaire":
+            return ReponseMaison(True, await self.lister(cmd.cible), {"resolution": "inventaire", "duree_ms": ms()})
         if cmd and cmd.action == "restaurer" and not ctx:
             return ReponseMaison(True, "Je n'ai pas d'action récente à annuler dans cette conversation. Rien n'a été fait.",
                                  {"resolution": "rien à annuler", "duree_ms": ms()})
@@ -252,6 +254,30 @@ class Maison:
         proches = [e for e in proches[:3] if c & (e.mots_nom() | e.mots_piece())]
         suite = f" Tu voulais dire : {', '.join(e.libelle for e in proches)} ?" if proches else ""
         return f"Je ne trouve aucun appareil qui corresponde à « {propre} ». Rien n'a été fait.{suite}"
+
+    async def lister(self, filtre: str) -> str:
+        """« Fais l'inventaire des lumières de la cave » : appareils groupés par pièce, avec leur état."""
+        from .resolution import INDICES_DOMAINE
+        entites = await self.inventaire.obtenir()
+        if not entites:
+            return f"Je n'ai pas pu lire l'inventaire ({self.inventaire.erreur or 'vide'})."
+        f = mots(filtre) - {"appareil", "equipement", "inventaire", "liste", "maison"}
+        domaines = set().union(*(INDICES_DOMAINE.get(w, set()) for w in f)) if f else set()
+        pieces = f - set(INDICES_DOMAINE)
+        from .resolution import MOTS_LUMIERE
+        lumieres_seules = bool(f & MOTS_LUMIERE) and not f & {"prise", "interrupteur"}
+        choix = [e for e in entites
+                 if (not domaines or e.domaine in domaines)
+                 and not (lumieres_seules and e.domaine == "switch" and not e.mots_nom() & MOTS_LUMIERE)
+                 and (not pieces or pieces & (e.mots_piece() | e.mots_nom()))]
+        if not choix:
+            return f"Je ne vois aucun appareil pour « {filtre} »."
+        par_piece: dict[str, list[str]] = {}
+        for e in sorted(choix, key=lambda x: (x.piece or "~", x.nom.lower())):
+            par_piece.setdefault(e.piece or "Sans pièce", []).append(f"{e.nom} ({ETATS_FR.get(e.etat, e.etat or '?')})")
+        lignes = [f"{p} : {', '.join(n)}" for p, n in par_piece.items()]
+        entete = f"{len(choix)} appareil{'s' if len(choix) > 1 else ''} pilotable{'s' if len(choix) > 1 else ''}"
+        return entete + " —\n" + "\n".join(lignes)
 
     async def apprendre_d_assist(self, texte: str, entity_ids: list[str], conversation: str = "") -> str:
         """L'agent Assist a agi là où la maison n'a rien trouvé : on retient la cible comme alias

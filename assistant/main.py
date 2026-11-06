@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import time
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -45,6 +46,15 @@ class DemandeChat(BaseModel):
     role: str = ROLE_AUTO   # "auto" = le routeur choisit
     flux: bool = False
     conversation: str = Field(default="", max_length=64)   # identifiant choisi par la page
+
+
+# Les petits modèles imitent les réponses « C'est fait : … » vues dans l'historique :
+# une telle phrase sortie d'un modèle est une invention (le modèle n'a aucun accès à la maison).
+RE_FAUSSE_ACTION = re.compile(
+    r"^\s*(?:c.est (?:fait|remis|allum|[ée]teint)|j.ai (?:allum|[ée]teint|mis|remis|r[ée]gl|ouvert|ferm|baiss|augment)"
+    r"|(?:je |)(?:viens d.)?(?:allum|[ée]tein)[a-zé]*\s)", re.IGNORECASE)
+REPONSE_HONNETE = ("Je n'ai pas compris cette commande, donc rien n'a été fait. Essaie par exemple "
+                   "« Allume … », « Éteins … », « Mets … en rouge », « plus fort » ou « annule ».")
 
 
 NOTE_MAISON = (
@@ -184,6 +194,8 @@ def creer_app(config: Config | None = None, registre: Registre | None = None,
         _tracer(route, d.message)
 
         msgs = _messages(cfg, d)
+        # garde-fou : le modèle rapide ne doit pas prétendre avoir agi sur la maison
+        garde = ha.configure and role == cfg.routeur.role_simple
         if echec_ha:
             msgs.insert(1, Message("system", NOTE_HA_ECHEC.format(code=echec_ha)))
 
@@ -193,6 +205,9 @@ def creer_app(config: Config | None = None, registre: Registre | None = None,
                 r = await reg.repondre(role, msgs)
             except FournisseurIndisponible as e:
                 raise HTTPException(503, f"aucun modèle disponible ({e})") from e
+            if garde and RE_FAUSSE_ACTION.match(r.texte):
+                journal.info("réponse inventée remplacée : %s", r.texte[:120])
+                r.texte = REPONSE_HONNETE
             return {
                 "reponse": r.texte,
                 "fournisseur": r.fournisseur,
@@ -207,8 +222,32 @@ def creer_app(config: Config | None = None, registre: Registre | None = None,
             debut = time.perf_counter()
             premier = None
             yield _ndjson({"route": route})
+            tampon, verifie = "", not garde
             try:
                 async for x in reg.flux(role, msgs):
+                    if not isinstance(x, Reponse) and not verifie:
+                        # on retient le début de la réponse pour vérifier qu'elle n'invente pas une action
+                        tampon += x
+                        if len(tampon) < 40:
+                            continue
+                        verifie = True
+                        if RE_FAUSSE_ACTION.match(tampon):
+                            journal.info("réponse inventée remplacée : %s", tampon[:120])
+                            yield _ndjson({"delta": REPONSE_HONNETE})
+                            tampon = None
+                            continue
+                        x, tampon = tampon, ""
+                    if tampon is None and not isinstance(x, Reponse):
+                        continue  # suite de la réponse inventée : ignorée
+                    if isinstance(x, Reponse) and tampon:
+                        # réponse courte (< 40 caractères) jamais vérifiée : on la vérifie maintenant
+                        if RE_FAUSSE_ACTION.match(tampon):
+                            journal.info("réponse inventée remplacée : %s", tampon[:120])
+                            tampon = REPONSE_HONNETE
+                        if premier is None:
+                            premier = round((time.perf_counter() - debut) * 1000)
+                        yield _ndjson({"delta": tampon})
+                        tampon = ""
                     if isinstance(x, Reponse):
                         journal.info("réponse %s : %s", x.fournisseur, x.texte[:160].replace("\n", " "))
                         yield _ndjson({

@@ -17,7 +17,7 @@ from .texte import normaliser
 # « meme » = même action que la dernière (« la cuisine aussi ») ; « relatif » = plus / moins ;
 # « restaurer » = remettre l'état d'avant la dernière action.
 ACTIONS = ("allumer", "eteindre", "ouvrir", "fermer", "regler", "etat")
-ACTIONS_CONTEXTE = ("meme", "relatif", "restaurer")
+ACTIONS_CONTEXTE = ("meme", "relatif", "restaurer", "inventaire")
 
 
 @dataclass
@@ -78,7 +78,7 @@ _VERBES = [
     ("eteindre", rf"[ée]teins?|[ée]teindre|[ée]teign(?:ez|ons|ent)|coup{_T}|d[ée]sactiv{_T}|arr[êeé]t{_T}|stopp?{_T}"),
     ("ouvrir", rf"ouvr(?:e|es|ez|ir|ons|ent)?|l[èe]v{_T} (?:le|les) (?:volets?|stores?)|remont{_T}|mont{_T} (?:le|les) (?:volets?|stores?)"),
     ("fermer", rf"ferm{_T}|baiss{_T} (?:le|les) (?:volets?|stores?)|descend(?:s|ez|re|ons|ent)?"),
-    ("regler", rf"r[éeè]gl{_T}|mets?|mettre|mont{_T}|baiss{_T}|augment{_T}|diminu{_T}|pass{_T}"),
+    ("regler", rf"r[éeè]gl{_T}|(?:re)?mets?|(?:re)?mettre|mont{_T}|baiss{_T}|augment{_T}|diminu{_T}|(?:re)?pass{_T}"),
 ]
 _RE_ORDRE = [(a, re.compile(rf"^\s*{_POLI}(?:{v})\b\s*(.*)$", re.IGNORECASE)) for a, v in _VERBES]
 _RE_VALEUR = re.compile(r"(\d+(?:[.,]\d+)?)\s*(%|pour ?cent|degr[ée]s?|°)?", re.IGNORECASE)
@@ -99,7 +99,7 @@ _RE_AUSSI = re.compile(
     r"|(?P<b>.+?)\s+aussi)\s*[.!?]*$", re.IGNORECASE)
 _RE_RELATIF = re.compile(
     r"^\s*(?:(?:un\s+(?:peu|poil)|encore|beaucoup)\s+)?(?P<sens>plus|moins)"
-    r"(?:\s+(?:fort|lumineux|lumineuse|clair|claire|haut|chaud|vite|de lumi[èe]re))?\s*[.!?]*$"
+    r"(?:\s*(?:fort|lumineux|lumineuse|clair|claire|haut|chaud|vite|de lumi[èe]re))?\s*[.!?]*$"
     r"|^\s*(?P<v>augmente|monte|baisse|diminue)\s*(?:-?(?:le|la|les))?(?:\s+(?:un peu|encore))?\s*[.!?]*$",
     re.IGNORECASE)
 _RE_RESTAURER = re.compile(
@@ -107,7 +107,8 @@ _RE_RESTAURER = re.compile(
     r"(?:comme\s+(?:avant|il\s+[ée]tait|elle\s+[ée]tait|c.[ée]tait|tout\s+[àa]\s+l.heure)|[àa]\s+l.[ée]tat\s+pr[ée]c[ée]dent)"
     r"|^\s*annule(?:\s+(?:[çc]a|la derni[èe]re action|ce que tu viens de faire))?\s*[.!?]*$"
     r"|^\s*(?:reviens|retourne|retour|on revient)\s+(?:en\s+)?arri[èe]re\s*[.!?]*$"
-    r"|^\s*(?:d[ée]fais|undo)(?:\s+[çc]a)?\s*[.!?]*$",
+    r"|^\s*(?:d[ée]fais|undo)(?:\s+[çc]a)?\s*[.!?]*$"
+    r"|^\s*(?:reviens|remets?|r[ée]tablis)(?:\s*-?(?:le|la|les|tout|[çc]a))?\s*[.!?]*$",
     re.IGNORECASE)
 
 # Fautes de frappe sur le verbe : forme « canonique » (sans accents, lettres doublées réduites)
@@ -137,13 +138,30 @@ def corriger_verbe(texte: str) -> str:
     return texte
 
 
+_RE_INVENTAIRE = re.compile(
+    r"^\s*(?:(?:fais|donne|montre|affiche|dis)(?:-?moi)?\s*(?:l.inventaire|la liste)|liste|inventaire)\s+(?:de |des |du |d.)?(?P<quoi>[^?]*?)"
+    r"(?:\s+(?:du|de la|de l.|des|dans|au|à la|a la)\s+(?P<ou>[^?]+?))?\s*[.!?]*$"
+    r"|^\s*quels? (?:sont les |)(?P<quoi2>appareils|lumi[èe]res|lampes|prises|volets|[ée]quipements)"
+    r"(?:\s+(?:as-tu|connais-tu|tu connais|tu vois|y a-t-il|il y a|sont allum[ée]e?s|vois-tu))?"
+    r"(?:\s+(?:du|de la|de l.|des|dans|au|à la|a la)\s+(?P<ou2>[^?]+?))?\s*[.!?]*$",
+    re.IGNORECASE)
+
+
 def par_regles(texte: str, avec_contexte: bool = False) -> Commande | None:
     """Commande reconnue par les règles. `avec_contexte` : accepte aussi les suites de conversation
     (« éteins-le », « la cuisine aussi », « plus fort », « remets comme avant »)."""
     t = corriger_verbe(texte.strip().rstrip("!."))
+    m = _RE_INVENTAIRE.match(t)
+    if m and (m.group("quoi") is not None or m.group("quoi2")):
+        quoi = (m.group("quoi") or m.group("quoi2") or "").strip()
+        ou = (m.group("ou") or m.group("ou2") or "").strip()
+        return Commande("inventaire", " ".join(x for x in (quoi, ou) if x) or "appareils")
     if _RE_RESTAURER.match(t):
         return Commande("restaurer", "")   # même sans contexte : la maison répondra qu'il n'y a rien à annuler
     if avec_contexte:
+        # « remets la lampe bureau » (sans couleur ni valeur) = la remettre comme avant
+        if re.match(r"^\s*remets?\s+(?!.*\b(?:en|au)\s)(?!.*\s[àa]\s)(?!.*\d)\S.*$", t, re.IGNORECASE):
+            return Commande("restaurer", "")
         m = _RE_RELATIF.match(t)
         if m:
             sens = (m.group("sens") or "").lower()
