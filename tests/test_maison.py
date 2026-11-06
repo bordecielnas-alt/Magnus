@@ -379,3 +379,30 @@ def test_inventaire_filtre(maison):
     assert "Salon" in tout and "Cuisine" in tout and "Serrure" not in tout
     salon = dire(m, "liste des lumières du salon").texte
     assert "Plafonnier" in salon and "Lumière cuisine" not in salon and "Prise TV" not in salon
+
+
+def test_nombre_dans_un_nom_n_est_pas_une_valeur():
+    c = par_regles("etteins globe et L3")
+    assert c.valeur is None and c.cible == "globe et L3"
+    assert par_regles("mets le salon à 30").valeur == 30
+
+
+def test_plusieurs_cibles(maison):
+    m, ha = maison
+    r = dire(m, "éteins le plafonnier et la lumière de la cuisine")
+    assert {a[2]["entity_id"] for a in ha.appels} == {"light.plafonnier", "light.cuisine"}
+    assert "Plafonnier" in r.texte and "Lumière cuisine" in r.texte and "%" not in r.texte
+
+
+def test_plusieurs_cibles_dont_une_introuvable(maison):
+    m, ha = maison
+    r = dire(m, "allume le plafonnier, la licorne et le volet")
+    assert {a[2]["entity_id"] for a in ha.appels} == {"light.plafonnier", "cover.volet_chambre"}
+    assert "licorne" in r.texte
+
+
+def test_type_partage_entre_cibles(maison):
+    m, ha = maison
+    dire(m, "allume la lumière de la cuisine et du salon")
+    ids = {a[2]["entity_id"] for a in ha.appels}
+    assert "light.cuisine" in ids and "switch.prise_tv" not in ids

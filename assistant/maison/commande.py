@@ -81,7 +81,7 @@ _VERBES = [
     ("regler", rf"r[éeè]gl{_T}|(?:re)?mets?|(?:re)?mettre|mont{_T}|baiss{_T}|augment{_T}|diminu{_T}|(?:re)?pass{_T}"),
 ]
 _RE_ORDRE = [(a, re.compile(rf"^\s*{_POLI}(?:{v})\b\s*(.*)$", re.IGNORECASE)) for a, v in _VERBES]
-_RE_VALEUR = re.compile(r"(\d+(?:[.,]\d+)?)\s*(%|pour ?cent|degr[ée]s?|°)?", re.IGNORECASE)
+_RE_VALEUR = re.compile(r"(?<![\w.,])(\d+(?:[.,]\d+)?)(?![\w.,])\s*(%|pour ?cent|degr[ée]s?|°)?", re.IGNORECASE)
 _RE_ETAT = re.compile(
     r"^\s*(?:est[- ]ce que\s+)?(.+?)\s+(?:est|sont)(?:[- ](?:elle|il|elles|ils))?\s+"
     r"(allum\w*|[ée]teint\w*|ouvert\w*|ferm\w*|en marche|arr[êeé]t\w*)\s*\??\s*$"

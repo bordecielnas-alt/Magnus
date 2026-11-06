@@ -226,6 +226,11 @@ class Maison:
         if not entites:
             return ReponseMaison(False, detail={"commande": cmd.__dict__, "analyse": origine,
                                                 "raison": self.inventaire.erreur or "inventaire vide", "duree_ms": ms()})
+        parties = [p.strip() for p in re.split(r"\s*(?:,|\bet\b|\bpuis\b)\s*", cmd.cible) if p.strip()]
+        if len(parties) > 1:
+            r = await self._plusieurs(cmd, parties, entites, conversation)
+            r.detail.update(commande=cmd.__dict__, analyse=origine, duree_ms=ms())
+            return r
         res = resoudre(cmd.cible, cmd.action, entites, cmd.tous, self.alias.table())
         detail = {"commande": cmd.__dict__, "analyse": origine, "resolution": res.raison}
         if res.ambigues:
@@ -255,13 +260,50 @@ class Maison:
         suite = f" Tu voulais dire : {', '.join(e.libelle for e in proches)} ?" if proches else ""
         return f"Je ne trouve aucun appareil qui corresponde à « {propre} ». Rien n'a été fait.{suite}"
 
+    async def _plusieurs(self, cmd: Commande, parties: list[str], entites: list[Entite],
+                         conversation: str) -> ReponseMaison:
+        """Chaque partie est cherchée séparément ; on agit sur celles qui sont claires et on dit le reste."""
+        from .resolution import INDICES_DOMAINE
+        trouves: list[Entite] = []
+        introuvables, ambigues = [], []
+        # « la lumière de la cuisine et du salon » : le type (« lumière ») vaut pour toutes les parties
+        type_commun = [w for w in mots(parties[0]) if w in INDICES_DOMAINE]
+        parties = [p if (mots(p) & set(INDICES_DOMAINE)) or not type_commun or i == 0
+                   else f"{' '.join(type_commun)} {p}" for i, p in enumerate(parties)]
+        for p in parties:
+            res = resoudre(p, cmd.action, entites, cmd.tous, self.alias.table())
+            if res.entites:
+                trouves += [e for e in res.entites if e not in trouves]
+            elif res.ambigues:
+                ambigues.append((p, res.ambigues))
+            else:
+                introuvables.append(p)
+        if not trouves and not ambigues:
+            return ReponseMaison(False, self.introuvable(" et ".join(parties)), {"resolution": "aucun appareil ne correspond"})
+        textes, detail = [], {"resolution": "plusieurs cibles"}
+        if trouves:
+            r = await self._executer(Commande(cmd.action, "", cmd.valeur, False, cmd.couleur, cmd.kelvin),
+                                     trouves, conversation)
+            textes.append(r.texte)
+            detail.update(r.detail)
+        if introuvables:
+            textes.append(f"Je ne trouve pas : {', '.join(f'« {p} »' for p in introuvables)}.")
+        if ambigues:
+            p, cands = ambigues[0]
+            self._attentes[conversation] = _Attente(Commande(cmd.action, p, cmd.valeur, False, cmd.couleur, cmd.kelvin),
+                                                    cands, time.monotonic())
+            noms = " ; ".join(f"{i}. {e.libelle}" for i, e in enumerate(cands, 1))
+            textes.append(f"Pour « {p} », lequel ? {noms}.")
+            detail["candidats"] = [e.entity_id for e in cands]
+        return ReponseMaison(True, " ".join(textes), detail)
+
     async def lister(self, filtre: str) -> str:
         """« Fais l'inventaire des lumières de la cave » : appareils groupés par pièce, avec leur état."""
         from .resolution import INDICES_DOMAINE
         entites = await self.inventaire.obtenir()
         if not entites:
             return f"Je n'ai pas pu lire l'inventaire ({self.inventaire.erreur or 'vide'})."
-        f = mots(filtre) - {"appareil", "equipement", "inventaire", "liste", "maison"}
+        f = mots(filtre) - {"appareil", "equipement", "inventaire", "liste", "maison", "objet", "truc", "chose"}
         domaines = set().union(*(INDICES_DOMAINE.get(w, set()) for w in f)) if f else set()
         pieces = f - set(INDICES_DOMAINE)
         from .resolution import MOTS_LUMIERE
@@ -338,7 +380,7 @@ class Maison:
         if faits:
             verbe = VERBES_FAIT.get(cmd.action, "fait")
             details = []
-            if cmd.valeur is not None:
+            if cmd.valeur is not None and cmd.action in ("regler", "allumer"):
                 details.append(f"{cmd.valeur:g} °C" if faits[0].domaine == "climate" else f"{cmd.valeur:g} %")
             if cmd.couleur or cmd.kelvin:
                 details.append(_nom_couleur(cmd))
