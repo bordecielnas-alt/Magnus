@@ -70,7 +70,8 @@ def test_arguments_sans_outils_et_consigne(tmp_path):
     a = f.args_vus
     assert a[a.index("--tools") + 1] == ""
     assert "--strict-mcp-config" in a and "--no-session-persistence" in a
-    assert a[a.index("--system-prompt") + 1] == "Tu es Akatosh."
+    consigne = a[a.index("--system-prompt") + 1]
+    assert consigne.startswith("Tu es Akatosh.") and cc.NOTE_SANS_OUTILS in consigne
     assert a[a.index("--model") + 1] == "sonnet"
 
 

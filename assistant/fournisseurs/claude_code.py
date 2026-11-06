@@ -28,6 +28,14 @@ FIN = object()  # marque la fin du flux dans la file
 VARS_EXCLUES_PREFIXES = ("CLAUDECODE", "CLAUDE_CODE_", "CLAUDE_AGENT_")
 VARS_EXCLUES = {"ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN"}
 
+# Le binaire ajoute toujours des infos sur sa machine (dossier, système, shell) ; sans cette
+# note, le modèle prétend avoir un shell alors qu'il n'a aucun outil.
+NOTE_SANS_OUTILS = (
+    "Tu n'as aucun outil : tu ne peux ni exécuter de commande, ni lire ou écrire de fichier, "
+    "ni naviguer sur le web. Les informations techniques ajoutées sur ta machine d'exécution "
+    "(dossier, système, shell) ne concernent pas l'utilisateur : n'en parle pas."
+)
+
 
 def resoudre_binaire(commande: str) -> str | None:
     """Chemin du binaire. Sous Windows, préfère claude.exe au lanceur npm claude.cmd."""
@@ -89,8 +97,7 @@ class FournisseurClaudeCode(Fournisseur):
             "--no-session-persistence",
             "--model", self.modele,
         ]
-        if systeme:
-            args += ["--system-prompt", systeme]
+        args += ["--system-prompt", (systeme + "\n\n" + NOTE_SANS_OUTILS).strip()]
         if self.effort:
             args += ["--effort", self.effort]
         return args
