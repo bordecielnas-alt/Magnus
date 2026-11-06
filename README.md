@@ -32,6 +32,17 @@ Priorité : variables d'environnement > `config.yaml` > `defaults.yaml`.
 | `ASSISTANT_PORT` | Port d'écoute (8080) |
 | `ASSISTANT_CONFIG` | Chemin d'un `config.yaml` |
 
+## Modèles (fournisseurs)
+
+Chaque modèle est un « fournisseur » interchangeable, déclaré dans la config (`fournisseurs:`) et associé à un rôle (`roles:` : `rapide`, `raisonnement`, `secours`). Le type `openai` couvre toute API compatible OpenAI : Ollama, LM Studio, vLLM ou une clé API. Si le fournisseur d'un rôle ne répond pas, l'orchestrateur bascule sur celui du rôle `secours`.
+
+Par défaut : Ollama sur `127.0.0.1:11434` avec `qwen2.5:3b`. Exemples dans `config/config.example.yaml`.
+
+| Point d'accès | Rôle |
+| --- | --- |
+| `GET /api/fournisseurs` | Fournisseurs, rôles et disponibilité |
+| `POST /api/chat` | `{"message", "historique", "role", "flux"}` ; avec `flux: true`, réponse NDJSON (`delta` puis `fin`) |
+
 ## Tests
 
 ```powershell

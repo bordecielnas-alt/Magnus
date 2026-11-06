@@ -9,10 +9,10 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal, Mapping
 
 import yaml
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 RACINE = Path(__file__).resolve().parent.parent
 DEFAUTS = Path(__file__).resolve().parent / "defaults.yaml"
@@ -51,9 +51,38 @@ class Serveur(BaseModel):
     port: int = Field(default=8080, ge=1, le=65535)
 
 
+class FournisseurConfig(BaseModel):
+    type: Literal["openai"]
+    url: str = Field(min_length=1)
+    modele: str = Field(min_length=1)
+    cle_env: str = ""
+    timeout: float = Field(default=60, gt=0)
+    options: dict[str, Any] = Field(default_factory=dict)
+
+    def cle(self, env: Mapping[str, str] | None = None) -> str:
+        """Lit la clé API dans la variable d'environnement indiquée (vide si aucune)."""
+        if not self.cle_env:
+            return ""
+        return (os.environ if env is None else env).get(self.cle_env, "")
+
+
 class Config(BaseModel):
     identite: Identite
     serveur: Serveur = Serveur()
+    consigne: str = "Tu es {nom}."
+    fournisseurs: dict[str, FournisseurConfig] = Field(default_factory=dict)
+    roles: dict[str, str] = Field(default_factory=dict)
+
+    @model_validator(mode="after")
+    def _roles_valides(self) -> "Config":
+        inconnus = {r: f for r, f in self.roles.items() if f not in self.fournisseurs}
+        if inconnus:
+            raise ValueError(f"rôles vers des fournisseurs inconnus : {inconnus}")
+        return self
+
+    @property
+    def consigne_effective(self) -> str:
+        return self.consigne.replace("{nom}", self.identite.nom)
 
 
 def _lire_yaml(chemin: Path) -> dict[str, Any]:

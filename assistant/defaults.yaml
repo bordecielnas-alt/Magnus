@@ -12,3 +12,33 @@ identite:
 serveur:
   hote: "0.0.0.0"
   port: 8080
+
+# Consigne système envoyée aux modèles. {nom} est remplacé par le nom ci-dessus.
+consigne: >-
+  Tu es {nom}, l'assistant personnel d'un foyer. Tu réponds en français,
+  de façon claire et brève, sauf si on te demande des détails.
+
+# Fournisseurs de modèles. Chaque entrée est interchangeable.
+#   type     : "openai" = toute API compatible OpenAI (Ollama, LM Studio, vLLM, clé API…)
+#   url      : URL de base de l'API (se termine en général par /v1)
+#   modele   : nom du modèle côté fournisseur
+#   cle_env  : NOM d'une variable d'environnement qui contient la clé (jamais la clé ici)
+#   timeout  : secondes
+#   options  : paramètres passés tels quels (temperature, max_tokens…)
+fournisseurs:
+  ollama-local:
+    type: openai
+    url: "http://127.0.0.1:11434/v1"
+    modele: "qwen2.5:3b"
+    timeout: 60
+    options:
+      temperature: 0.4
+
+# Quel fournisseur joue quel rôle. Le routeur (plus tard) choisira le rôle.
+#   rapide        : commandes simples, réponses courtes
+#   raisonnement  : conversation, diagnostic (Claude à venir)
+#   secours       : utilisé si le fournisseur du rôle demandé ne répond pas
+roles:
+  rapide: ollama-local
+  raisonnement: ollama-local
+  secours: ollama-local

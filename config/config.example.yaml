@@ -5,3 +5,19 @@
 identite:
   nom: "Magnus"
   wake_word: ""   # vide = suit le nom
+
+# Exemple : Ollama sur Unraid, plus un modèle plus gros sur le PC quand il est allumé.
+# fournisseurs:
+#   ollama-local:
+#     url: "http://192.168.1.10:11434/v1"   # adresse d'Unraid vue depuis le conteneur
+#   ollama-pc:
+#     type: openai
+#     url: "http://192.168.1.20:11434/v1"
+#     modele: "qwen2.5:7b"
+#   api-externe:
+#     type: openai
+#     url: "https://api.exemple.com/v1"
+#     modele: "nom-du-modele"
+#     cle_env: "CLE_API_EXTERNE"             # la clé reste dans une variable d'environnement
+# roles:
+#   raisonnement: ollama-pc
