@@ -47,8 +47,19 @@ class DemandeChat(BaseModel):
     conversation: str = Field(default="", max_length=64)   # identifiant choisi par la page
 
 
+NOTE_MAISON = (
+    "Les réponses précédentes qui donnent l'état d'un appareil ou confirment une action (« C'est fait… », "
+    "« … : allumé ») viennent du module maison de l'assistant, relié à Home Assistant : elles sont fiables. "
+    "Toi, dans ce message, tu n'as pas accès à la maison. Si on te demande d'agir sur un appareil, "
+    "dis simplement que la commande n'a pas été reconnue et propose une formulation comme "
+    "« Allume … », « Éteins … » ou « … est-il allumé ? »."
+)
+
+
 def _messages(cfg: Config, d: DemandeChat) -> list[Message]:
     msgs = [Message("system", cfg.consigne_effective)]
+    if cfg.home_assistant.url:
+        msgs.append(Message("system", NOTE_MAISON))
     msgs += [Message(t.role, t.content) for t in d.historique[-HISTORIQUE_MAX:]]
     msgs.append(Message("user", d.message))
     return msgs
@@ -127,7 +138,11 @@ def creer_app(config: Config | None = None, registre: Registre | None = None,
     @app.post("/api/chat")
     async def chat(d: DemandeChat):
         decision = None
-        if d.role == ROLE_AUTO:
+        if d.role == ROLE_AUTO and ha.configure and (maison.en_attente(d.conversation) or maison.reconnait(d.message)):
+            # Commande de maison reconnue (ou réponse à « Lequel ? ») : inutile de consulter le routeur
+            decision = Decision(SIMPLE, cfg.routeur.role_simple, "commande maison", 0.0)
+            role = decision.role
+        elif d.role == ROLE_AUTO:
             decision = await _decider(d)
             role = decision.role
         elif d.role in reg.roles:

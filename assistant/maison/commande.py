@@ -24,12 +24,14 @@ class Commande:
 
 
 _POLI = r"(?:(?:peux[- ]tu|tu peux|pourrais[- ]tu|merci de|veux[- ]tu|est[- ]ce que tu peux)\s+)?"
+# Terminaisons de verbe à l'impératif / infinitif / présent : « Fermeture » n'est pas « ferme »
+_T = r"(?:e|es|ez|er|ons|ent)?"
 _VERBES = [
-    ("allumer", r"allum\w*|active\w*|d[ée]marr\w*|lanc\w*|mets? en marche"),
-    ("eteindre", r"[ée]tei\w*|[ée]teign\w*|coup\w*|d[ée]sactiv\w*|arr[êeé]t\w*|stopp?\w*"),
-    ("ouvrir", r"ouvr\w*|l[èe]v\w* (?:le|les) (?:volets?|stores?)|remont\w*|mont\w* (?:le|les) (?:volets?|stores?)"),
-    ("fermer", r"ferm\w*|baiss\w* (?:le|les) (?:volets?|stores?)|descend\w*"),
-    ("regler", r"r[éeè]gl\w*|mets?|monte\w*|baiss\w*|augment\w*|diminu\w*|passe\w*"),
+    ("allumer", rf"allum{_T}|activ{_T}|d[ée]marr{_T}|lanc{_T}|mets? en marche"),
+    ("eteindre", rf"[ée]teins?|[ée]teindre|[ée]teign(?:ez|ons|ent)|coup{_T}|d[ée]sactiv{_T}|arr[êeé]t{_T}|stopp?{_T}"),
+    ("ouvrir", rf"ouvr(?:e|es|ez|ir|ons|ent)?|l[èe]v{_T} (?:le|les) (?:volets?|stores?)|remont{_T}|mont{_T} (?:le|les) (?:volets?|stores?)"),
+    ("fermer", rf"ferm{_T}|baiss{_T} (?:le|les) (?:volets?|stores?)|descend(?:s|ez|re|ons|ent)?"),
+    ("regler", rf"r[éeè]gl{_T}|mets?|mettre|mont{_T}|baiss{_T}|augment{_T}|diminu{_T}|pass{_T}"),
 ]
 _RE_ORDRE = [(a, re.compile(rf"^\s*{_POLI}(?:{v})\b\s*(.*)$", re.IGNORECASE)) for a, v in _VERBES]
 _RE_VALEUR = re.compile(r"(\d+(?:[.,]\d+)?)\s*(%|pour ?cent|degr[ée]s?|°)?", re.IGNORECASE)
@@ -42,8 +44,38 @@ _RE_ETAT = re.compile(
 _RE_TOUS = re.compile(r"\b(tou(?:te)?s?)\b", re.IGNORECASE)
 
 
+# Fautes de frappe sur le verbe : forme « canonique » (sans accents, lettres doublées réduites)
+# -> verbe correct. « etteins », « alume », « éttein » sont reconnus.
+_VERBES_CANONIQUES = [
+    ("alum", "allume"), ("eteign", "éteins"), ("etein", "éteins"), ("etei", "éteins"),
+    ("ouvr", "ouvre"), ("ferm", "ferme"), ("regl", "règle"), ("coup", "coupe"),
+    ("desactiv", "désactive"), ("activ", "active"), ("demar", "démarre"), ("aret", "arrête"),
+]
+
+
+def _canon(mot: str) -> str:
+    return re.sub(r"(.)\1+", r"\1", normaliser(mot))
+
+
+def corriger_verbe(texte: str) -> str:
+    """Remplace un premier mot mal tapé par le verbe reconnu ; sinon renvoie le texte tel quel."""
+    m = re.match(r"\s*(\S+)(.*)$", texte, re.DOTALL)
+    if not m:
+        return texte
+    c = _canon(m.group(1))
+    for prefixe, verbe in _VERBES_CANONIQUES:
+        # seulement des terminaisons de verbe : « activité » ne devient pas « active »
+        if c.startswith(prefixe) and c[len(prefixe):] in _TERMINAISONS:
+            return verbe + m.group(2)
+    return texte
+
+
+_TERMINAISONS = {"", "e", "es", "ez", "er", "s", "ns", "nt", "ent", "r", "re", "ons"}
+
+
 def par_regles(texte: str) -> Commande | None:
     t = texte.strip().rstrip("!.")
+    t = corriger_verbe(t)
     m = _RE_ETAT.match(t)
     if m:
         cible = (m.group(1) or m.group(3) or "").strip()

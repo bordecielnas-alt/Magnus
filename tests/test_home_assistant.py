@@ -103,3 +103,18 @@ def test_secrets_sans_ecraser(tmp_path):
     env = {"DEJA": "ancien"}
     assert charger_secrets(f, env) == f
     assert env == {"DEJA": "ancien", "HA_JETON": "abc"}
+
+
+def test_api_commande_maison_court_circuite_le_routeur():
+    rep = _client(faux_ha()).post("/api/chat", json={"message": "etteins le projo"}).json()
+    assert rep["route"]["raison"] == "commande maison"
+    assert rep["fournisseur"] in ("maison", "home-assistant")
+
+
+def test_api_note_maison_pour_les_modeles():
+    r, rapide = routeur()
+    cfg = charger(env={}, fichier=Path("inexistant.yaml")).model_copy(update={"home_assistant": CFG_HA})
+    c = TestClient(creer_app(cfg, r.registre, faux_ha()))
+    c.post("/api/chat", json={"message": "Merci beaucoup", "role": "rapide"})
+    systeme = " ".join(m.content for m in rapide.appels[-1][0] if m.role == "system")
+    assert "module maison" in systeme

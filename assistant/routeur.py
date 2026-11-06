@@ -77,9 +77,10 @@ class Routeur:
         except (FournisseurIndisponible, asyncio.TimeoutError):
             return None
         mot = rep.strip().upper()
-        if mot.startswith("COMPLEX"):
+        # le petit modèle ajoute parfois un préfixe (« Réponse : SIMPLE ») : on cherche le mot
+        if "COMPLEX" in mot:
             return COMPLEXE
-        if mot.startswith("SIMPLE"):
+        if "SIMPLE" in mot:
             return SIMPLE
         return None
 

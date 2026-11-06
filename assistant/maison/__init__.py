@@ -93,6 +93,10 @@ class Maison:
         self.inventaire = Inventaire(ha, cfg.domaines_autorises, cfg.rafraichir_s)
         self._attentes: dict[str, _Attente] = {}
 
+    def reconnait(self, texte: str) -> bool:
+        """La phrase ressemble-t-elle à une commande ou une question sur un appareil ?"""
+        return par_regles(texte) is not None
+
     def en_attente(self, conversation: str) -> bool:
         a = self._attentes.get(conversation)
         return bool(a and time.monotonic() - a.depuis < ATTENTE_MAX_S)

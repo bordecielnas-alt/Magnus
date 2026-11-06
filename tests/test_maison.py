@@ -208,3 +208,16 @@ def test_alias_oublie(maison, tmp_path):
 def test_config_refuse_domaine_sensible():
     with pytest.raises(ValueError, match="sensibles"):
         MaisonConfig(domaines_autorises=["light", "lock"])
+
+
+@pytest.mark.parametrize("texte,action", [
+    ("etteins projo", "eteindre"), ("alume la cuisine", "allumer"), ("ÉTTEINS le salon", "eteindre"),
+    ("le pupitre est il allumé ?", "etat"), ("projo est-il allumée ?", "etat"),
+])
+def test_fautes_de_frappe_et_tournures(texte, action):
+    assert par_regles(texte).action == action
+
+
+@pytest.mark.parametrize("texte", ["Activités pour le week-end ?", "Fermeture des magasins dimanche ?"])
+def test_pas_de_fausse_correction(texte):
+    assert par_regles(texte) is None
