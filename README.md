@@ -72,6 +72,10 @@ L'assistant trouve lui-même l'appareil visé, sans qu'il faille l'exposer à As
 4. **Ambiguïté** : s'il y a plusieurs candidats, il demande « Lequel ? » ; la réponse (numéro, nom, « tous ») est retenue comme **alias appris** dans `config/alias_appris.json` (lisible, modifiable, jamais versionné).
 5. **Action** : appel de service via l'API REST de HA. Si l'appareil reste introuvable, l'agent Assist de HA tente sa chance, puis le modèle rapide répond en le disant.
 
+### Claude avec les outils maison
+
+Pour une demande ouverte sur la maison (« il fait sombre au salon », « prépare une ambiance cinéma », « qu'est-ce qui est allumé ? ») ou une demande simple que les règles n'ont pas comprise, Claude reçoit quatre outils : `lister_appareils`, `lire_etat`, `agir`, `annuler`. Ils sont servis par `assistant/mcp_maison.py`, un petit serveur MCP (stdio) lancé par le binaire `claude` pour la demande, qui relaie vers une API interne de l'orchestrateur (`/interne/maison/…`, 127.0.0.1, jeton tiré à chaque démarrage). Les mêmes règles s'appliquent : seuls les appareils de l'inventaire autorisé, état mémorisé pour « annule » (toutes les actions d'une même demande). Les outils intégrés de Claude (fichiers, commandes, web) restent désactivés. Compter 10 à 15 s par demande ; si Claude échoue, le secours ne peut pas prétendre avoir agi (réponse remplacée). Désactivable : `maison.outils_pour_claude: false`.
+
 Avec un jeton d'utilisateur HA non administrateur, les registres (pièces, alias) peuvent être refusés : la reconnaissance se fait alors sur les noms seuls.
 
 | Point d'accès | Rôle |

@@ -96,6 +96,7 @@ class MaisonConfig(BaseModel):
     extracteur: str = "rapide"                        # rôle du modèle qui extrait la commande
     fichier_alias: str = ""                           # vide = <config>/alias_appris.json
     assist_en_secours: bool = True                    # agent Assist de HA si l'appareil n'est pas trouvé
+    outils_pour_claude: bool = True                   # Claude reçoit les outils maison (serveur MCP local)
 
     @field_validator("domaines_autorises")
     @classmethod

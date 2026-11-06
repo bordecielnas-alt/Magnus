@@ -57,7 +57,18 @@ class Registre:
         secours = self.fournisseurs.get(self.roles.get(ROLE_SECOURS, ""))
         return [principal] + ([secours] if secours and secours is not principal else [])
 
-    async def repondre(self, role: str, messages: list[Message]) -> Reponse:
+    async def repondre(self, role: str, messages: list[Message], outils: dict | None = None) -> Reponse:
+        if outils:
+            morceaux, fin = [], None
+            async for x in self.flux(role, messages, outils):
+                if isinstance(x, Reponse):
+                    fin = x
+                else:
+                    morceaux.append(x)
+            return fin
+        return await self._repondre(role, messages)
+
+    async def _repondre(self, role: str, messages: list[Message]) -> Reponse:
         erreurs = []
         for i, f in enumerate(self._candidats(role)):
             try:
@@ -67,7 +78,8 @@ class Registre:
                 erreurs.append(str(e))
         raise FournisseurIndisponible(" ; ".join(erreurs))
 
-    async def flux(self, role: str, messages: list[Message]) -> AsyncIterator[str | Reponse]:
+    async def flux(self, role: str, messages: list[Message],
+                   outils: dict | None = None) -> AsyncIterator[str | Reponse]:
         """Produit les morceaux de texte, puis une Reponse finale (texte complet, qui a répondu).
 
         Le secours n'est tenté que si le principal échoue AVANT d'avoir envoyé du texte.
@@ -76,7 +88,8 @@ class Registre:
         for i, f in enumerate(self._candidats(role)):
             morceaux: list[str] = []
             try:
-                async for m in f.flux(messages):
+                flot = f.flux(messages, outils=outils) if outils and getattr(f, "accepte_outils", False) else f.flux(messages)
+                async for m in flot:
                     morceaux.append(m)
                     yield m
                 yield Reponse("".join(morceaux), f.ident, f.modele, secours=i > 0)

@@ -72,6 +72,8 @@ def construire_invite(messages: list[Message]) -> tuple[str, str]:
 
 
 class FournisseurClaudeCode(Fournisseur):
+    accepte_outils = True   # le registre peut lui passer des outils MCP (outils maison)
+
     def __init__(
         self,
         ident: str,
@@ -87,17 +89,20 @@ class FournisseurClaudeCode(Fournisseur):
         self.dossier = Path(tempfile.gettempdir()) / "assistant-claude"  # dossier neutre, sans CLAUDE.md
         self._dispo: tuple[float, bool] | None = None
 
-    def _arguments(self, binaire: str, systeme: str) -> list[str]:
+    def _arguments(self, binaire: str, systeme: str, outils: dict | None = None) -> list[str]:
         args = [
             binaire, "-p",
             "--output-format", "stream-json", "--verbose", "--include-partial-messages",
-            "--tools", "",                 # aucun outil : pas de fichiers, pas de commandes
-            "--strict-mcp-config",         # aucun serveur MCP
+            "--tools", "",                 # aucun outil intégré : pas de fichiers, pas de commandes
+            "--strict-mcp-config",         # seulement les serveurs MCP passés ici (les outils maison)
             "--setting-sources", "",       # ignore les réglages utilisateur et projet
             "--no-session-persistence",
             "--model", self.modele,
         ]
-        args += ["--system-prompt", (systeme + "\n\n" + NOTE_SANS_OUTILS).strip()]
+        if outils:
+            args += ["--mcp-config", json.dumps(outils["mcp"]), "--allowedTools", *outils["autoriser"]]
+        note = outils["note"] if outils else NOTE_SANS_OUTILS
+        args += ["--system-prompt", (systeme + "\n\n" + note).strip()]
         if self.effort:
             args += ["--effort", self.effort]
         return args
@@ -111,13 +116,13 @@ class FournisseurClaudeCode(Fournisseur):
             creationflags=drapeaux,
         )
 
-    async def flux(self, messages: list[Message]) -> AsyncIterator[str]:
+    async def flux(self, messages: list[Message], outils: dict | None = None) -> AsyncIterator[str]:
         binaire = resoudre_binaire(self.commande)
         if not binaire:
             raise FournisseurIndisponible(f"{self.ident} : commande « {self.commande} » introuvable")
         systeme, invite = construire_invite(messages)
         try:
-            proc = self._lancer(self._arguments(binaire, systeme))
+            proc = self._lancer(self._arguments(binaire, systeme, outils))
         except OSError as e:
             raise FournisseurIndisponible(f"{self.ident} : {e}") from e
 
@@ -137,7 +142,7 @@ class FournisseurClaudeCode(Fournisseur):
                 boucle.call_soon_threadsafe(file.put_nowait, FIN)
 
         threading.Thread(target=lire, daemon=True).start()
-        envoye = False
+        envoye = separer = False
         resultat = None
         limite = time.monotonic() + self.timeout
         try:
@@ -159,7 +164,12 @@ class FournisseurClaudeCode(Fournisseur):
                 if t == "stream_event":
                     e = evt.get("event") or {}
                     d = e.get("delta") or {}
+                    if e.get("type") == "message_start" and envoye:
+                        separer = True   # nouveau tour après un appel d'outil : on sépare les phrases
                     if e.get("type") == "content_block_delta" and d.get("type") == "text_delta" and d.get("text"):
+                        if separer:
+                            yield "\n\n"
+                            separer = False
                         envoye = True
                         yield d["text"]
                 elif t == "result":

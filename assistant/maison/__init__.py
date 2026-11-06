@@ -151,6 +151,12 @@ def _decrire_etat(e: Entite, s: dict) -> str:
     return f"{e.libelle} : {txt}."
 
 
+# mots qui évoquent la maison sans nommer d'appareil (« il fait sombre », « ambiance cinéma »)
+MOTS_AMBIANCE = {"sombre", "noir", "ambiance", "cinema", "film", "lumineux", "eclaire", "eclairage", "allume",
+                 "eteint", "chauffe", "froid", "chaud", "maison", "piece", "nuit", "dodo", "couche", "dors",
+                 "pars", "rentre", "reveil", "ouvert", "ferme", "resté", "reste"}
+
+
 VERBES_FAIT = {"allumer": "allumé", "eteindre": "éteint", "ouvrir": "ouvert", "fermer": "fermé", "regler": "réglé"}
 
 
@@ -265,7 +271,7 @@ class Maison:
         inutile de demander au modèle d'en extraire une commande."""
         from .resolution import INDICES_DOMAINE
         m = mots(texte)
-        if m & set(INDICES_DOMAINE):
+        if m & (set(INDICES_DOMAINE) | MOTS_AMBIANCE):
             return True
         connus: set[str] = set()
         for e in await self.inventaire.obtenir():
@@ -444,6 +450,68 @@ class Maison:
         ctx.avant, ctx.depuis = avant, time.monotonic()
 
 
+    # --- opérations utilisées par les outils de Claude (serveur MCP « maison ») -------------
+
+    async def evoque(self, texte: str) -> bool:
+        return await self._evoque_la_maison(texte)
+
+    async def appareils(self, filtre: str = "") -> list[dict]:
+        entites = await self.inventaire.obtenir()
+        f = mots(filtre)
+        if f:
+            from .resolution import INDICES_DOMAINE
+            domaines = set().union(*(INDICES_DOMAINE.get(w, set()) for w in f))
+            autres = f - set(INDICES_DOMAINE)
+            entites = [e for e in entites if (not domaines or e.domaine in domaines)
+                       and (not autres or autres & (e.mots_nom() | e.mots_piece()))]
+        return [{"entity_id": e.entity_id, "nom": e.nom, "piece": e.piece, "type": e.domaine,
+                 "etat": ETATS_FR.get(e.etat, e.etat)} for e in entites]
+
+    async def etat_detaille(self, entity_id: str) -> dict | None:
+        connus = {e.entity_id: e for e in await self.inventaire.obtenir()}
+        if entity_id not in connus:
+            return None
+        s = await self.ha.etat_entite(entity_id)
+        if not s:
+            return None
+        a = s.get("attributes") or {}
+        garde = ("friendly_name", "brightness", "color_mode", "rgb_color", "color_temp_kelvin", "current_position",
+                 "current_temperature", "temperature", "hvac_mode", "volume_level", "media_title", "percentage")
+        return {"entity_id": entity_id, "etat": s.get("state"), "description": _decrire_etat(connus[entity_id], s),
+                **{k: a[k] for k in garde if k in a}}
+
+    async def agir_ids(self, entity_ids: list[str], action: str, valeur: float | None = None,
+                       couleur: str | None = None, conversation: str = "") -> ReponseMaison:
+        from .commande import BLANCS, COULEURS
+        connus = {e.entity_id: e for e in await self.inventaire.obtenir()}
+        refuses = [i for i in entity_ids if i not in connus]
+        cibles = [connus[i] for i in entity_ids if i in connus]
+        coul = kelvin = None
+        if couleur:
+            n = normaliser(couleur)
+            coul, kelvin = COULEURS.get(n), BLANCS.get(n)
+        cmd = Commande(action, "", valeur, False, coul, kelvin)
+        precedent = self._contexte(conversation)
+        r = await self._executer(cmd, cibles, conversation) if cibles else ReponseMaison(False, "")
+        nouveau = self._contexte(conversation)
+        if precedent and nouveau and nouveau is not precedent and nouveau.depuis - precedent.depuis < 120:
+            # plusieurs actions d'outil pour une même demande : « annule » doit tout défaire
+            deja = {s["entity_id"] for s in precedent.avant}
+            nouveau.avant = precedent.avant + [s for s in nouveau.avant if s["entity_id"] not in deja]
+            nouveau.entites = precedent.entites + [e for e in nouveau.entites if e not in precedent.entites]
+        if refuses:
+            r.texte = (r.texte + f" Appareils inconnus ou non autorisés, rien fait : {', '.join(refuses)}.").strip()
+        return r
+
+    async def annuler(self, conversation: str = "") -> ReponseMaison:
+        ctx = self._contexte(conversation)
+        if not ctx:
+            return ReponseMaison(False, "Aucune action récente à annuler.")
+        r = await self._restaurer(ctx)
+        ctx.avant = []
+        return r
+
+
 NOMS_COULEURS = {"red": "rouge", "blue": "bleu", "green": "vert", "yellow": "jaune", "orange": "orange",
                  "purple": "violet", "pink": "rose", "cyan": "cyan", "turquoise": "turquoise",
                  "magenta": "magenta", "indigo": "indigo", "gold": "doré"}
@@ -454,3 +522,5 @@ def _nom_couleur(cmd: Commande) -> str:
         return NOMS_COULEURS.get(cmd.couleur, cmd.couleur)
     k = cmd.kelvin or 0
     return "blanc chaud" if k <= 3000 else "blanc froid" if k >= 5500 else "blanc"
+
+

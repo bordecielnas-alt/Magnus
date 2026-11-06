@@ -5,12 +5,14 @@ from __future__ import annotations
 import json
 import logging
 import re
+import secrets
+import sys
 import time
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Literal
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, Header, HTTPException
 from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
@@ -48,6 +50,19 @@ class DemandeChat(BaseModel):
     conversation: str = Field(default="", max_length=64)   # identifiant choisi par la page
 
 
+class Action(BaseModel):
+    """Action demandée par l'outil « agir » du serveur MCP maison."""
+    entity_ids: list[str] = Field(min_length=1, max_length=30)
+    action: Literal["allumer", "eteindre", "ouvrir", "fermer", "regler"]
+    valeur: float | None = None
+    couleur: str | None = None
+    conversation: str = ""
+
+
+class Conv(BaseModel):
+    conversation: str = ""
+
+
 # Les petits modèles imitent les réponses « C'est fait : … » vues dans l'historique :
 # une telle phrase sortie d'un modèle est une invention (le modèle n'a aucun accès à la maison).
 RE_FAUSSE_ACTION = re.compile(
@@ -66,9 +81,18 @@ NOTE_MAISON = (
 )
 
 
-def _messages(cfg: Config, d: DemandeChat) -> list[Message]:
+NOTE_OUTILS_MAISON = (
+    "Tu disposes des outils « maison » (lister_appareils, lire_etat, agir, annuler), reliés à Home Assistant. "
+    "Pour toute demande sur la maison, cherche d'abord les appareils avec lister_appareils, puis agis avec agir. "
+    "Ne dis jamais qu'une action est faite sans avoir appelé agir et lu sa réponse. Réponds en une ou deux phrases "
+    "en disant ce que tu as fait. Les réponses précédentes « C'est fait… » viennent du module maison et sont fiables. "
+    "Tu n'as aucun autre outil : ni fichiers, ni commandes, ni web."
+)
+
+
+def _messages(cfg: Config, d: DemandeChat, outils: bool = False) -> list[Message]:
     msgs = [Message("system", cfg.consigne_effective)]
-    if cfg.home_assistant.url:
+    if cfg.home_assistant.url and not outils:
         msgs.append(Message("system", NOTE_MAISON))
     msgs += [Message(t.role, t.content) for t in d.historique[-HISTORIQUE_MAX:]]
     msgs.append(Message("user", d.message))
@@ -83,6 +107,20 @@ def creer_app(config: Config | None = None, registre: Registre | None = None,
     ha = ha or HomeAssistant(cfg.home_assistant)
     extracteur = reg.pour_role(cfg.maison.extracteur) if cfg.maison.extracteur in reg.roles else None
     maison = Maison(cfg.maison, ha, alias or AliasAppris(chemin_alias(cfg)), extracteur)
+    jeton_interne = secrets.token_urlsafe(24)   # pour le serveur MCP « maison », change à chaque démarrage
+
+    def outils_maison(conversation: str) -> dict:
+        env = {"ASSISTANT_INTERNE_URL": f"http://127.0.0.1:{cfg.serveur.port}",
+               "ASSISTANT_INTERNE_JETON": jeton_interne, "ASSISTANT_CONVERSATION": conversation}
+        return {
+            "mcp": {"mcpServers": {"maison": {"command": sys.executable, "args": ["-m", "assistant.mcp_maison"], "env": env}}},
+            "autoriser": ["mcp__maison"],
+            "note": NOTE_OUTILS_MAISON,
+        }
+
+    def verifier_jeton(x_jeton_interne: str | None) -> None:
+        if not x_jeton_interne or not secrets.compare_digest(x_jeton_interne, jeton_interne):
+            raise HTTPException(403, "jeton interne invalide")
 
     @asynccontextmanager
     async def cycle(app: FastAPI):
@@ -135,6 +173,34 @@ def creer_app(config: Config | None = None, registre: Registre | None = None,
         if not maison.alias.oublier(phrase):
             raise HTTPException(404, "alias inconnu")
         return {"ok": True}
+
+    # --- API interne : seulement pour le serveur MCP « maison » (jeton requis) -----------
+    @app.get("/interne/maison/appareils", include_in_schema=False)
+    async def interne_appareils(filtre: str = "", x_jeton_interne: str | None = Header(None)) -> list[dict]:
+        verifier_jeton(x_jeton_interne)
+        return await maison.appareils(filtre)
+
+    @app.get("/interne/maison/etat/{entity_id}", include_in_schema=False)
+    async def interne_etat(entity_id: str, x_jeton_interne: str | None = Header(None)) -> dict:
+        verifier_jeton(x_jeton_interne)
+        e = await maison.etat_detaille(entity_id)
+        if e is None:
+            raise HTTPException(404, "appareil inconnu ou non autorisé")
+        return e
+
+    @app.post("/interne/maison/agir", include_in_schema=False)
+    async def interne_agir(a: Action, x_jeton_interne: str | None = Header(None)) -> dict:
+        verifier_jeton(x_jeton_interne)
+        r = await maison.agir_ids(a.entity_ids, a.action, a.valeur, a.couleur, a.conversation)
+        journal.info("outil agir %s %s -> %s", a.action, a.entity_ids, r.texte[:120])
+        return {"resultat": r.texte or "Rien n'a été fait.", "entites": r.detail.get("entites", [])}
+
+    @app.post("/interne/maison/annuler", include_in_schema=False)
+    async def interne_annuler(c: Conv, x_jeton_interne: str | None = Header(None)) -> dict:
+        verifier_jeton(x_jeton_interne)
+        r = await maison.annuler(c.conversation)
+        journal.info("outil annuler -> %s", r.texte[:120])
+        return {"resultat": r.texte}
 
     @app.post("/api/route")
     async def route(d: DemandeChat) -> dict:
@@ -191,9 +257,24 @@ def creer_app(config: Config | None = None, registre: Registre | None = None,
                 return _reponse_ha(d.flux, rm.texte, route, "maison", "inventaire", rm.detail.get("duree_ms", 0))
             if "commande" in rm.detail and not echec_ha:
                 echec_ha = rm.detail.get("raison", "appareil introuvable")
+        # Claude avec les outils maison : demande ouverte sur la maison (« il fait sombre au salon »),
+        # ou demande simple que les règles n'ont pas su traiter
+        outils = None
+        if (ha.configure and cfg.maison.outils_pour_claude and decision is not None
+                and cfg.routeur.role_complexe in reg.roles
+                and getattr(reg.pour_role(cfg.routeur.role_complexe), "accepte_outils", False)
+                and await maison.evoque(d.message)):
+            if role == cfg.routeur.role_simple:
+                role = cfg.routeur.role_complexe
+                route["outils"] = "maison non comprise par les règles : Claude avec outils maison"
+            elif role == cfg.routeur.role_complexe:
+                route["outils"] = "Claude avec outils maison"
+            if route.get("outils"):
+                outils = outils_maison(d.conversation)
+                echec_ha = ""
         _tracer(route, d.message)
 
-        msgs = _messages(cfg, d)
+        msgs = _messages(cfg, d, outils=bool(outils))
         # garde-fou : le modèle rapide ne doit pas prétendre avoir agi sur la maison
         garde = ha.configure and role == cfg.routeur.role_simple
         if echec_ha:
@@ -202,10 +283,11 @@ def creer_app(config: Config | None = None, registre: Registre | None = None,
         if not d.flux:
             debut = time.perf_counter()
             try:
-                r = await reg.repondre(role, msgs)
+                r = await reg.repondre(role, msgs, outils)
             except FournisseurIndisponible as e:
                 raise HTTPException(503, f"aucun modèle disponible ({e})") from e
-            if garde and RE_FAUSSE_ACTION.match(r.texte):
+            if (garde or (outils and r.secours)) and RE_FAUSSE_ACTION.match(r.texte):
+                # le secours (qwen) n'a pas les outils : s'il dit « c'est fait », c'est inventé
                 journal.info("réponse inventée remplacée : %s", r.texte[:120])
                 r.texte = REPONSE_HONNETE
             return {
@@ -222,9 +304,27 @@ def creer_app(config: Config | None = None, registre: Registre | None = None,
             debut = time.perf_counter()
             premier = None
             yield _ndjson({"route": route})
+            if outils:
+                # Avec les outils, la réponse est vérifiée en entier : si Claude échoue et que le secours
+                # (sans outils) prétend avoir agi, on ne doit pas l'afficher. Pas de mot-à-mot ici.
+                try:
+                    r = await reg.repondre(role, msgs, outils)
+                except FournisseurIndisponible as e:
+                    yield _ndjson({"erreur": f"aucun modèle disponible ({e})"})
+                    return
+                texte = r.texte
+                if r.secours and RE_FAUSSE_ACTION.match(texte):
+                    journal.info("réponse inventée remplacée : %s", texte[:120])
+                    texte = REPONSE_HONNETE
+                journal.info("réponse %s : %s", r.fournisseur, texte[:160].replace("\n", " "))
+                duree = round((time.perf_counter() - debut) * 1000)
+                yield _ndjson({"delta": texte})
+                yield _ndjson({"fin": True, "fournisseur": r.fournisseur, "modele": r.modele, "secours": r.secours,
+                               "premier_ms": duree, "duree_ms": duree})
+                return
             tampon, verifie = "", not garde
             try:
-                async for x in reg.flux(role, msgs):
+                async for x in reg.flux(role, msgs, outils):
                     if not isinstance(x, Reponse) and not verifie:
                         # on retient le début de la réponse pour vérifier qu'elle n'invente pas une action
                         tampon += x
@@ -290,6 +390,8 @@ def _tracer(route: dict, message: str) -> None:
         etat = "traité" if m["traite"] else "non traité"
         ha = f" | maison : {etat} ({m.get('resolution') or m.get('raison', '')}{appris}, {m.get('duree_ms', 0)} ms)" + ha
     cat = route.get("categorie", "forcé")
+    if route.get("outils"):
+        ha += f" | {route['outils']}"
     journal.info("route %s (%s) -> %s%s | « %s »", cat, route.get("raison", ""), route.get("role", ""), ha, message[:80])
 
 

@@ -40,8 +40,8 @@ class Faux(cc.FournisseurClaudeCode):
         self.mode = mode
         self.args_vus = None
 
-    def _arguments(self, binaire, systeme):
-        self.args_vus = super()._arguments(binaire, systeme)
+    def _arguments(self, binaire, systeme, outils=None):
+        self.args_vus = super()._arguments(binaire, systeme, outils)
         return [sys.executable, str(self.script), self.mode]
 
 
