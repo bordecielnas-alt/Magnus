@@ -76,6 +76,15 @@ def test_api_simple_non_compris_repart_vers_modele():
     assert rep["route"]["home_assistant"]["code"] == "no_intent_match"
 
 
+def test_api_echec_ha_previent_le_modele():
+    r, rapide = routeur()
+    cfg = charger(env={}, fichier=Path("inexistant.yaml")).model_copy(update={"home_assistant": CFG_HA})
+    c = TestClient(creer_app(cfg, r.registre, faux_ha("error", "?", "no_valid_targets")))
+    c.post("/api/chat", json={"message": "Allume la licorne"})
+    systeme = [m.content for m in rapide.appels[-1][0] if m.role == "system"]
+    assert any("no_valid_targets" in x for x in systeme)
+
+
 def test_api_complexe_ne_passe_pas_par_ha():
     req = []
     rep = _client(faux_ha(requetes=req)).post("/api/chat", json={"message": "Explique la marée"}).json()

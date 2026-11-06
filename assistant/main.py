@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import time
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -20,8 +21,15 @@ from .home_assistant import HomeAssistant
 from .routeur import SIMPLE, Decision, Routeur
 
 STATIC = Path(__file__).resolve().parent / "static"
+journal = logging.getLogger("uvicorn.error")  # s'affiche dans la console de l'assistant
 HISTORIQUE_MAX = 20
 ROLE_AUTO = "auto"
+NOTE_HA_ECHEC = (
+    "Home Assistant n'a pas pu traiter ce message ({code}). Tu n'as accès ni à l'état ni au pilotage "
+    "des appareils de la maison. Si le message concerne un appareil, dis-le en une phrase et propose "
+    "de reformuler avec le nom exact de l'appareil tel qu'il apparaît dans Home Assistant. "
+    "Sinon, réponds normalement."
+)
 
 
 class Tour(BaseModel):
@@ -106,18 +114,22 @@ def creer_app(config: Config | None = None, registre: Registre | None = None,
         route = decision.en_dict() if decision else {"role": role, "raison": "choisi à la main"}
 
         # Demande simple : l'agent Assist de Home Assistant d'abord (exécute l'action, sans LLM)
-        rha = None
+        rha, echec_ha = None, ""
         if decision and decision.categorie == SIMPLE and cfg.home_assistant.pour_simples and ha.configure:
             debut_ha = time.perf_counter()
             rha = await ha.conversation(d.message)
             route["home_assistant"] = {"compris": rha.compris, "type": rha.type, "code": rha.code,
                                        "duree_ms": round((time.perf_counter() - debut_ha) * 1000)}
             if not rha.compris:
+                echec_ha = rha.code or rha.type
                 rha = None
+        _tracer(route, d.message)
         if rha:
             return _reponse_ha(d.flux, rha.texte, route)
 
         msgs = _messages(cfg, d)
+        if echec_ha:
+            msgs.insert(1, Message("system", NOTE_HA_ECHEC.format(code=echec_ha)))
 
         if not d.flux:
             debut = time.perf_counter()
@@ -165,6 +177,14 @@ def creer_app(config: Config | None = None, registre: Registre | None = None,
 
     app.mount("/static", StaticFiles(directory=STATIC), name="static")
     return app
+
+
+def _tracer(route: dict, message: str) -> None:
+    """Une ligne par demande dans la console : par où elle est passée et pourquoi."""
+    h = route.get("home_assistant")
+    ha = f" | HA : {'compris' if h['compris'] else 'non compris'} ({h['type']}{' ' + h['code'] if h['code'] else ''}, {h['duree_ms']} ms)" if h else ""
+    cat = route.get("categorie", "forcé")
+    journal.info("route %s (%s) -> %s%s | « %s »", cat, route.get("raison", ""), route.get("role", ""), ha, message[:80])
 
 
 def _reponse_ha(flux: bool, texte: str, route: dict):
