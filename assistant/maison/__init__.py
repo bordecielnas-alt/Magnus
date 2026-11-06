@@ -241,7 +241,9 @@ class Maison:
         detail = {"commande": cmd.__dict__, "analyse": origine, "resolution": res.raison}
         if res.ambigues:
             self._attentes[conversation] = _Attente(cmd, res.ambigues, time.monotonic())
-            noms = [f"{i}. {e.libelle}" for i, e in enumerate(res.ambigues, 1)]
+            noms = [f"{i}. {e.libelle}" for i, e in enumerate(res.ambigues[:6], 1)]
+            if len(res.ambigues) > 6:
+                noms.append(f"et {len(res.ambigues) - 6} autres")
             q = "Lequel ? " + " ; ".join(noms) + ". Réponds par le numéro ou le nom (ou « tous »)."
             return ReponseMaison(True, q, {**detail, "candidats": [e.entity_id for e in res.ambigues], "duree_ms": ms()})
         if not res.entites:

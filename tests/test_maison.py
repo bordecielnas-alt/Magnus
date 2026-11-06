@@ -419,3 +419,16 @@ def test_bonjour_ne_consulte_pas_l_extracteur(tmp_path):
     assert Espion.appels == 0
     dire(m, "fais briller le plafonnier")  # tournure inconnue mais appareil connu : le modèle est consulté
     assert Espion.appels == 1
+
+
+def test_pluriel_vise_tous(maison):
+    m, ha = maison
+    r = dire(m, "passe les lumières du salon en rouge")
+    assert r.traite and not r.texte.startswith("Lequel")
+    assert {a[2]["entity_id"] for a in ha.appels} == {"light.plafonnier", "light.lampe_pied"}
+    assert all(a[2].get("color_name") == "red" for a in ha.appels)
+
+
+def test_singulier_reste_ambigu(maison):
+    m, _ = maison
+    assert dire(m, "allume la lumière du salon").texte.startswith("Lequel")

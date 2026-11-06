@@ -191,7 +191,8 @@ def par_regles(texte: str, avec_contexte: bool = False) -> Commande | None:
             if not avec_contexte:
                 return None
             reste = ""
-        tous = bool(_RE_TOUS.search(reste))
+        # « les lumières de la cave », « mes lampes » : un pluriel vise tous les appareils qui correspondent
+        tous = bool(_RE_TOUS.search(reste)) or bool(re.match(r"^(?:les|mes|des|nos)\s+\w+[sx]\b", reste, re.IGNORECASE))
         return Commande(action, reste, valeur, tous, couleur, kelvin)
     if avec_contexte:
         m = _RE_AUSSI.match(t)

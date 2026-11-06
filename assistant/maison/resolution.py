@@ -95,4 +95,4 @@ def resoudre(cible: str, action: str, entites: list[Entite], tous: bool = False,
     lumieres = [e for e in proches if e.domaine == "light"]
     if len(lumieres) == 1 and evoques == {"light", "switch"}:
         return Resultat(lumieres, [], "correspondance")
-    return Resultat([], proches[:5], "ambigu")
+    return Resultat([], proches, "ambigu")
