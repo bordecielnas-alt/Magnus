@@ -8,6 +8,7 @@ from dataclasses import dataclass
 
 from ..config import Config, FournisseurConfig
 from .base import Fournisseur, FournisseurIndisponible, Message
+from .claude_code import FournisseurClaudeCode
 from .openai_compat import FournisseurOpenAI
 
 ROLE_SECOURS = "secours"
@@ -17,8 +18,15 @@ def _openai(ident: str, fc: FournisseurConfig) -> Fournisseur:
     return FournisseurOpenAI(ident, fc.url, fc.modele, fc.cle(), fc.timeout, fc.options)
 
 
-# type (dans la config) -> fabrique. Claude Code headless s'ajoutera ici (t103).
-TYPES: dict[str, Callable[[str, FournisseurConfig], Fournisseur]] = {"openai": _openai}
+def _claude_code(ident: str, fc: FournisseurConfig) -> Fournisseur:
+    return FournisseurClaudeCode(ident, fc.modele, fc.commande, fc.timeout, fc.effort)
+
+
+# type (dans la config) -> fabrique
+TYPES: dict[str, Callable[[str, FournisseurConfig], Fournisseur]] = {
+    "openai": _openai,
+    "claude_code": _claude_code,
+}
 
 
 @dataclass

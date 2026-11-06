@@ -27,6 +27,7 @@
   .lui small { display:block; margin-top:6px; color:var(--muted); font-size:.75rem; }
   .erreur { align-self:center; color:#c0392b; font-size:.9rem; }
   form { display:flex; gap:8px; padding-top:8px; border-top:1px solid var(--bord); }
+  select { padding:0 8px; border-radius:10px; border:1px solid var(--bord); background:var(--bg); color:var(--fg); font-size:.95rem; }
   input { flex:1; min-width:0; padding:12px; border-radius:10px; border:1px solid var(--bord);
           background:var(--bg); color:var(--fg); font-size:1rem; }
   button { padding:0 18px; border:0; border-radius:10px; background:var(--accent); color:#fff; font-size:1rem; cursor:pointer; }
@@ -42,6 +43,10 @@
   </header>
   <div id="fil" aria-live="polite"></div>
   <form id="form">
+    <select id="role" aria-label="Rôle du modèle" title="En attendant le routeur : choisis qui répond">
+      <option value="rapide">Rapide</option>
+      <option value="raisonnement">Raisonnement</option>
+    </select>
     <input id="saisie" autocomplete="off" placeholder="Écris un message…" required>
     <button id="envoyer">Envoyer</button>
   </form>
@@ -85,7 +90,7 @@ $('form').addEventListener('submit', async ev => {
   try {
     const r = await fetch('/api/chat', {
       method: 'POST', headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({message, historique, flux: true}),
+      body: JSON.stringify({message, historique, flux: true, role: $('role').value}),
     });
     if (!r.ok) throw new Error((await r.json()).detail || r.statusText);
     const lecteur = r.body.getReader();

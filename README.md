@@ -36,7 +36,13 @@ Priorité : variables d'environnement > `config.yaml` > `defaults.yaml`.
 
 Chaque modèle est un « fournisseur » interchangeable, déclaré dans la config (`fournisseurs:`) et associé à un rôle (`roles:` : `rapide`, `raisonnement`, `secours`). Le type `openai` couvre toute API compatible OpenAI : Ollama, LM Studio, vLLM ou une clé API. Si le fournisseur d'un rôle ne répond pas, l'orchestrateur bascule sur celui du rôle `secours`.
 
-Par défaut : Ollama sur `127.0.0.1:11434` avec `qwen2.5:3b`. Exemples dans `config/config.example.yaml`.
+Par défaut : `rapide` et `secours` sur Ollama (`127.0.0.1:11434`, `qwen2.5:3b`), `raisonnement` sur Claude. Exemples dans `config/config.example.yaml`.
+
+### Claude via l'abonnement (type `claude_code`)
+
+L'orchestrateur appelle le binaire officiel Claude Code en mode headless (`claude -p`), non modifié, avec le compte connecté par `claude auth login`. Il le lance **sans aucun outil** (`--tools ""`, aucun serveur MCP, réglages utilisateur ignorés), depuis un dossier temporaire neutre : Claude répond, il n'agit sur rien. `ANTHROPIC_API_KEY` n'est jamais transmise, pour que ce soit bien l'abonnement qui serve. Si Claude ne répond pas (pas connecté, quota, délai), la demande repasse sur le fournisseur du rôle `secours`.
+
+Installation sur le PC : `npm install -g @anthropic-ai/claude-code`, puis `claude auth login` (ou le bouton « Se connecter » du tableau de suivi). Dans le conteneur Unraid, ce sera prévu au déploiement (binaire dans l'image, identifiants dans un volume).
 
 | Point d'accès | Rôle |
 | --- | --- |

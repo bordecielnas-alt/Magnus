@@ -52,12 +52,22 @@ class Serveur(BaseModel):
 
 
 class FournisseurConfig(BaseModel):
-    type: Literal["openai"]
-    url: str = Field(min_length=1)
+    type: Literal["openai", "claude_code"]
     modele: str = Field(min_length=1)
-    cle_env: str = ""
     timeout: float = Field(default=60, gt=0)
+    # type openai
+    url: str = ""
+    cle_env: str = ""
     options: dict[str, Any] = Field(default_factory=dict)
+    # type claude_code
+    commande: str = "claude"
+    effort: str = ""
+
+    @model_validator(mode="after")
+    def _url_si_openai(self) -> "FournisseurConfig":
+        if self.type == "openai" and not self.url:
+            raise ValueError("un fournisseur openai doit avoir une url")
+        return self
 
     def cle(self, env: Mapping[str, str] | None = None) -> str:
         """Lit la clé API dans la variable d'environnement indiquée (vide si aucune)."""

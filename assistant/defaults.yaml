@@ -20,12 +20,22 @@ consigne: >-
 
 # Fournisseurs de modèles. Chaque entrée est interchangeable.
 #   type     : "openai" = toute API compatible OpenAI (Ollama, LM Studio, vLLM, clé API…)
+#              "claude_code" = Claude via le binaire officiel et ton abonnement
 #   url      : URL de base de l'API (se termine en général par /v1)
 #   modele   : nom du modèle côté fournisseur
 #   cle_env  : NOM d'une variable d'environnement qui contient la clé (jamais la clé ici)
 #   timeout  : secondes
 #   options  : paramètres passés tels quels (temperature, max_tokens…)
 fournisseurs:
+  # Claude via l'abonnement : binaire officiel Claude Code en headless, sans aucun outil.
+  #   commande : nom ou chemin du binaire (connecté une fois avec « claude auth login »)
+  #   modele   : alias (sonnet, opus, haiku) ou nom complet
+  #   effort   : vide = réglage par défaut du binaire
+  claude:
+    type: claude_code
+    commande: "claude"
+    modele: "sonnet"
+    timeout: 120
   ollama-local:
     type: openai
     url: "http://127.0.0.1:11434/v1"
@@ -36,9 +46,9 @@ fournisseurs:
 
 # Quel fournisseur joue quel rôle. Le routeur (plus tard) choisira le rôle.
 #   rapide        : commandes simples, réponses courtes
-#   raisonnement  : conversation, diagnostic (Claude à venir)
+#   raisonnement  : conversation, diagnostic (Claude)
 #   secours       : utilisé si le fournisseur du rôle demandé ne répond pas
 roles:
   rapide: ollama-local
-  raisonnement: ollama-local
+  raisonnement: claude
   secours: ollama-local
