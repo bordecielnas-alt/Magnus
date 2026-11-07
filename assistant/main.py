@@ -583,6 +583,8 @@ def creer_app(config: Config | None = None, registre: Registre | None = None,
         # Maison : réponse à une question « lequel ? » en cours, ou demande simple
         echec_ha = ""
         simple = decision is not None and decision.categorie == SIMPLE
+        if decision is None and ha.configure and maison.reconnait(d.message, d.conversation):
+            simple = True    # rôle choisi à la main : une commande de maison reste une commande de maison
         if ha.configure and cfg.home_assistant.pour_simples and (simple or maison.en_attente(d.conversation)):
             rm = await maison.traiter(d.message, d.conversation)
             route["maison"] = {"traite": rm.traite, **{k: v for k, v in rm.detail.items() if k != "commande"}}
@@ -613,7 +615,7 @@ def creer_app(config: Config | None = None, registre: Registre | None = None,
         # Claude avec les outils maison : demande ouverte sur la maison (« il fait sombre au salon »),
         # ou demande simple que les règles n'ont pas su traiter
         outils = None
-        if (ha.configure and cfg.maison.outils_pour_claude and decision is not None
+        if (ha.configure and cfg.maison.outils_pour_claude and (decision is not None or role == cfg.routeur.role_complexe)
                 and cfg.routeur.role_complexe in reg.roles
                 and getattr(reg.pour_role(cfg.routeur.role_complexe), "accepte_outils", False)
                 and await maison.evoque(d.message)):

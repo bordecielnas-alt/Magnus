@@ -42,6 +42,7 @@ class Routeur:
     def __init__(self, cfg: RouteurConfig, registre: Registre) -> None:
         self.cfg = cfg
         self.registre = registre
+        self._en_cours: set[asyncio.Future] = set()   # demandes au classeur qui continuent en arrière-plan
         self._simples = [re.compile(r, re.IGNORECASE) for r in cfg.regles_simples]
         self._complexes = [re.compile(r, re.IGNORECASE) for r in cfg.regles_complexes]
 
@@ -69,11 +70,13 @@ class Routeur:
         if precedent:
             contenu = f"Demande précédente : {precedent}\n" + contenu
         msgs = [Message("system", CONSIGNE_CLASSEUR), Message("user", contenu)]
+        # La demande continue en arrière-plan si on n'attend plus : couper la connexion ferait abandonner à
+        # Ollama le chargement du modèle (qui resterait froid à chaque fois).
+        tache = asyncio.ensure_future(f.repondre(msgs, options={"temperature": 0, "max_tokens": 4}))
+        self._en_cours.add(tache)
+        tache.add_done_callback(lambda t: (self._en_cours.discard(t), t.cancelled() or t.exception()))
         try:
-            rep = await asyncio.wait_for(
-                f.repondre(msgs, options={"temperature": 0, "max_tokens": 4}),
-                timeout=self.cfg.delai_classeur_ms / 1000,
-            )
+            rep = await asyncio.wait_for(asyncio.shield(tache), timeout=self.cfg.delai_classeur_ms / 1000)
         except (FournisseurIndisponible, asyncio.TimeoutError):
             return None
         mot = rep.strip().upper()

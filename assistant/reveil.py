@@ -63,7 +63,9 @@ def detecter(texte: str, wake_word: str) -> Detection:
         if distance(candidat, " ".join(cible)) <= tolerance(" ".join(cible)):
             fin = jetons[i + n - 1].end()
             reste = texte[fin:].lstrip(" ,.!?;:-—").strip()
-            return Detection(True, reste)
+            # « <nom> <nom> <nom>… » : Whisper répète parfois le nom sur du bruit -> simple réveil
+            suite = detecter(reste, wake_word) if reste else None
+            return Detection(True, suite.commande if suite and suite.reveil else reste)
     return Detection(False, "")
 
 

@@ -93,3 +93,8 @@ def test_enregistrer_reglages_garde_le_reste(tmp_path):
     enregistrer_reglages("voix", {"fenetre_s": 20}, f)
     d = yaml.safe_load(f.read_text(encoding="utf-8"))
     assert d == {"home_assistant": {"url": "https://ha"}, "voix": {"lenteur": 1.1, "fenetre_s": 20}}
+
+
+def test_nom_repete_sur_du_bruit():
+    assert detecter("Magnus Magnus Magnus Magnus Magnus Magnus", "Magnus").commande == ""
+    assert detecter("Magnus, Magnus, allume le globe", "Magnus").commande == "allume le globe"

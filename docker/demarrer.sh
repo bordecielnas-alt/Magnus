@@ -21,6 +21,8 @@ if [ "${ASSISTANT_OLLAMA_INTEGRE:-1}" = "1" ] && command -v ollama >/dev/null 2>
     echo "Téléchargement du modèle Ollama $MODELE (~2 Go)…"
     ollama pull "$MODELE"
   fi
+  # Charge le modèle en mémoire dès le démarrage (sinon la première demande attend son chargement)
+  python -c "import json,urllib.request as u;u.urlopen(u.Request('http://127.0.0.1:11434/api/generate',data=json.dumps({'model':'$MODELE','keep_alive':'$OLLAMA_KEEP_ALIVE'}).encode()),timeout=300)" >/dev/null 2>&1 &
   echo "Ollama intégré prêt (journal : /config/ollama.log)."
 fi
 

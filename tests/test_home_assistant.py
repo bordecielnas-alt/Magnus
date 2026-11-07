@@ -69,6 +69,12 @@ def test_api_simple_execute_par_ha():
     assert rep["route"]["home_assistant"]["compris"] is True
 
 
+def test_commande_maison_meme_avec_role_choisi_a_la_main():
+    # le bouton « Raisonnement » sélectionné ne doit pas empêcher « allume le salon »
+    rep = _client(faux_ha()).post("/api/chat", json={"message": "Allume le salon", "role": "raisonnement"}).json()
+    assert rep["fournisseur"] == "home-assistant" and rep["reponse"] == "Lumière allumée"
+
+
 def test_api_simple_non_compris_repart_vers_modele():
     ha = faux_ha("error", "?", "no_intent_match")
     rep = _client(ha).post("/api/chat", json={"message": "Allume le truc bizarre"}).json()
