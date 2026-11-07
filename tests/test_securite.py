@@ -68,7 +68,8 @@ def test_session_falsifiee_ou_ancien_mot_de_passe(tmp_path):
     a, sec = app(tmp_path)
     sec.definir_mot_de_passe("correct horse battery")
     jeton = sec.creer_session()
-    assert sec.session_valide(jeton) and not sec.session_valide(jeton[:-1] + "0")
+    falsifie = jeton[:-1] + ("1" if jeton[-1] != "1" else "2")
+    assert sec.session_valide(jeton) and not sec.session_valide(falsifie)
     sec.definir_mot_de_passe("un autre mot de passe")
     assert not sec.session_valide(jeton)                   # changer le mot de passe ferme les sessions
 

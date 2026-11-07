@@ -8,7 +8,7 @@
      orbe.reglages({ ecole, particules, brume });
    Option « fond » (couleur CSS) : l'orbe est peinte sur ce fond opaque, ce qui garde toute la
    finesse des dégradés (sur un canvas transparent, les halos très légers n'ont que quelques
-   niveaux de couleur et font des bandes). Un léger grain (tramage) casse les bandes restantes.
+   niveaux de couleur et font des bandes). Un tramage temporel très faible casse les marches restantes.
 */
 (function () {
 function creerOrbe(cv, opts = {}) {
@@ -40,12 +40,13 @@ function creerOrbe(cv, opts = {}) {
   }
   addEventListener("resize", taille); taille();
 
-  // Tramage : petite texture de bruit centrée sur le gris moyen, appliquée en « overlay »
-  // (±quelques niveaux seulement, invisible à l'œil, mais les marches des dégradés disparaissent)
+  // Tramage temporel : on ajoute à chaque image un bruit de 0 à 2 niveaux (sur 255), le même partout
+  // quelle que soit la luminosité, et déplacé à chaque image. L'œil en fait la moyenne : les marches
+  // d'un niveau des dégradés sombres (anneaux) disparaissent, sans grain visible dans les zones claires.
   const fond = opts.fond || null;
   const bruit = document.createElement("canvas"); bruit.width = bruit.height = 64;
   { const bc = bruit.getContext("2d"), im = bc.createImageData(64, 64);
-    for (let i = 0; i < im.data.length; i += 4) { const v = 128 + (Math.random() - .5) * 7; im.data[i] = im.data[i + 1] = im.data[i + 2] = v; im.data[i + 3] = 255; }
+    for (let i = 0; i < im.data.length; i += 4) { const v = (Math.random() * 3) | 0; im.data[i] = im.data[i + 1] = im.data[i + 2] = v; im.data[i + 3] = 255; }
     bc.putImageData(im, 0, 0); }
   const motif = mc.createPattern(bruit, "repeat");
 
@@ -300,7 +301,7 @@ function creerOrbe(cv, opts = {}) {
     mc.drawImage(trace, 0, 0);
     if (fond && motif) {
       const ox = (Math.random() * 64) | 0, oy = (Math.random() * 64) | 0;
-      mc.globalCompositeOperation = "overlay";
+      mc.globalCompositeOperation = "lighter";
       mc.translate(-ox, -oy); mc.fillStyle = motif; mc.fillRect(0, 0, W + 64, W + 64);
       mc.setTransform(1, 0, 0, 1, 0, 0);
     }

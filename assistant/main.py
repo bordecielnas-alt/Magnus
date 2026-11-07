@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import re
 import secrets
 import sys
@@ -24,6 +25,7 @@ from .home_assistant import HomeAssistant
 from .maison import Maison
 from .maison.alias import AliasAppris
 from .routeur import SIMPLE, Decision, Routeur
+from . import reglages as R
 from .reveil import Reveil
 from .securite import NOM_COOKIE, Securite, est_locale
 from .voix import Voix, sans_emoji
@@ -89,6 +91,15 @@ class NouveauMotDePasse(BaseModel):
 # Accessibles sans être connecté (le reste demande une session hors de la machine elle-même)
 CHEMINS_PUBLICS = {"/health", "/connexion", "/api/connexion", "/api/securite", "/api/securite/mot-de-passe",
                    "/favicon.ico"}
+
+
+class Secret(BaseModel):
+    nom: str = Field(max_length=40)
+    valeur: str = Field(min_length=1, max_length=4000)
+
+
+class TelechargementOllama(BaseModel):
+    modele: str = Field(min_length=1, max_length=120, pattern=r"^[\w.:/-]+$")
 
 
 class Parole(BaseModel):
@@ -405,6 +416,130 @@ def creer_app(config: Config | None = None, registre: Registre | None = None,
         journal.info("réglages voix : %s", valeurs)
         return {"fenetre_s": cfg.voix.fenetre_s, "toujours_a_l_ecoute": cfg.voix.toujours_a_l_ecoute,
                 "voix": cfg.voix.voix_actuelle()}
+
+    # --- Page de configuration -------------------------------------------------------------
+    etat_appli = {"redemarrage_necessaire": False, "telechargement": None}
+
+    def defauts_bruts() -> dict:
+        from .config import DEFAUTS, _lire_yaml
+        return _lire_yaml(DEFAUTS)
+
+    async def etat_claude() -> dict:
+        f = reg.fournisseurs.get(next((i for i, fc in cfg.fournisseurs.items() if fc.type == "claude_code"), ""))
+        if not f:
+            return {"configure": False}
+        from .fournisseurs.claude_code import resoudre_binaire
+        return {"configure": True, "installe": resoudre_binaire(getattr(f, "commande", "claude")) is not None,
+                "connecte": await f.disponible(), "modele": f.modele,
+                "commande_connexion": "claude auth login"}
+
+    async def etat_ollama() -> dict:
+        fc = next((fc for fc in cfg.fournisseurs.values() if fc.type == "openai" and "11434" in fc.url), None)
+        if not fc:
+            return {"configure": False}
+        import httpx
+        base = fc.url.rstrip("/").removesuffix("/v1")
+        try:
+            async with httpx.AsyncClient(timeout=3) as c:
+                r = await c.get(base + "/api/tags")
+            modeles = [m["name"] for m in r.json().get("models", [])]
+            return {"configure": True, "url": fc.url, "joignable": True, "modeles": modeles,
+                    "modele_actuel": fc.modele, "integre": os.environ.get("ASSISTANT_OLLAMA_INTEGRE") == "1",
+                    "telechargement": etat_appli["telechargement"]}
+        except Exception:  # noqa: BLE001 - Ollama arrêté, mauvaise adresse
+            return {"configure": True, "url": fc.url, "joignable": False, "modeles": [], "modele_actuel": fc.modele,
+                    "telechargement": etat_appli["telechargement"]}
+
+    @app.get("/api/reglages")
+    async def lire_reglages() -> dict:
+        import asyncio as aio
+        claude, ollama, ha_etat = await aio.gather(etat_claude(), etat_ollama(), ha.etat())
+        return {
+            "reglages": R.vue(cfg),
+            "etat": {"version": __version__, "conteneur": os.name != "nt" and Path("/config").is_dir(),
+                     "redemarrage_necessaire": etat_appli["redemarrage_necessaire"],
+                     "claude": claude, "ollama": ollama, "home_assistant": ha_etat,
+                     "voix": {"appareil": getattr(voix, "appareil", "") or cfg.voix.appareil, "moteur": cfg.voix.moteur_effectif()},
+                     "securite": {"mot_de_passe_defini": securite.mot_de_passe_defini}},
+            "voix_disponibles": voix.disponibles(),
+        }
+
+    @app.post("/api/reglages")
+    async def ecrire_reglages(changements: dict) -> dict:
+        try:
+            _, fichier = R.appliquer(changements, defauts_bruts())
+        except R.ReglageInvalide as e:
+            raise HTTPException(422, str(e)) from e
+        # appliqué tout de suite quand c'est sans risque, sinon au redémarrage
+        if "voix" in changements:
+            v = changements["voix"]
+            if "fenetre_s" in v:
+                cfg.voix.fenetre_s = reveil.fenetre_s = float(v["fenetre_s"])
+            if "toujours_a_l_ecoute" in v:
+                cfg.voix.toujours_a_l_ecoute = reveil.toujours = bool(v["toujours_a_l_ecoute"])
+            if "voix" in v:
+                cfg.voix.voix = v["voix"]
+            if "lenteur" in v:
+                cfg.voix.lenteur = float(v["lenteur"])
+        if set(changements) - {"voix"}:
+            etat_appli["redemarrage_necessaire"] = True
+        journal.info("réglages modifiés depuis la page : %s", sorted(changements))
+        return {"ok": True, "fichier": fichier.name, "redemarrage_necessaire": etat_appli["redemarrage_necessaire"]}
+
+    @app.post("/api/reglages/secret")
+    def ecrire_secret(s_: Secret) -> dict:
+        try:
+            R.ecrire_secret(s_.nom, s_.valeur.strip())
+        except R.ReglageInvalide as e:
+            raise HTTPException(422, str(e)) from e
+        etat_appli["redemarrage_necessaire"] = True
+        journal.info("secret %s modifié depuis la page", s_.nom)
+        return {"ok": True, "redemarrage_necessaire": True}
+
+    @app.post("/api/reglages/ollama/telecharger")
+    async def telecharger_ollama(t: TelechargementOllama) -> dict:
+        """Télécharge un modèle dans Ollama (en arrière-plan) ; l'avancement est dans GET /api/reglages."""
+        import asyncio as aio
+        etat_o = await etat_ollama()
+        if not etat_o.get("joignable"):
+            raise HTTPException(503, "Ollama injoignable")
+        if etat_appli["telechargement"] and etat_appli["telechargement"].get("en_cours"):
+            raise HTTPException(409, "un téléchargement est déjà en cours")
+        base = etat_o["url"].rstrip("/").removesuffix("/v1")
+        etat_appli["telechargement"] = {"modele": t.modele, "en_cours": True, "pourcent": 0, "statut": "démarrage"}
+
+        async def tirer():
+            import httpx
+            try:
+                async with httpx.AsyncClient(timeout=None) as c:
+                    async with c.stream("POST", base + "/api/pull", json={"model": t.modele}) as r:
+                        async for ligne in r.aiter_lines():
+                            if not ligne:
+                                continue
+                            o = json.loads(ligne)
+                            d = etat_appli["telechargement"]
+                            d["statut"] = o.get("status", d["statut"])
+                            if o.get("total"):
+                                d["pourcent"] = round(100 * o.get("completed", 0) / o["total"])
+                            if o.get("error"):
+                                d.update(en_cours=False, statut="erreur : " + o["error"])
+                                return
+                etat_appli["telechargement"].update(en_cours=False, statut="terminé", pourcent=100)
+            except Exception as e:  # noqa: BLE001
+                etat_appli["telechargement"].update(en_cours=False, statut=f"erreur : {e.__class__.__name__}")
+        app.state.tirage = aio.create_task(tirer())
+        return {"ok": True}
+
+    @app.post("/api/redemarrer")
+    async def redemarrer() -> dict:
+        """Dans le conteneur : l'assistant s'arrête et Docker le relance (--restart=unless-stopped).
+        Sur le PC : on le relance depuis l'onglet Outils du tableau de suivi."""
+        if not (os.name != "nt" and Path("/config").is_dir()):
+            raise HTTPException(409, "sur le PC, redémarre l'assistant depuis l'onglet Outils du tableau de suivi")
+        import asyncio as aio
+        journal.info("redémarrage demandé depuis la page de configuration")
+        aio.get_running_loop().call_later(0.5, os._exit, 0)
+        return {"ok": True}
 
     @app.post("/api/voix/endormir")
     def endormir(c: Conv) -> dict:
