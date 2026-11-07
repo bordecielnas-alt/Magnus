@@ -122,3 +122,17 @@ def test_sans_emoji():
     assert sans_emoji("Oui, je t'entends. 🙂") == "Oui, je t'entends. "
     assert sans_emoji("Super 👍✨ :) fait") == "Super :) fait".replace(":) ", "") or True
     assert "🎉" not in sans_emoji("Bravo 🎉")
+
+
+def test_locuteurs_piper(tmp_path, monkeypatch):
+    import json
+    from assistant.voix import Voix
+    d = tmp_path / "piper"
+    d.mkdir()
+    (d / "fr_FR-upmc-medium.onnx").write_bytes(b"x")
+    (d / "fr_FR-upmc-medium.onnx.json").write_text(json.dumps({"speaker_id_map": {"jessica": 0, "pierre": 1}}))
+    cfg = VoixConfig(piper=str(d / "fr_FR-upmc-medium.onnx"), kokoro=str(tmp_path / "rien"))
+    ids = [v["id"] for v in Voix(cfg).disponibles()]
+    assert ids == ["piper:fr_FR-upmc-medium:jessica", "piper:fr_FR-upmc-medium:pierre"]
+    cfg.voix = "piper:fr_FR-upmc-medium:pierre"
+    assert cfg.chemin_piper().endswith("fr_FR-upmc-medium.onnx") and cfg.voix_actuelle() == cfg.voix

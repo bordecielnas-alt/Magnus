@@ -124,9 +124,18 @@ class Voix:
                                "description": desc[1]})
         dossier = Path(self.cfg.chemin_piper()).parent
         for f in sorted(dossier.glob("*.onnx")) if dossier.is_dir() else []:
-            if (f.parent / (f.name + ".json")).is_file():
-                sortie.append({"id": f"piper:{f.stem}", "nom": nom_piper(f.stem), "langue": f.stem[:2],
-                               "moteur": "piper", "description": "Piper : très rapide, plus synthétique"})
+            fiche = f.parent / (f.name + ".json")
+            if not fiche.is_file():
+                continue
+            try:
+                import json
+                locuteurs = list((json.loads(fiche.read_text(encoding="utf-8")).get("speaker_id_map") or {}).keys())
+            except (OSError, ValueError):
+                locuteurs = []
+            for loc in (locuteurs or [""]):
+                sortie.append({"id": f"piper:{f.stem}" + (f":{loc}" if loc else ""),
+                               "nom": nom_piper(f.stem, loc), "langue": f.stem[:2], "moteur": "piper",
+                               "description": "Piper : très rapide, plus synthétique"})
         return sortie
 
     def _voix_kokoro(self):
@@ -146,7 +155,8 @@ class Voix:
         moteur, nom = voix_id.split(":", 1)
         if moteur == "kokoro":
             return self._parler_kokoro(texte, nom)
-        return self._parler_piper(texte, str(Path(self.cfg.chemin_piper()).parent / (nom + ".onnx")))
+        fichier, _, locuteur = nom.partition(":")
+        return self._parler_piper(texte, str(Path(self.cfg.chemin_piper()).parent / (fichier + ".onnx")), locuteur)
 
     def _parler_kokoro(self, texte: str, nom: str) -> tuple[bytes, int]:
         import numpy as np
@@ -162,14 +172,15 @@ class Voix:
             w.writeframes((np.clip(echantillons, -1, 1) * 32767).astype("<i2").tobytes())
         return tampon.getvalue(), round((time.perf_counter() - debut) * 1000)
 
-    def _parler_piper(self, texte: str, chemin: str) -> tuple[bytes, int]:
+    def _parler_piper(self, texte: str, chemin: str, locuteur: str = "") -> tuple[bytes, int]:
         from piper import SynthesisConfig
         debut = time.perf_counter()
         voix = self._voix_piper(chemin)
+        id_loc = (getattr(voix.config, "speaker_id_map", None) or {}).get(locuteur) if locuteur else None
         tampon = io.BytesIO()
         with wave.open(tampon, "wb") as w:
             voix.synthesize_wav(texte_pour_la_voix(texte), w,
-                                syn_config=SynthesisConfig(length_scale=self.cfg.lenteur))
+                                syn_config=SynthesisConfig(length_scale=self.cfg.lenteur, speaker_id=id_loc))
         return tampon.getvalue(), round((time.perf_counter() - debut) * 1000)
 
     async def parler(self, texte: str, voix_id: str | None = None) -> tuple[bytes, int]:
@@ -222,10 +233,12 @@ def texte_pour_la_voix(texte: str) -> str:
 VOIX_KOKORO_FR = {"ff_siwis": ("Siwis (Kokoro)", "Kokoro : la plus naturelle, un peu plus lente")}
 
 
-def nom_piper(stem: str) -> str:
-    """fr_FR-siwis-medium -> « Siwis (Piper, medium) »."""
+def nom_piper(stem: str, locuteur: str = "") -> str:
+    """fr_FR-siwis-medium -> « Siwis (Piper, medium) » ; avec locuteur : « Pierre (Piper upmc, medium) »."""
     morceaux = stem.split("-")
     if len(morceaux) >= 3:
+        if locuteur:
+            return f"{locuteur.capitalize()} (Piper {morceaux[1]}, {morceaux[2]})"
         return f"{morceaux[1].capitalize()} (Piper, {morceaux[2]})"
     return stem
 
@@ -240,5 +253,5 @@ def sans_emoji(texte: str) -> str:
         import re
         EMOJI = re.compile(
             "[\U0001F000-\U0001FAFF\U00002600-\U000027BF\U0001F900-\U0001F9FF\U0000FE0F\U0000200D"
-            "\U00002190-\U000021FF\U00002B00-\U00002BFF]+|[:;]-?[)(DPp]\B")
+            "\U00002190-\U000021FF\U00002B00-\U00002BFF]+" r"|[:;]-?[)(DPp]\B")
     return EMOJI.sub("", texte).replace("  ", " ")

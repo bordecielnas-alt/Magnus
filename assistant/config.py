@@ -157,7 +157,8 @@ class VoixConfig(BaseModel):
 
     def chemin_piper(self) -> str:
         if self.voix.startswith("piper:"):
-            return str(RACINE / "modeles" / "piper" / (self.voix.split(":", 1)[1] + ".onnx"))
+            fichier = self.voix.split(":", 2)[1]
+            return str(RACINE / "modeles" / "piper" / (fichier + ".onnx"))
         return self.piper or str(RACINE / "modeles" / "piper" / "fr_FR-siwis-medium.onnx")
 
     def voix_kokoro_effective(self) -> str:
@@ -166,6 +167,8 @@ class VoixConfig(BaseModel):
     def voix_actuelle(self) -> str:
         if self.moteur_effectif() == "kokoro":
             return "kokoro:" + self.voix_kokoro_effective()
+        if self.voix.startswith("piper:"):
+            return self.voix
         return "piper:" + Path(self.chemin_piper()).stem
 
     def whisper_present(self) -> bool:
