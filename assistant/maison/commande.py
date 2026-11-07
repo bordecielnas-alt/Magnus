@@ -74,7 +74,7 @@ _POLI = r"(?:(?:peux[- ]tu|tu peux|pourrais[- ]tu|merci de|veux[- ]tu|est[- ]ce 
 # Terminaisons de verbe à l'impératif / infinitif / présent : « Fermeture » n'est pas « ferme »
 _T = r"(?:e|es|ez|er|ons|ent)?"
 _VERBES = [
-    ("allumer", rf"allum{_T}|activ{_T}|d[ée]marr{_T}|lanc{_T}|mets? en marche"),
+    ("allumer", rf"(?:r[ée]?)?allum{_T}|activ{_T}|d[ée]marr{_T}|lanc{_T}|mets? en marche"),
     ("eteindre", rf"[ée]teins?|[ée]teint|[ée]teindre|[ée]teign(?:ez|ons|ent)|coup{_T}|d[ée]sactiv{_T}|arr[êeé]t{_T}|stopp?{_T}"),
     ("ouvrir", rf"ouvr(?:e|es|ez|ir|ons|ent)?|l[èe]v{_T} (?:le|les) (?:volets?|stores?)|remont{_T}|mont{_T} (?:le|les) (?:volets?|stores?)"),
     ("fermer", rf"ferm{_T}|baiss{_T} (?:le|les) (?:volets?|stores?)|descend(?:s|ez|re|ons|ent)?"),
@@ -115,7 +115,7 @@ _RE_RESTAURER = re.compile(
 # Fautes de frappe sur le verbe : forme « canonique » (sans accents, lettres doublées réduites)
 # -> verbe correct. « etteins », « alume », « éttein » sont reconnus.
 _VERBES_CANONIQUES = [
-    ("alum", "allume"), ("eteign", "éteins"), ("etein", "éteins"), ("etei", "éteins"),
+    ("alum", "allume"), ("ralum", "rallume"), ("realum", "rallume"), ("eteign", "éteins"), ("etein", "éteins"), ("etei", "éteins"),
     ("ouvr", "ouvre"), ("ferm", "ferme"), ("regl", "règle"), ("coup", "coupe"),
     ("desactiv", "désactive"), ("activ", "active"), ("demar", "démarre"), ("aret", "arrête"),
     ("anul", "annule"),

@@ -78,7 +78,7 @@ def test_api_reglages(tmp_path, monkeypatch):
     monkeypatch.setattr(main, "enregistrer_reglages", lambda section, v: ecrit.update({section: v}))
     c = TestClient(creer_app(cfg, r.registre, voix=FausseVoix(), persister=True))
     rep = c.post("/api/voix/reglages", json={"fenetre_s": 30, "toujours_a_l_ecoute": True}).json()
-    assert rep == {"fenetre_s": 30, "toujours_a_l_ecoute": True}
+    assert rep["fenetre_s"] == 30 and rep["toujours_a_l_ecoute"] is True
     assert ecrit == {"voix": {"fenetre_s": 30, "toujours_a_l_ecoute": True}}
     assert c.get("/api/voix").json()["fenetre_s"] == 30
     assert c.post("/api/voix/reglages", json={}).status_code == 400

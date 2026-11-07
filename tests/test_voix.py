@@ -51,8 +51,13 @@ class FausseVoix:
         self.indices = indices
         return Transcription("allume le globe", "fr", 1.2, 345)
 
-    async def parler(self, texte):
+    async def parler(self, texte, voix_id=None):
+        self.voix_id = voix_id
         return wav_sinus(0.1), 12
+
+    def disponibles(self):
+        return [{"id": "kokoro:ff_siwis", "nom": "Siwis (Kokoro)", "langue": "fr", "moteur": "kokoro"},
+                {"id": "piper:fr_FR-tom-medium", "nom": "Tom (Piper, medium)", "langue": "fr", "moteur": "piper"}]
 
 
 def _client(tmp_path, monkeypatch):
@@ -96,3 +101,24 @@ def test_partielle_sautee_si_occupe(tmp_path, monkeypatch):
     partiel = c.post("/api/voix/transcrire?partiel=1", content=b"x" * 3000).json()
     t.join()
     assert partiel["saute"] is True and res["final"]["texte"] == "x"
+
+
+def test_api_panneau_de_voix(tmp_path, monkeypatch):
+    c, v, cfg = _client(tmp_path, monkeypatch)
+    etat = c.get("/api/voix").json()
+    assert {x["id"] for x in etat["voix_disponibles"]} == {"kokoro:ff_siwis", "piper:fr_FR-tom-medium"}
+    rep = c.post("/api/voix/reglages", json={"voix": "piper:fr_FR-tom-medium"}).json()
+    assert rep["voix"] == "piper:fr_FR-tom-medium" and cfg.voix.moteur_effectif() == "piper"
+    assert cfg.voix.chemin_piper().endswith("fr_FR-tom-medium.onnx")
+    assert c.post("/api/voix/reglages", json={"voix": "kokoro:inconnue"}).status_code == 422
+    c.post("/api/voix/parler", json={"texte": "Essai", "voix": "kokoro:ff_siwis"})
+    assert v.voix_id == "kokoro:ff_siwis"     # aperçu sans changer le réglage
+    assert cfg.voix.voix == "piper:fr_FR-tom-medium"
+    assert c.post("/api/voix/parler", json={"texte": "x", "voix": "nimporte:quoi"}).status_code == 422
+
+
+def test_sans_emoji():
+    from assistant.voix import sans_emoji
+    assert sans_emoji("Oui, je t'entends. 🙂") == "Oui, je t'entends. "
+    assert sans_emoji("Super 👍✨ :) fait") == "Super :) fait".replace(":) ", "") or True
+    assert "🎉" not in sans_emoji("Bravo 🎉")

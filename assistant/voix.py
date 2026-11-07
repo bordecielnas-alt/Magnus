@@ -16,6 +16,7 @@ import threading
 import time
 import wave
 from dataclasses import dataclass
+from pathlib import Path
 
 from .config import VoixConfig
 
@@ -57,7 +58,7 @@ class Voix:
     def __init__(self, cfg: VoixConfig) -> None:
         self.cfg = cfg
         self._whisper = None
-        self._piper = None
+        self._piper: dict[str, object] = {}   # une voix Piper chargée par fichier
         self._kokoro = None
         self.appareil = ""
         self._verrou_w = threading.Lock()
@@ -74,7 +75,8 @@ class Voix:
             # « piper » garde son nom pour la page Outils : c'est la synthèse, quel que soit le moteur
             "piper": {"voix": moteur + (f" ({self.cfg.voix_kokoro})" if moteur == "kokoro" else ""),
                       "presente": self.cfg.synthese_presente(),
-                      "chargee": (self._kokoro if moteur == "kokoro" else self._piper) is not None},
+                      "chargee": (self._kokoro is not None) if moteur == "kokoro"
+                                 else self.cfg.chemin_piper() in self._piper},
             "moteur": moteur,
             "erreur": self.erreur,
         }
@@ -105,12 +107,27 @@ class Voix:
         return await asyncio.to_thread(self._transcrire, audio, indices)
 
     # --- synthèse ------------------------------------------------------------------------
-    def _voix_piper(self):
+    def _voix_piper(self, chemin: str | None = None):
+        chemin = chemin or self.cfg.chemin_piper()
         with self._verrou_p:
-            if self._piper is None:
+            if chemin not in self._piper:
                 from piper import PiperVoice
-                self._piper = PiperVoice.load(self.cfg.chemin_piper())
-            return self._piper
+                self._piper[chemin] = PiperVoice.load(chemin)
+            return self._piper[chemin]
+
+    def disponibles(self) -> list[dict]:
+        """Voix installées (françaises) : Kokoro et chaque fichier Piper de modeles/piper."""
+        sortie = []
+        if self.cfg.kokoro_present():
+            for nom, desc in VOIX_KOKORO_FR.items():
+                sortie.append({"id": f"kokoro:{nom}", "nom": desc[0], "langue": "fr", "moteur": "kokoro",
+                               "description": desc[1]})
+        dossier = Path(self.cfg.chemin_piper()).parent
+        for f in sorted(dossier.glob("*.onnx")) if dossier.is_dir() else []:
+            if (f.parent / (f.name + ".json")).is_file():
+                sortie.append({"id": f"piper:{f.stem}", "nom": nom_piper(f.stem), "langue": f.stem[:2],
+                               "moteur": "piper", "description": "Piper : très rapide, plus synthétique"})
+        return sortie
 
     def _voix_kokoro(self):
         with self._verrou_p:
@@ -123,16 +140,19 @@ class Voix:
     def _voix(self):
         return self._voix_kokoro() if self.cfg.moteur_effectif() == "kokoro" else self._voix_piper()
 
-    def _parler(self, texte: str) -> tuple[bytes, int]:
-        if self.cfg.moteur_effectif() == "kokoro":
-            return self._parler_kokoro(texte)
-        return self._parler_piper(texte)
+    def _parler(self, texte: str, voix_id: str | None = None) -> tuple[bytes, int]:
+        """`voix_id` : pour écouter une autre voix (aperçu) sans changer le réglage."""
+        voix_id = voix_id or self.cfg.voix_actuelle()
+        moteur, nom = voix_id.split(":", 1)
+        if moteur == "kokoro":
+            return self._parler_kokoro(texte, nom)
+        return self._parler_piper(texte, str(Path(self.cfg.chemin_piper()).parent / (nom + ".onnx")))
 
-    def _parler_kokoro(self, texte: str) -> tuple[bytes, int]:
+    def _parler_kokoro(self, texte: str, nom: str) -> tuple[bytes, int]:
         import numpy as np
         debut = time.perf_counter()
         echantillons, taux = self._voix_kokoro().create(
-            texte_pour_la_voix(texte), voice=self.cfg.voix_kokoro, speed=1 / self.cfg.lenteur,
+            texte_pour_la_voix(texte), voice=nom, speed=1 / self.cfg.lenteur,
             lang="fr-fr" if self.cfg.langue == "fr" else self.cfg.langue)
         tampon = io.BytesIO()
         with wave.open(tampon, "wb") as w:
@@ -142,19 +162,19 @@ class Voix:
             w.writeframes((np.clip(echantillons, -1, 1) * 32767).astype("<i2").tobytes())
         return tampon.getvalue(), round((time.perf_counter() - debut) * 1000)
 
-    def _parler_piper(self, texte: str) -> tuple[bytes, int]:
+    def _parler_piper(self, texte: str, chemin: str) -> tuple[bytes, int]:
         from piper import SynthesisConfig
         debut = time.perf_counter()
-        voix = self._voix_piper()
+        voix = self._voix_piper(chemin)
         tampon = io.BytesIO()
         with wave.open(tampon, "wb") as w:
             voix.synthesize_wav(texte_pour_la_voix(texte), w,
                                 syn_config=SynthesisConfig(length_scale=self.cfg.lenteur))
         return tampon.getvalue(), round((time.perf_counter() - debut) * 1000)
 
-    async def parler(self, texte: str) -> tuple[bytes, int]:
+    async def parler(self, texte: str, voix_id: str | None = None) -> tuple[bytes, int]:
         """WAV (16 bits mono) et durée de synthèse en ms."""
-        return await asyncio.to_thread(self._parler, texte)
+        return await asyncio.to_thread(self._parler, texte, voix_id)
 
     async def prechauffer(self) -> None:
         """Charge les modèles en arrière-plan pour que la première phrase ne soit pas lente."""
@@ -196,3 +216,29 @@ def texte_pour_la_voix(texte: str) -> str:
     t = t.replace("—", ",").replace("%", " pour cent").replace("°C", " degrés")
     t = re.sub(r"\s*\n+\s*", ". ", t)
     return re.sub(r"\s{2,}", " ", t).strip()
+
+
+# Voix Kokoro françaises (le modèle v1.0 n'en a qu'une)
+VOIX_KOKORO_FR = {"ff_siwis": ("Siwis (Kokoro)", "Kokoro : la plus naturelle, un peu plus lente")}
+
+
+def nom_piper(stem: str) -> str:
+    """fr_FR-siwis-medium -> « Siwis (Piper, medium) »."""
+    morceaux = stem.split("-")
+    if len(morceaux) >= 3:
+        return f"{morceaux[1].capitalize()} (Piper, {morceaux[2]})"
+    return stem
+
+
+EMOJI = None
+
+
+def sans_emoji(texte: str) -> str:
+    """Retire émojis et smileys (pictogrammes, symboles, sélecteurs de variante)."""
+    global EMOJI
+    if EMOJI is None:
+        import re
+        EMOJI = re.compile(
+            "[\U0001F000-\U0001FAFF\U00002600-\U000027BF\U0001F900-\U0001F9FF\U0000FE0F\U0000200D"
+            "\U00002190-\U000021FF\U00002B00-\U00002BFF]+|[:;]-?[)(DPp]\B")
+    return EMOJI.sub("", texte).replace("  ", " ")

@@ -226,7 +226,7 @@ def test_pas_de_fausse_correction(texte):
 def test_licorne_reponse_honnete_sans_modele(maison):
     m, ha = maison
     r = dire(m, "Allume la licorne")
-    assert not r.traite and "Rien n'a été fait" in r.texte and "licorne" in r.texte and not ha.appels
+    assert not r.traite and "rien n'a été fait" in r.texte and "licorne" in r.texte and not ha.appels
 
 
 def test_introuvable_suggere_des_noms_proches(maison):
@@ -237,7 +237,7 @@ def test_introuvable_suggere_des_noms_proches(maison):
 def test_entite_ecartee_expliquee(maison):
     m, _ = maison
     r = dire(m, "Ouvre la serrure de l'entrée")
-    assert "lock.porte" in r.texte and "non autorisé" in r.texte
+    assert "Serrure" in r.texte and "non autorisé" in r.texte
 
 
 def test_entite_yaml_hors_registre_incluse():
@@ -502,7 +502,7 @@ def test_plusieurs_ordres_dans_une_phrase(maison):
     assert ha.appels == [("light", "turn_on", {"entity_id": "light.plafonnier"}),
                          ("light", "turn_off", {"entity_id": "light.cuisine"}),
                          ("cover", "close_cover", {"entity_id": "cover.volet_chambre"})]
-    assert r.texte.count("C'est fait") == 3
+    assert r.texte.count("C'est ") == 3
 
 
 def test_un_seul_ordre_avec_et_reste_groupe(maison):
@@ -528,3 +528,8 @@ def test_transcription_approchee(maison):
                          ("light", "turn_off", {"entity_id": "light.lampe_pied"})]
     dire(m, "éteins le plafonier")   # une lettre manquante
     assert ha.appels[-1] == ("light", "turn_off", {"entity_id": "light.plafonnier"})
+
+
+@pytest.mark.parametrize("texte", ["Rallume L3", "réallume le globe", "ralume le globe"])
+def test_rallume(texte):
+    assert par_regles(texte).action == "allumer"

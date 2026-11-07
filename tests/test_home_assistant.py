@@ -130,7 +130,7 @@ def test_api_introuvable_ne_passe_pas_par_le_modele(tmp_path):
     ha.ws = faux.ws  # inventaire de la fausse maison, Assist simulé par faux_ha
     c = TestClient(creer_app(cfg, r.registre, ha, AliasAppris(tmp_path / "a.json")))
     rep = c.post("/api/chat", json={"message": "allume la licorne"}).json()
-    assert rep["fournisseur"] == "maison" and "Rien n'a été fait" in rep["reponse"]
+    assert rep["fournisseur"] == "maison" and "rien n'a été fait" in rep["reponse"]
     assert not rapide.appels
 
 
@@ -144,6 +144,6 @@ def test_garde_fou_reponse_inventee(tmp_path):
     ha.ws = FauxHA().ws
     c = TestClient(creer_app(cfg, r.registre, ha, AliasAppris(tmp_path / "a.json")))
     rep = c.post("/api/chat", json={"message": "blabla", "role": "rapide"}).json()
-    assert rep["reponse"].startswith("Je n'ai pas compris")
+    assert rep["reponse"].startswith("Pas compris")
     lignes = [json.loads(l) for l in c.post("/api/chat", json={"message": "blabla", "role": "rapide", "flux": True}).text.splitlines()]
-    assert "".join(l.get("delta", "") for l in lignes).startswith("Je n'ai pas compris")
+    assert "".join(l.get("delta", "") for l in lignes).startswith("Pas compris")

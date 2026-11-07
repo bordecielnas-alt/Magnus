@@ -121,6 +121,9 @@ class VoixConfig(BaseModel):
     moteur_voix: Literal["auto", "kokoro", "piper"] = "auto"
     kokoro: str = ""           # dossier kokoro-v1.0.onnx + voices-v1.0.bin ; vide = modeles/kokoro
     voix_kokoro: str = "ff_siwis"
+    # Voix choisie dans le panneau de la page : « kokoro:ff_siwis », « piper:fr_FR-siwis-medium »…
+    # Vide = moteur_voix / voix_kokoro / piper ci-dessus.
+    voix: str = ""
     piper: str = ""            # voix Piper (.onnx) ; vide = modeles/piper/fr_FR-siwis-medium.onnx
     lenteur: float = Field(default=1.0, gt=0.3, lt=3)   # > 1 = parle plus lentement
     max_audio_mo: float = Field(default=10, gt=0)
@@ -143,6 +146,8 @@ class VoixConfig(BaseModel):
         return (d / "kokoro-v1.0.onnx").is_file() and (d / "voices-v1.0.bin").is_file()
 
     def moteur_effectif(self) -> str:
+        if self.voix and ":" in self.voix:
+            return self.voix.split(":", 1)[0]
         if self.moteur_voix == "auto":
             return "kokoro" if self.kokoro_present() else "piper"
         return self.moteur_voix
@@ -151,7 +156,17 @@ class VoixConfig(BaseModel):
         return self.kokoro_present() if self.moteur_effectif() == "kokoro" else self.piper_presente()
 
     def chemin_piper(self) -> str:
+        if self.voix.startswith("piper:"):
+            return str(RACINE / "modeles" / "piper" / (self.voix.split(":", 1)[1] + ".onnx"))
         return self.piper or str(RACINE / "modeles" / "piper" / "fr_FR-siwis-medium.onnx")
+
+    def voix_kokoro_effective(self) -> str:
+        return self.voix.split(":", 1)[1] if self.voix.startswith("kokoro:") else self.voix_kokoro
+
+    def voix_actuelle(self) -> str:
+        if self.moteur_effectif() == "kokoro":
+            return "kokoro:" + self.voix_kokoro_effective()
+        return "piper:" + Path(self.chemin_piper()).stem
 
     def whisper_present(self) -> bool:
         return (Path(self.chemin_whisper()) / "model.bin").is_file()

@@ -25,17 +25,21 @@ from .maison import Maison
 from .maison.alias import AliasAppris
 from .routeur import SIMPLE, Decision, Routeur
 from .reveil import Reveil
-from .voix import Voix
+from .voix import Voix, sans_emoji
 
 STATIC = Path(__file__).resolve().parent / "static"
 journal = logging.getLogger("uvicorn.error")  # s'affiche dans la console de l'assistant
 HISTORIQUE_MAX = 20
 ROLE_AUTO = "auto"
 NOTE_HA_ECHEC = (
-    "Home Assistant n'a pas pu traiter ce message ({code}). Tu n'as accès ni à l'état ni au pilotage "
-    "des appareils de la maison. Si le message concerne un appareil, dis-le en une phrase et propose "
-    "de reformuler avec le nom exact de l'appareil tel qu'il apparaît dans Home Assistant. "
-    "Sinon, réponds normalement."
+    "Home Assistant n'a pas pu traiter ce message ({code}). Si le message concerne un appareil, "
+    "réponds seulement « Pas compris, rien n'a été fait. » Sinon, réponds normalement."
+)
+# Style imposé à tous les modèles (s'ajoute à la consigne de personnalité)
+NOTE_STYLE = (
+    "Style : une ou deux phrases courtes, comme à l'oral. Aucun émoji ni smiley, aucune liste ni mise en forme "
+    "sauf si on la demande, pas de formule de politesse, pas de précision non demandée. "
+    "Ne parle jamais de tes limites ni de ton fonctionnement sauf si on te le demande."
 )
 
 
@@ -66,31 +70,31 @@ class Conv(BaseModel):
 
 
 class ReglagesVoix(BaseModel):
-    """Réglages de l'écoute continue modifiables depuis la page (⚙)."""
+    """Réglages modifiables depuis la page (⚙) : écoute continue et voix."""
     fenetre_s: float | None = Field(default=None, ge=0, le=3600)
     toujours_a_l_ecoute: bool | None = None
+    voix: str | None = Field(default=None, max_length=120)
 
 
 class Parole(BaseModel):
-    """Texte à lire à voix haute."""
+    """Texte à lire à voix haute ; `voix` facultative pour un aperçu (« Écouter »)."""
     texte: str = Field(min_length=1, max_length=4000)
+    voix: str | None = Field(default=None, max_length=120)
 
 
 # Les petits modèles imitent les réponses « C'est fait : … » vues dans l'historique :
 # une telle phrase sortie d'un modèle est une invention (le modèle n'a aucun accès à la maison).
 RE_FAUSSE_ACTION = re.compile(
-    r"^\s*(?:c.est (?:fait|remis|allum|[ée]teint)|j.ai (?:allum|[ée]teint|mis|remis|r[ée]gl|ouvert|ferm|baiss|augment)"
-    r"|(?:je |)(?:viens d.)?(?:allum|[ée]tein)[a-zé]*\s)", re.IGNORECASE)
-REPONSE_HONNETE = ("Je n'ai pas compris cette commande, donc rien n'a été fait. Essaie par exemple "
-                   "« Allume … », « Éteins … », « Mets … en rouge », « plus fort » ou « annule ».")
+    r"^\s*(?:c.est (?:fait|remis|allum|[ée]teint|r[ée]gl|ouvert|ferm)|j.ai (?:allum|[ée]teint|mis|remis|r[ée]gl|ouvert|ferm|baiss|augment)"
+    r"|(?:je |)(?:viens d.)?(?:allum|[ée]tein)[a-zé]*\s"
+    r"|[^.!?\n]{1,60}\b(?:allum|[ée]teint|r[ée]gl|ouvert|ferm)[ée]*e?s?\b[^.!?\n]{0,30}[.!]?\s*$)", re.IGNORECASE)
+REPONSE_HONNETE = "Pas compris, rien n'a été fait."
 
 
 NOTE_MAISON = (
-    "Les réponses précédentes qui donnent l'état d'un appareil ou confirment une action (« C'est fait… », "
-    "« … : allumé ») viennent du module maison de l'assistant, relié à Home Assistant : elles sont fiables. "
-    "Toi, dans ce message, tu n'as pas accès à la maison. Si on te demande d'agir sur un appareil, "
-    "dis simplement que la commande n'a pas été reconnue et propose une formulation comme "
-    "« Allume … », « Éteins … » ou « … est-il allumé ? »."
+    "Les réponses précédentes sur les appareils (« Globe allumé. », « … : éteint ») viennent du module maison, "
+    "relié à Home Assistant : elles sont fiables. Dans ce message tu ne peux pas agir sur la maison : "
+    "si on te le demande, réponds seulement « Pas compris, rien n'a été fait. »"
 )
 
 
@@ -102,14 +106,15 @@ NOTE_OUTILS_MAISON = (
     "pas des lumières (TV, chargeur…). "
     "Si on te demande d'agir sur « tout » ou « toutes les … » sans préciser de pièce, demande d'abord la pièce "
     "(ou la confirmation pour toute la maison) avant d'appeler agir. "
-    "Ne dis jamais qu'une action est faite sans avoir appelé agir et lu sa réponse. Réponds en une ou deux phrases "
-    "en disant ce que tu as fait. Les réponses précédentes « C'est fait… » viennent du module maison et sont fiables. "
+    "Ne dis jamais qu'une action est faite sans avoir appelé agir et lu sa réponse. Réponds en une phrase courte "
+    "qui dit ce que tu as fait (« Projo monté à 100 %. »), sans détailler ce que tu n'as pas changé. "
+    "Les réponses précédentes sur les appareils viennent du module maison et sont fiables. "
     "Tu n'as aucun autre outil : ni fichiers, ni commandes, ni web."
 )
 
 
 def _messages(cfg: Config, d: DemandeChat, outils: bool = False) -> list[Message]:
-    msgs = [Message("system", cfg.consigne_effective)]
+    msgs = [Message("system", cfg.consigne_effective + "\n\n" + NOTE_STYLE)]
     if cfg.home_assistant.url and not outils:
         msgs.append(Message("system", NOTE_MAISON))
     msgs += [Message(t.role, t.content) for t in d.historique[-HISTORIQUE_MAX:]]
@@ -235,7 +240,8 @@ def creer_app(config: Config | None = None, registre: Registre | None = None,
     @app.get("/api/voix")
     def etat_voix() -> dict:
         return {**voix.etat(), "wake_word": cfg.identite.wake_word_effectif,
-                "fenetre_s": cfg.voix.fenetre_s, "toujours_a_l_ecoute": cfg.voix.toujours_a_l_ecoute}
+                "fenetre_s": cfg.voix.fenetre_s, "toujours_a_l_ecoute": cfg.voix.toujours_a_l_ecoute,
+                "voix": cfg.voix.voix_actuelle(), "voix_disponibles": voix.disponibles()}
 
     @app.post("/api/voix/transcrire")
     async def transcrire(requete: Request, partiel: bool = False) -> dict:
@@ -287,6 +293,10 @@ def creer_app(config: Config | None = None, registre: Registre | None = None,
         valeurs = {k: v for k, v in r.model_dump().items() if v is not None}
         if not valeurs:
             raise HTTPException(400, "aucun réglage fourni")
+        if "voix" in valeurs:
+            if valeurs["voix"] not in {v["id"] for v in voix.disponibles()}:
+                raise HTTPException(422, f"voix inconnue : {valeurs['voix']}")
+            cfg.voix.voix = valeurs["voix"]
         if "fenetre_s" in valeurs:
             cfg.voix.fenetre_s = reveil.fenetre_s = valeurs["fenetre_s"]
         if "toujours_a_l_ecoute" in valeurs:
@@ -294,7 +304,8 @@ def creer_app(config: Config | None = None, registre: Registre | None = None,
         if persister:
             enregistrer_reglages("voix", valeurs)
         journal.info("réglages voix : %s", valeurs)
-        return {"fenetre_s": cfg.voix.fenetre_s, "toujours_a_l_ecoute": cfg.voix.toujours_a_l_ecoute}
+        return {"fenetre_s": cfg.voix.fenetre_s, "toujours_a_l_ecoute": cfg.voix.toujours_a_l_ecoute,
+                "voix": cfg.voix.voix_actuelle()}
 
     @app.post("/api/voix/endormir")
     def endormir(c: Conv) -> dict:
@@ -305,7 +316,9 @@ def creer_app(config: Config | None = None, registre: Registre | None = None,
     async def parler(p: Parole) -> Response:
         if not cfg.voix.active or not cfg.voix.synthese_presente():
             raise HTTPException(503, "synthèse vocale indisponible")
-        wav, duree = await voix.parler(p.texte)
+        if p.voix and p.voix not in {v["id"] for v in voix.disponibles()}:
+            raise HTTPException(422, f"voix inconnue : {p.voix}")
+        wav, duree = await voix.parler(p.texte, p.voix)
         return Response(wav, media_type="audio/wav", headers={"X-Duree-Ms": str(duree), "Cache-Control": "no-store"})
 
     @app.post("/api/route")
@@ -392,6 +405,7 @@ def creer_app(config: Config | None = None, registre: Registre | None = None,
                 r = await reg.repondre(role, msgs, outils)
             except FournisseurIndisponible as e:
                 raise HTTPException(503, f"aucun modèle disponible ({e})") from e
+            r.texte = sans_emoji(r.texte)
             if (garde or (outils and r.secours)) and RE_FAUSSE_ACTION.match(r.texte):
                 # le secours (qwen) n'a pas les outils : s'il dit « c'est fait », c'est inventé
                 journal.info("réponse inventée remplacée : %s", r.texte[:120])
@@ -418,7 +432,7 @@ def creer_app(config: Config | None = None, registre: Registre | None = None,
                 except FournisseurIndisponible as e:
                     yield _ndjson({"erreur": f"aucun modèle disponible ({e})"})
                     return
-                texte = r.texte
+                texte = sans_emoji(r.texte)
                 if r.secours and RE_FAUSSE_ACTION.match(texte):
                     journal.info("réponse inventée remplacée : %s", texte[:120])
                     texte = REPONSE_HONNETE
@@ -431,6 +445,10 @@ def creer_app(config: Config | None = None, registre: Registre | None = None,
             tampon, verifie = "", not garde
             try:
                 async for x in reg.flux(role, msgs, outils):
+                    if not isinstance(x, Reponse):
+                        x = sans_emoji(x)
+                        if not x:
+                            continue
                     if not isinstance(x, Reponse) and not verifie:
                         # on retient le début de la réponse pour vérifier qu'elle n'invente pas une action
                         tampon += x

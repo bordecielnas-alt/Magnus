@@ -249,7 +249,7 @@ class Maison:
         if cmd and cmd.action == "inventaire":
             return ReponseMaison(True, await self.lister(cmd.cible), {"resolution": "inventaire", "duree_ms": ms()})
         if cmd and cmd.action == "restaurer" and not ctx:
-            return ReponseMaison(True, "Je n'ai pas d'action récente à annuler dans cette conversation. Rien n'a été fait.",
+            return ReponseMaison(True, "Rien à annuler.",
                                  {"resolution": "rien à annuler", "duree_ms": ms()})
         if cmd and ctx and cmd.action in ("restaurer", "relatif"):
             r = await (self._restaurer(ctx) if cmd.action == "restaurer" else self._plus_moins(ctx, cmd.valeur or 1))
@@ -310,12 +310,11 @@ class Maison:
         propre = cible.strip().rstrip(" ?!.")
         for e in self.inventaire.ecartees:
             if c and c <= (mots(e.nom) | mots(e.entity_id.split(".", 1)[1].replace("_", " "))):
-                return (f"Je trouve « {e.nom} » ({e.entity_id}), mais je ne le pilote pas : {e.raison}. "
-                        "Rien n'a été fait.")
+                return f"Je ne pilote pas {e.nom} ({e.raison})."
         proches = sorted(self.inventaire.entites, key=lambda e: -len(c & (e.mots_nom() | e.mots_piece())))
         proches = [e for e in proches[:3] if c & (e.mots_nom() | e.mots_piece())]
-        suite = f" Tu voulais dire : {', '.join(e.libelle for e in proches)} ?" if proches else ""
-        return f"Je ne trouve aucun appareil qui corresponde à « {propre} ». Rien n'a été fait.{suite}"
+        suite = f" {_ou([e.nom for e in proches])} ?" if proches else ""
+        return f"« {propre} » introuvable, rien n'a été fait.{suite}"
 
     async def _evoque_la_maison(self, texte: str) -> bool:
         """La phrase cite-t-elle un type d'appareil, une pièce ou un appareil connu ? Sinon (« bonjour »),
@@ -356,7 +355,7 @@ class Maison:
             textes.append(r.texte)
             detail.update(r.detail)
         if introuvables:
-            textes.append(f"Je ne trouve pas : {', '.join(f'« {p} »' for p in introuvables)}.")
+            textes.append(f"Introuvable : {', '.join(introuvables)}.")
         if ambigues:
             p, cands = ambigues[0]
             self._attentes[conversation] = _Attente(Commande(cmd.action, p, cmd.valeur, False, cmd.couleur, cmd.kelvin),
@@ -465,17 +464,18 @@ class Maison:
             if cmd.couleur or cmd.kelvin:
                 details.append(_nom_couleur(cmd))
             val = f" ({', '.join(details)})" if details else ""
-            morceaux.append(f"C'est fait : {', '.join(e.libelle for e in faits)} — {verbe}{val}.")
+            noms = _noms_courts(faits, maxi=4)
+            morceaux.append(f"C'est {verbe} : {_et(noms)}{val}.")   # « c'est » : pas d'accord à faire
         if rates:
-            morceaux.append(f"Home Assistant a refusé : {', '.join(e.libelle for e in rates)}.")
+            morceaux.append(f"Refusé par Home Assistant : {_et(_noms_courts(rates))}.")
         if impossibles:
-            morceaux.append(f"Action impossible sur : {', '.join(e.libelle for e in impossibles)}.")
+            morceaux.append(f"Impossible sur {_et(_noms_courts(impossibles))}.")
         return ReponseMaison(True, " ".join(morceaux), {"entites": ids, "echecs": [e.entity_id for e in rates]})
 
 
     async def _restaurer(self, ctx: _Contexte) -> ReponseMaison:
         if not ctx.avant:
-            return ReponseMaison(True, "Je n'ai pas d'état précédent à remettre pour ces appareils.")
+            return ReponseMaison(True, "Rien à remettre.")
         faits, rates = [], []
         noms = {e.entity_id: e.libelle for e in ctx.entites}
         for s in ctx.avant:
@@ -485,10 +485,10 @@ class Maison:
             ok = await self.ha.appeler_service(*svc)
             (faits if ok else rates).append(noms.get(s["entity_id"], s["entity_id"]))
         if not faits and not rates:
-            return ReponseMaison(True, "Je ne sais pas remettre l'état précédent de ces appareils.")
+            return ReponseMaison(True, "Je ne sais pas les remettre comme avant.")
         txt = f"C'est remis comme avant : {', '.join(faits)}." if faits else ""
         if rates:
-            txt += f" Home Assistant a refusé : {', '.join(rates)}."
+            txt += f" Refusé : {', '.join(rates)}."
         return ReponseMaison(True, txt.strip(), {"entites": [s["entity_id"] for s in ctx.avant]})
 
     async def _plus_moins(self, ctx: _Contexte, sens: float) -> ReponseMaison:
@@ -503,9 +503,9 @@ class Maison:
         if faits:
             self._contextes_maj(ctx, [x for x in avant if x])
         mot = "plus" if sens > 0 else "moins"
-        txt = f"C'est fait : {', '.join(e.libelle for e in faits)} — un cran {mot}." if faits else ""
+        txt = f"{_et(_noms_courts(faits))} : un cran {mot}." if faits else ""
         if impossibles:
-            txt += f" Je ne sais pas régler {', '.join(e.libelle for e in impossibles)} en {mot}."
+            txt += f" Impossible sur {_et(_noms_courts(impossibles))}."
         return ReponseMaison(True, txt.strip(), {"entites": [e.entity_id for e in ctx.entites]})
 
     def _contextes_maj(self, ctx: _Contexte, avant: list[dict]) -> None:
@@ -582,6 +582,10 @@ def _noms_courts(entites: list[Entite], maxi: int = 4) -> list[str]:
     if len(entites) > maxi:
         noms.append(f"les {len(entites)}")
     return noms
+
+
+def _et(elements: list[str]) -> str:
+    return elements[0] if len(elements) == 1 else ", ".join(elements[:-1]) + " et " + elements[-1]
 
 
 def _ou(elements: list[str]) -> str:
