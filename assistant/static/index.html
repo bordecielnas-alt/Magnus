@@ -4,6 +4,10 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <meta name="theme-color" content="#000000">
+<link rel="icon" href="/favicon.ico" sizes="any">
+<link rel="icon" type="image/png" sizes="32x32" href="/static/icones/favicon-32.png">
+<link rel="apple-touch-icon" href="/apple-touch-icon.png">
+<link rel="manifest" href="/manifest.webmanifest">
 <title>Assistant</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,600&family=Atkinson+Hyperlegible:wght@400;700&display=swap">
@@ -172,6 +176,8 @@
 
   /* Réglages */
   dialog { border:1px solid var(--bord); border-radius:14px; background:var(--surface); color:var(--fg); padding:18px 20px; width:min(92vw, 380px); }
+  .diag summary { cursor:pointer; color:var(--muted); font-size:.9rem; margin:4px 0 8px; }
+  .diag pre { max-height:40vh; overflow:auto; white-space:pre-wrap; word-break:break-word; font-size:.7rem; color:var(--muted); background:#000; padding:8px; border-radius:8px; }
   dialog::backdrop { background:rgba(0,0,0,.55); }
   dialog form { display:block; }
   dialog h2 { margin:0 0 12px; font-size:1.1rem; font-family:var(--f-titre); }
@@ -271,6 +277,12 @@
       <label class="case"><input type="checkbox" id="toujours"> Toujours à l'écoute, sans mot de réveil</label>
       <p class="note" id="noteEcoute"></p>
     </fieldset>
+    <details class="diag" id="diagAudio">
+      <summary>Diagnostic audio</summary>
+      <p class="note">Ce qui s'est passé avec le micro et le son, sur cette page et la précédente. Le même journal est envoyé au serveur au fil de l'eau.</p>
+      <pre id="diagTexte"></pre>
+      <button type="button" class="discret" id="diagCopier">Copier</button>
+    </details>
     <div class="actions">
       <button type="button" class="discret" id="orbeDefaut">Valeurs par défaut</button>
       <button value="ok">Fermer</button>
@@ -567,6 +579,136 @@ let partielEnCours = false, minuteurPartiel = null;
 try { $('lireTout').checked = localStorage.getItem('voix.lireTout') === '1'; } catch (e) {}
 $('lireTout').onchange = () => { try { localStorage.setItem('voix.lireTout', $('lireTout').checked ? '1' : '0'); } catch (e) {} };
 
+// ----- Diagnostic audio : journal de ce qui arrive au micro et au son (Réglages › Diagnostic audio) -----
+const journal = [], fileDiag = [], t0Diag = performance.now();
+let journalPrecedent = '';
+try { journalPrecedent = localStorage.getItem('diag.precedent') || ''; } catch (e) {}
+function diag(m) {
+  const l = ((performance.now() - t0Diag) / 1000).toFixed(1).padStart(6) + ' s  ' + m;
+  journal.push(l); if (journal.length > 300) journal.shift();
+  if (fileDiag.length < 500) fileDiag.push({ms: Math.round(performance.now() - t0Diag), heure: new Date().toISOString(), texte: m});
+  if ($('diagAudio').open) majDiag();
+}
+function majDiag() {
+  $('diagTexte').textContent = '== Cette page ==\n' + journal.join('\n') + (journalPrecedent ? '\n\n== Page précédente ==\n' + journalPrecedent : '');
+}
+$('diagAudio').addEventListener('toggle', majDiag);
+
+// Fichier de diagnostic complet : navigateur, permissions, formats, réglages, état et journal.
+// Aucun secret : ni cookie, ni jeton, seulement les réglages de la page.
+async function rapportDiagnostic(avecJournal = true) {
+  const L = [], ajout = (k, v) => L.push(k.padEnd(22) + ' ' + v);
+  const essai = async f => { try { return await f(); } catch (e) { return 'erreur ' + (e.name || e.message); } };
+  L.push('# Diagnostic de la page de ' + nom + ' · ' + new Date().toISOString());
+  ajout('Version', $('version').textContent || '?');
+  ajout('Adresse', location.origin + location.pathname);
+  ajout('Navigateur', navigator.userAgent);
+  ajout('Langue', navigator.language);
+  ajout('Écran', screen.width + '×' + screen.height + ' · fenêtre ' + innerWidth + '×' + innerHeight + ' · densité ' + devicePixelRatio);
+  ajout('https', String(isSecureContext));
+  const nav = performance.getEntriesByType && performance.getEntriesByType('navigation')[0];
+  ajout('Chargement', nav ? nav.type : '?');
+  ajout('Permission micro', await essai(async () => (await navigator.permissions.query({name: 'microphone'})).state));
+  ajout('Entrées audio', await essai(async () => (await navigator.mediaDevices.enumerateDevices())
+    .filter(d => d.kind === 'audioinput').map(d => d.label || '(sans nom)').join(' | ') || 'aucune'));
+  ajout('Sorties audio', await essai(async () => (await navigator.mediaDevices.enumerateDevices()).filter(d => d.kind === 'audiooutput').length));
+  ajout('Contraintes micro', Object.keys(navigator.mediaDevices?.getSupportedConstraints?.() || {}).join(', '));
+  ajout('AudioContext', await essai(async () => { const c = new AudioContext(); const r = c.sampleRate + ' Hz, état ' + c.state; await c.close(); return r; }));
+  ajout('Enregistrement', typeof MediaRecorder === 'undefined' ? 'absent'
+    : ['audio/webm;codecs=opus', 'audio/ogg;codecs=opus', 'audio/mp4', 'audio/webm'].filter(t => MediaRecorder.isTypeSupported(t)).join(', '));
+  ajout('Lecture', ['audio/wav', 'audio/mpeg', 'audio/ogg'].map(t => t + '=' + (lecteur.canPlayType(t) || 'non')).join(', '));
+  ajout('WebGL orbe', document.querySelectorAll('.orbe-cadre canvas').length > 1 ? 'oui' : 'non (dessin 2D)');
+  L.push('', '## État actuel');
+  ajout('Vue', vue);
+  ajout('Voix coupée', String(muet));
+  ajout('Son débloqué', String(lecteurDebloque));
+  ajout('Voix en cours', String(voixActive));
+  ajout('Dictée', enregistreur ? enregistreur.state : 'non');
+  ajout('Écoute continue', continu.actif ? 'oui, contexte ' + (continu.ctx ? continu.ctx.state : '?') + ', ' + decrirePiste(continu.flux) : 'non');
+  ajout('Micro sans traitement', String(micSansTraitement));
+  ajout('Conversation', conversation.slice(0, 8) + '…');
+  L.push('', '## Réglages gardés par la page');
+  try {
+    for (let i = 0; i < localStorage.length; i++) {
+      const k = localStorage.key(i);
+      if (/^(chat|voix|orbe)\./.test(k)) ajout(k, (localStorage.getItem(k) || '').slice(0, 200));
+      else if (!/^diag\./.test(k)) ajout(k, '(valeur masquée)');
+    }
+  } catch (e) { ajout('localStorage', 'inaccessible ' + e.name); }
+  L.push('', '## Réglages voix du serveur');
+  L.push(await essai(async () => { const r = await fetch('/api/voix'); const o = await r.json();
+    if (o.voix_disponibles) o.voix_disponibles = o.voix_disponibles.length + ' voix';
+    return 'HTTP ' + r.status + ' ' + JSON.stringify(o); }));
+  if (avecJournal) L.push('', '## Journal de cette page', ...journal, '', '## Journal de la page précédente', journalPrecedent || '(vide)');
+  return L.join('\n');
+}
+// Envoi au serveur au fil de l'eau : chaque ligne du journal part par paquets (toutes les 3 s,
+// et au départ de la page). Le serveur en garde un fichier de diagnostic complet.
+// Format : POST /api/diagnostic/evenements, JSON {appareil, page, contexte?, lignes:[{ms, heure, texte}]}
+let appareilDiag = '';
+try { appareilDiag = localStorage.getItem('diag.appareil') || ''; if (!appareilDiag) { appareilDiag = (crypto.randomUUID ? crypto.randomUUID() : String(Math.random()).slice(2)).slice(0, 8); localStorage.setItem('diag.appareil', appareilDiag); } } catch (e) {}
+const pageDiag = conversation.slice(0, 8);
+let routeDiag = true;   // passe à false si le serveur n'a pas (encore) la route
+function envoyerDiag(contexte, fin) {
+  if (!routeDiag || (!fileDiag.length && !contexte)) return;
+  const corps = JSON.stringify({appareil: appareilDiag, page: pageDiag, contexte: contexte || undefined, lignes: fileDiag.splice(0)});
+  if (fin && navigator.sendBeacon) { navigator.sendBeacon('/api/diagnostic/evenements', new Blob([corps], {type: 'application/json'})); return; }
+  fetch('/api/diagnostic/evenements', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: corps, keepalive: true})
+    .then(r => { if (r.status === 404 || r.status === 405) routeDiag = false; }).catch(() => {});
+}
+setInterval(() => envoyerDiag(), 3000);
+addEventListener('pagehide', () => envoyerDiag(null, true));
+// photo du contexte (navigateur, permissions, formats, réglages) au chargement, puis le journal suit
+setTimeout(async () => { try { envoyerDiag(await rapportDiagnostic(false)); } catch (e) {} }, 1500);
+$('diagCopier').onclick = () => { majDiag(); navigator.clipboard?.writeText($('diagTexte').textContent).then(() => { $('diagCopier').textContent = 'Copié'; }, () => {}); };
+function decrirePiste(flux) {
+  const p = flux && flux.getAudioTracks()[0];
+  if (!p) return 'aucune piste';
+  let r = '« ' + (p.label || '?') + ' » état=' + p.readyState + (p.muted ? ' MUETTE' : '') + (p.enabled ? '' : ' désactivée');
+  try { const g = p.getSettings(); r += ' ' + (g.sampleRate || '?') + ' Hz' + (g.channelCount ? ' ' + g.channelCount + 'c' : '') + (g.deviceId ? ' dev=' + g.deviceId.slice(0, 6) : ''); } catch (e) {}
+  return r;
+}
+function suivrePiste(flux, nomFlux) {
+  const p = flux && flux.getAudioTracks()[0];
+  if (!p) return;
+  p.addEventListener('mute', () => diag(nomFlux + ' : piste devenue MUETTE (le système ne donne plus de son)'));
+  p.addEventListener('unmute', () => diag(nomFlux + ' : piste de nouveau active'));
+  p.addEventListener('ended', () => diag(nomFlux + ' : piste terminée'));
+}
+// Après un rechargement, Firefox Android peut garder le micro de la page d'avant : la nouvelle page
+// reçoit alors un micro « ouvert » qui ne donne que des zéros. On le détecte (micro mort) et on
+// réessaie une fois sans traitement du son (annulation d'écho), qui passe par un autre chemin audio.
+let micSansTraitement = false;
+const MESSAGE_MICRO_MORT = 'Le micro ne donne aucun son : Firefox le garde encore pour la page d\'avant. Ferme cet onglet et rouvre la page, ça repart.';
+async function ouvrirMicro(nomFlux) {
+  diag(nomFlux + ' : demande du micro' + (micSansTraitement ? ' sans traitement' : '') + ' (geste récent : ' + (navigator.userActivation ? navigator.userActivation.isActive : '?') + ')');
+  try {
+    const f = await navigator.mediaDevices.getUserMedia({audio: micSansTraitement
+      ? {echoCancellation: false, noiseSuppression: false, autoGainControl: false}
+      : {echoCancellation: true, noiseSuppression: true}});
+    diag(nomFlux + ' : micro obtenu, ' + decrirePiste(f));
+    suivrePiste(f, nomFlux);
+    return f;
+  } catch (e) { diag(nomFlux + ' : REFUS ' + (e.name || '') + ' ' + (e.message || '')); throw e; }
+}
+{
+  const nav = performance.getEntriesByType && performance.getEntriesByType('navigation')[0];
+  diag('page : ' + (nav ? nav.type : '?') + ' · ' + navigator.userAgent + ' · https=' + isSecureContext);
+  navigator.permissions?.query({name: 'microphone'}).then(p => {
+    diag('permission micro : ' + p.state); p.onchange = () => diag('permission micro : ' + p.state);
+  }).catch(e => diag('permission micro : inconnue (' + (e.name || e.message) + ')'));
+  navigator.mediaDevices?.enumerateDevices().then(l => diag('entrées audio : ' + l.filter(d => d.kind === 'audioinput').length))
+    .catch(() => {});
+  addEventListener('pageshow', ev => diag('pageshow' + (ev.persisted ? ' (restaurée du cache)' : '')));
+  addEventListener('pagehide', ev => {
+    diag('pagehide' + (ev.persisted ? ' (mise en cache)' : ''));
+    try { localStorage.setItem('diag.precedent', journal.join('\n')); } catch (e) {}
+  });
+  document.addEventListener('visibilitychange', () => diag('page ' + (document.hidden ? 'cachée' : 'visible')));
+  addEventListener('error', ev => diag('ERREUR JS : ' + ev.message));
+  addEventListener('unhandledrejection', ev => diag('ERREUR promesse : ' + (ev.reason && (ev.reason.name + ' ' + ev.reason.message))));
+}
+
 // Micro : message clair selon la cause, et réveil des contextes audio au premier geste
 // (sur téléphone, un AudioContext créé sans toucher l'écran reste muet).
 function erreurMicro(e) {
@@ -590,7 +732,9 @@ function analyseurMicro(flux) {
   try { ctx = sr ? new AudioContext({sampleRate: sr}) : new AudioContext(); src = ctx.createMediaStreamSource(flux); }
   catch (e) { if (ctx) ctx.close().catch(() => {}); ctx = new AudioContext(); src = ctx.createMediaStreamSource(flux); }
   const an = ctx.createAnalyser(); an.fftSize = 512; src.connect(an);
-  if (ctx.state === 'suspended') ctx.resume().catch(() => {});
+  diag('analyse : contexte ' + ctx.state + ' à ' + ctx.sampleRate + ' Hz (micro ' + (sr || '?') + ' Hz)');
+  ctx.onstatechange = () => diag('analyse : contexte ' + ctx.state);
+  if (ctx.state === 'suspended') ctx.resume().catch(e => diag('analyse : reprise refusée ' + e.name));
   return {ctx, an};
 }
 function reveillerAudio() {
@@ -616,17 +760,24 @@ $('micro').onclick = async () => {
   if (appuiLong) { appuiLong = false; return; }
   if (voixActive) couperLecture();
   // ce toucher vient de réveiller l'écoute continue : on ne l'arrête pas
-  if (performance.now() - (continu.reveil || 0) < 1500 || (continu.actif && continu.ctx?.state === 'suspended')) { reveillerAudio(); continu.reveil = 0; return; }
+  if ((continu.reveil && performance.now() - continu.reveil < 1500) || (continu.actif && continu.ctx?.state === 'suspended')) { reveillerAudio(); continu.reveil = 0; return; }
   if (continu.actif && !(enregistreur && enregistreur.state === 'recording')) { basculerContinu(false); return; }
   if (enregistreur && enregistreur.state === 'recording') { enregistreur.stop(); return; }
+  demarrerDictee(false);
+};
+
+let dicteeAnnulee = false, apresAnnulation = null;
+async function demarrerDictee(reessai) {
   try {
-    fluxMicro = await navigator.mediaDevices.getUserMedia({audio: {echoCancellation: true, noiseSuppression: true}});
+    fluxMicro = await ouvrirMicro('dictée');
   } catch (e) {
     erreurMicro(e);
     return;
   }
   morceaux = [];
   enregistreur = new MediaRecorder(fluxMicro);
+  diag('dictée : enregistreur ' + (enregistreur.mimeType || 'type ?'));
+  enregistreur.onerror = ev => diag('dictée : erreur enregistreur ' + (ev.error && ev.error.name));
   enregistreur.ondataavailable = ev => { if (ev.data.size) morceaux.push(ev.data); };
   enregistreur.onstop = transcrireEtEnvoyer;
   enregistreur.start(500);   // un morceau toutes les 0,5 s : sert aux mots en direct
@@ -638,35 +789,55 @@ $('micro').onclick = async () => {
   bulleEcoute.innerHTML = '<div class="tete"><span class="point"></span><span class="temps">0 s</span><span class="niveau"><span></span></span></div><div class="mots"></div>';
   $('fil').appendChild(bulleEcoute); defiler();
   orbe.etat('ecoute');
-  suivreVolume(fluxMicro);
+  suivreVolume(fluxMicro, reessai);
   minuteurPartiel = setInterval(transcriptionPartielle, 1200);
-};
+}
+function micMortDictee(reessai) {
+  diag('dictée : le micro ne donne que des zéros depuis 2 s (micro mort)');
+  dicteeAnnulee = true;
+  apresAnnulation = reessai ? () => bulle('erreur', MESSAGE_MICRO_MORT)
+                            : () => { micSansTraitement = true; setTimeout(() => demarrerDictee(true), 300); };
+  arreter();
+}
 
 function arreter() { if (enregistreur && enregistreur.state === 'recording') enregistreur.stop(); }
 
-function suivreVolume(flux) {
+function suivreVolume(flux, reessai) {
   // niveau du micro, minuteur, et arrêt automatique : 1,2 s de silence après avoir parlé (ou 6 s sans rien)
   try {
     const {ctx, an} = analyseurMicro(flux);
     const buf = new Uint8Array(an.fftSize), debut = performance.now();
-    let aParle = false, dernierSon = debut;
+    let aParle = false, dernierSon = debut, picDiag = 0, dernierDiag = debut, vivant = false, debutAnalyse = 0;
+    const fbuf = new Float32Array(an.fftSize);
     const tic = () => {
       if (!enregistreur || enregistreur.state !== 'recording') { ctx.close(); return; }
       an.getByteTimeDomainData(buf);
       let m = 0; for (const v of buf) m = Math.max(m, Math.abs(v - 128));
       const t = performance.now();
       if (m > 14) { aParle = true; dernierSon = t; orbe.impulsion(Math.round(m / 6)); }
+      picDiag = Math.max(picDiag, m);
+      if (t - dernierDiag > 1000) { diag('dictée : niveau max ' + picDiag + ' (contexte ' + ctx.state + ', piste ' + (flux.getAudioTracks()[0]?.muted ? 'muette' : 'ok') + ')'); picDiag = 0; dernierDiag = t; }
       if (bulleEcoute) {
         bulleEcoute.querySelector('.niveau span').style.width = Math.min(100, m * 1.6) + '%';
         bulleEcoute.querySelector('.temps').textContent = Math.floor((t - debut) / 1000) + ' s';
       }
       // si le navigateur n'a pas démarré l'analyse (contexte en pause), on ne coupe pas sur un faux silence
       const analyse = ctx.state === 'running';
-      if ((analyse && aParle && t - dernierSon > 1200) || (analyse && !aParle && t - debut > 6000) || t - debut > 30000) { arreter(); return; }
+      // micro mort : que des zéros exacts pendant 2 s d'analyse (un vrai micro a toujours un léger souffle)
+      if (analyse && !vivant) {
+        debutAnalyse = debutAnalyse || t;
+        an.getFloatTimeDomainData(fbuf);
+        for (let i = 0; i < fbuf.length; i++) if (fbuf[i] !== 0) { vivant = true; break; }
+        if (!vivant && t - debutAnalyse > 2000) { micMortDictee(reessai); return; }
+      }
+      if ((analyse && aParle && t - dernierSon > 1200) || (analyse && !aParle && t - debut > 6000) || t - debut > 30000) {
+        diag('dictée : arrêt auto (' + (aParle ? 'silence après la parole' : !analyse ? 'durée max, analyse inactive' : 'rien entendu en 6 s') + ')');
+        arreter(); return;
+      }
       requestAnimationFrame(tic);
     };
     tic();
-  } catch (e) {}
+  } catch (e) { diag('dictée : analyse du niveau impossible ' + (e.name || '') + ' ' + (e.message || '')); }
 }
 
 async function transcriptionPartielle() {
@@ -688,14 +859,21 @@ async function transcrireEtEnvoyer() {
   $('micro').classList.remove('actif'); $('micro').innerHTML = ICONE_MICRO;
   if (fluxMicro) fluxMicro.getTracks().forEach(t => t.stop());
   const blob = new Blob(morceaux, {type: enregistreur.mimeType || 'audio/webm'});
+  diag('dictée : fin, ' + morceaux.length + ' morceaux, ' + blob.size + ' octets');
   enregistreur = null;
   const finirBulle = () => { if (bulleEcoute) { bulleEcoute.remove(); bulleEcoute = null; } };
+  if (dicteeAnnulee) {
+    dicteeAnnulee = false; finirBulle(); if (!occupe) orbe.etat('repos');
+    const suite = apresAnnulation; apresAnnulation = null; if (suite) suite();
+    return;
+  }
   if (blob.size < 2000) { finirBulle(); if (!occupe) orbe.etat('repos'); return; }
   if (bulleEcoute) bulleEcoute.querySelector('.tete').innerHTML = '<span>Je transcris…</span>';
   if (!occupe) orbe.etat('reflexion');
   try {
     const r = await fetch('/api/voix/transcrire', {method: 'POST', headers: {'Content-Type': blob.type}, body: blob});
     const o = await r.json();
+    diag('transcription : HTTP ' + r.status + ', ' + (o.texte ? o.texte.length + ' caractères' : 'rien') + (o.detail ? ' · ' + o.detail : ''));
     finirBulle();
     if (!r.ok) throw new Error(o.detail || r.statusText);
     if (!o.texte) { if (!occupe) orbe.etat('repos'); bulle('erreur', 'Je n\'ai rien entendu.'); return; }
@@ -737,7 +915,7 @@ let lecteurDebloque = false, sonBloqueSignale = false;
 function debloquerSon() {
   if (lecteurDebloque || lecteur.src && !lecteur.paused) return;
   lecteur.src = 'data:audio/wav;base64,UklGRkQDAABXQVZFZm10IBAAAAABAAEAQB8AAEAfAAABAAgAZGF0YSADAACAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgA==';
-  lecteur.play().then(() => { lecteurDebloque = true; }).catch(() => {});
+  lecteur.play().then(() => { lecteurDebloque = true; diag('son : débloqué au toucher'); }).catch(e => diag('son : déblocage refusé ' + (e && e.name)));
 }
 for (const ev of ['pointerdown', 'keydown']) document.addEventListener(ev, debloquerSon, true);
 
@@ -788,7 +966,8 @@ async function direAVoixHaute(texte) {
         lecteur.onended = () => res(false);
         lecteur.onerror = () => res(false);
         lecteur.onpause = () => res(!lecture || !lecteur.ended);
-        lecteur.play().then(() => { lecteurDebloque = true; }).catch(e => {
+        lecteur.play().then(() => { lecteurDebloque = true; diag('son : lecture d\'une phrase'); }).catch(e => {
+          diag('son : lecture REFUSÉE ' + (e && e.name));
           // son refusé par le navigateur : on le dit une fois, le prochain toucher le débloquera
           if (e && e.name === 'NotAllowedError' && !sonBloqueSignale) {
             sonBloqueSignale = true;
@@ -895,8 +1074,7 @@ function majVeille(texte) {
   const eveille = continu.toujours || reste > 0;
   v.classList.toggle('eveille', eveille);
   $('btnEndormir').hidden = !(reste > 0) || continu.toujours;
-  if (!texte && (continu.enAttente || (continu.ctx && continu.ctx.state === 'suspended'))) texte = 'Touche l\'écran pour reprendre l\'écoute';
-  if (continu.enAttente) v.classList.add('on');
+  if (!texte && continu.ctx && continu.ctx.state === 'suspended') texte = 'Touche l\'écran pour reprendre l\'écoute';
   $('veilleTexte').textContent = texte || (continu.toujours ? 'Toujours à l\'écoute'
     : reste > 0 ? 'Je t\'écoute · ' + reste + ' s' : 'À l\'écoute de « ' + (continu.wake || nom) + ' »');
 }
@@ -936,10 +1114,9 @@ async function basculerContinu(on) {
     ouvrirFenetre(0);
   } else {
     try {
-      continu.flux = await navigator.mediaDevices.getUserMedia({audio: {echoCancellation: true, noiseSuppression: true}});
+      continu.flux = await ouvrirMicro('écoute continue');
     } catch (e) {
-      // au chargement de la page (écoute continue gardée), on ne remplit pas l'écran d'erreurs
-      if (!continu.auDemarrage) erreurMicro(e);
+      erreurMicro(e);
       on = false;
     }
     if (on) { continu.actif = true; analyserContinu(); }
@@ -947,8 +1124,7 @@ async function basculerContinu(on) {
   $('continu').checked = continu.actif;
   $('micro').classList.toggle('continu', continu.actif);
   $('micro').title = continu.actif ? 'Écoute continue active : clic pour l\'arrêter' : 'Parler : je m\'arrête tout seul quand tu te tais (appui long : écoute continue)';
-  if (!continu.auDemarrage) try { localStorage.setItem('voix.continu', continu.actif ? '1' : '0'); } catch (e) {}
-  continu.auDemarrage = false;
+  diag('écoute continue : ' + (continu.actif ? 'activée' : 'arrêtée'));
   majVeille();
 }
 
@@ -960,6 +1136,8 @@ function analyserContinu() {
   try { ({ctx, an} = analyseurMicro(continu.flux)); }
   catch (e) { bulle('erreur', 'Écoute continue impossible : le navigateur refuse d\'analyser le son du micro (' + (e.name || e.message) + ').'); basculerContinu(false); return; }
   continu.ctx = ctx;
+  let picC = 0, dernierC = performance.now(), vivantC = false, debutC = 0;
+  const fbufC = new Float32Array(an.fftSize);
   const buf = new Uint8Array(an.fftSize);
   let enMorceau = false, debut = 0, dernierSon = 0, depart = 0;
   const lancer = () => {
@@ -980,6 +1158,21 @@ function analyserContinu() {
     }
     an.getByteTimeDomainData(buf);
     let m = 0; for (const v of buf) m = Math.max(m, Math.abs(v - 128));
+    picC = Math.max(picC, m);
+    if (!vivantC && ctx.state === 'running') {
+      debutC = debutC || t;
+      an.getFloatTimeDomainData(fbufC);
+      for (let i = 0; i < fbufC.length; i++) if (fbufC[i] !== 0) { vivantC = true; break; }
+      if (!vivantC && t - debutC > 2000) {
+        diag('écoute continue : le micro ne donne que des zéros depuis 2 s (micro mort)');
+        const deja = micSansTraitement;
+        jeter(); basculerContinu(false);
+        if (deja) bulle('erreur', MESSAGE_MICRO_MORT);
+        else { micSansTraitement = true; setTimeout(() => basculerContinu(true), 300); }
+        return;
+      }
+    }
+    if (t - dernierC > 5000) { diag('écoute continue : niveau max ' + picC + ' (contexte ' + ctx.state + ')'); picC = 0; dernierC = t; }
     if (voixActive) {
       // L'assistant parle : on n'enregistre pas sa voix, mais si TU parles plus de 0,3 s
       // (seuil plus haut, l'annulation d'écho retire l'essentiel de sa voix), il se tait.
@@ -1021,6 +1214,7 @@ function analyserContinu() {
 
 function envoyerMorceau(rec) {
   const blob = new Blob(rec.morceaux, {type: rec.mimeType || 'audio/webm'});
+  diag('écoute continue : morceau de ' + blob.size + ' octets');
   if (blob.size < 2000) return;   // bruit très court
   // un morceau après l'autre, dans l'ordre où ils ont été dits
   continu.chaine = continu.chaine.then(async () => {
@@ -1029,6 +1223,7 @@ function envoyerMorceau(rec) {
                             {method: 'POST', headers: {'Content-Type': blob.type}, body: blob});
       if (!r.ok) return;
       const o = await r.json();
+      diag('écoute : action ' + o.action + (o.texte ? ' · « ' + o.texte.slice(0, 40) + ' »' : ''));
       if (o.wake_word) continu.wake = o.wake_word;
       if (typeof o.toujours === 'boolean') continu.toujours = o.toujours;
       if (o.action === 'ignorer') { montrerEntendu(o.texte); majVeille(); return; }
@@ -1046,22 +1241,9 @@ function envoyerMorceau(rec) {
   });
 }
 
-// Écoute continue gardée d'une visite à l'autre : on n'ouvre PAS le micro au chargement
-// (Firefox Android met alors la demande d'autorisation en attente et bloque ensuite le micro).
-// Elle reprend au premier toucher de l'écran, ce qui compte comme un geste de l'utilisateur.
-try {
-  if (localStorage.getItem('voix.continu') === '1') {
-    continu.enAttente = true; majVeille();
-    const reprendre = ev => {
-      document.removeEventListener('pointerdown', reprendre, true);
-      if (!continu.enAttente) return;
-      continu.enAttente = false; continu.auDemarrage = true;
-      if (ev.target.closest && ev.target.closest('#micro')) continu.reveil = performance.now();   // ce toucher sert à reprendre
-      basculerContinu(true);
-    };
-    document.addEventListener('pointerdown', reprendre, true);
-  }
-} catch (e) {}
+// L'écoute continue n'est PAS reprise au rechargement : sinon, après un rechargement, le micro
+// semble ouvert mais attend le mot de réveil, et un appui sur le micro l'arrête au lieu de dicter.
+try { localStorage.removeItem('voix.continu'); } catch (e) {}
 </script>
 <script src="/static/reglages.js"></script>
 </body>
