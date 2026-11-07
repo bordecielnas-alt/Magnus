@@ -21,7 +21,8 @@ La première fois seulement : sur GitHub, *Packages > magnus > Package settings 
 | Extra Parameters (vue avancée) | `--runtime=nvidia` | donne accès au GPU (plugin *Nvidia Driver* requis) |
 | Interface web | `8080` (ou un port libre, ex. `8089`) | port côté Unraid |
 | Config | `/mnt/user/appdata/magnus` | config.yaml, .env, mot de passe, connexion Claude |
-| Modèles voix | `/mnt/user/appdata/magnus/modeles` | ~2 Go, téléchargés au premier démarrage |
+| Modèles voix | `/mnt/user/appdata/magnus/modeles` | ~4 Go (voix + Ollama), téléchargés au premier démarrage |
+| Ollama intégré | `1` | le petit modèle local tourne dans ce conteneur |
 | GPU (NVIDIA_VISIBLE_DEVICES) | UUID de la P2000 (`GPU-…`, page *Settings > Nvidia Driver*) | la même carte que Plex : c'est prévu (≈1 Go de VRAM en int8) |
 | NVIDIA_DRIVER_CAPABILITIES | `compute,utility` | ne pas changer |
 | Télécharger les modèles | `1` | Whisper large-v3-turbo, Kokoro, Piper (Hugging Face, GitHub) |
@@ -39,10 +40,9 @@ La première fois seulement : sur GitHub, *Packages > magnus > Package settings 
 ```yaml
 home_assistant:
   url: "https://home.bordeciel.net"
-fournisseurs:
-  ollama-local:
-    url: "http://<IP-UNRAID>:11434/v1"   # le conteneur Ollama d'Unraid (sur la P2000)
 ```
+
+  Ollama tourne **dans le même conteneur** (variable *Ollama intégré* = 1) : rien à configurer, qwen2.5:3b est téléchargé au premier démarrage et reste chargé sur la P2000 (~2,5 Go de VRAM ; avec Whisper ~1 Go et Plex, on reste sous les 5 Go). Journal d'Ollama : `/mnt/user/appdata/magnus/ollama.log`.
 
 - **Claude** (une fois) : console du conteneur (icône > *Console*), puis :
 

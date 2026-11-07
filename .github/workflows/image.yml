@@ -38,10 +38,12 @@ jobs:
         run: |
           docker run --rm --entrypoint python magnus:verif -c "import assistant.main, assistant.preparer, assistant.voix, assistant.securite, assistant.mcp_maison, httpx, faster_whisper, kokoro_onnx, piper, av; print('imports ok')"
           docker run --rm --entrypoint claude magnus:verif --version
+          docker run --rm --entrypoint ollama magnus:verif --version
           mkdir -p /tmp/cfg /tmp/mod && sudo chown -R 99:100 /tmp/cfg /tmp/mod
           docker run -d --name essai -p 8080:8080 -v /tmp/cfg:/config -v /tmp/mod:/modeles magnus:verif
-          for i in $(seq 1 30); do curl -fs http://127.0.0.1:8080/health && break; sleep 2; done
+          for i in $(seq 1 45); do curl -fs http://127.0.0.1:8080/health && break; sleep 2; done
           curl -fs http://127.0.0.1:8080/health
+          docker exec essai ollama list
           docker logs essai
           docker rm -f essai
 

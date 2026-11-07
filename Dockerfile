@@ -1,5 +1,8 @@
 # Image de l'assistant : orchestrateur, voix (Whisper GPU, Kokoro, Piper), Claude Code.
 # GPU : lancer avec --runtime=nvidia (Unraid : plugin Nvidia Driver). Sans GPU, tout passe sur processeur.
+# Ollama officiel : seulement pour en copier le binaire et ses bibliothèques (CUDA comprises)
+FROM ollama/ollama:latest AS ollama
+
 FROM python:3.13-slim
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
@@ -22,6 +25,10 @@ COPY assistant ./assistant
 RUN pip install . "nvidia-cublas-cu12" "nvidia-cudnn-cu12>=9,<10" \
  && rm -rf /app/assistant
 ENV LD_LIBRARY_PATH=/usr/local/lib/python3.13/site-packages/nvidia/cublas/lib:/usr/local/lib/python3.13/site-packages/nvidia/cudnn/lib
+
+# Ollama intégré : petit modèle local (qwen2.5:3b) dans le même conteneur, modèles dans /modeles/ollama
+COPY --from=ollama /usr/bin/ollama /usr/bin/ollama
+COPY --from=ollama /usr/lib/ollama /usr/lib/ollama
 
 COPY docker/demarrer.sh /usr/local/bin/demarrer
 RUN chmod 755 /usr/local/bin/demarrer
