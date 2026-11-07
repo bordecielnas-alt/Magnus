@@ -1,4 +1,5 @@
-# Construit l'image Docker et la publie sur ghcr.io/<propriétaire>/magnus à chaque push sur main.
+# Construit l'image Docker, vérifie qu'elle démarre, puis la publie sur ghcr.io/<propriétaire>/magnus
+# à chaque push sur main.
 name: Image Docker
 
 on:
@@ -24,6 +25,26 @@ jobs:
 
       - uses: docker/setup-buildx-action@v3
 
+      - name: Construction (locale, pour vérifier)
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          load: true
+          tags: magnus:verif
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Vérification de l'image (imports, claude, démarrage)
+        run: |
+          docker run --rm --entrypoint python magnus:verif -c "import assistant.main, assistant.preparer, assistant.voix, assistant.securite, assistant.mcp_maison, httpx, faster_whisper, kokoro_onnx, piper, av; print('imports ok')"
+          docker run --rm --entrypoint claude magnus:verif --version
+          mkdir -p /tmp/cfg /tmp/mod && sudo chown -R 99:100 /tmp/cfg /tmp/mod
+          docker run -d --name essai -p 8080:8080 -v /tmp/cfg:/config -v /tmp/mod:/modeles magnus:verif
+          for i in $(seq 1 30); do curl -fs http://127.0.0.1:8080/health && break; sleep 2; done
+          curl -fs http://127.0.0.1:8080/health
+          docker logs essai
+          docker rm -f essai
+
       - uses: docker/login-action@v3
         with:
           registry: ghcr.io
@@ -39,11 +60,11 @@ jobs:
             type=sha,format=short
             type=ref,event=tag
 
-      - uses: docker/build-push-action@v6
+      - name: Publication
+        uses: docker/build-push-action@v6
         with:
           context: .
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha
-          cache-to: type=gha,mode=max
