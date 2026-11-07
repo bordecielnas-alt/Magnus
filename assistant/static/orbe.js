@@ -29,14 +29,13 @@ function creerOrbe(cv, opts = {}) {
   };
 
   const mc = cv.getContext("2d");
-  const trace = document.createElement("canvas"), tc = trace.getContext("2d");
   let ctx = mc;
   const reduit = matchMedia("(prefers-reduced-motion: reduce)").matches;
   let W = 0, D = 1;
   function taille() {
     D = Math.min(devicePixelRatio || 1, 2);
     W = Math.max(2, Math.min(1800, Math.round(cv.clientWidth * D)));   // plafond : plein écran fluide
-    cv.width = cv.height = trace.width = trace.height = W;
+    cv.width = cv.height = W;
   }
   addEventListener("resize", taille); taille();
 
@@ -77,7 +76,7 @@ function creerOrbe(cv, opts = {}) {
     p.rot = Math.random() * Math.PI * 2;
     p.v = (.4 + Math.random()) * (Math.random() < .5 ? -1 : 1);
     p.t = .6 + Math.random() * 2.2; p.vie = 0;
-    p.dy = 0; p.taille = .4 + Math.random() * 1.1;
+    p.dy = 0; p.taille = .4 + Math.random() * 1.1; p.h = [];
     return p;
   }
   function ajuster() { while (parts.length < nbPart) parts.push(nouvelle()); parts.length = nbPart; }
@@ -131,13 +130,11 @@ function creerOrbe(cv, opts = {}) {
     const souffle = 1 + Math.sin(temps * (etat === "reflexion" ? 5 : 1.6)) * .05 + L.voix * .22;
     const jit = etat === "erreur" ? (Math.random() - .5) * W * .006 : 0;
 
-    // traînées : on assombrit l'image précédente
-    // (les particules ont leur propre calque à traînées, la brume est redessinée nette)
+    // Image redessinée entièrement à chaque fois : aucune trace ne peut rester.
+    // Les traînées des particules et des étincelles sont tracées à partir de leurs dernières positions.
     mc.setTransform(1, 0, 0, 1, 0, 0); mc.globalCompositeOperation = "source-over"; mc.clearRect(0, 0, W, W);
     if (fond) { mc.fillStyle = fond; mc.fillRect(0, 0, W, W); }
-    tc.setTransform(1, 0, 0, 1, 0, 0); tc.globalCompositeOperation = "destination-out";
-    tc.fillStyle = "rgba(0,0,0,0.22)"; tc.fillRect(0, 0, W, W);
-    for (const c of [mc, tc]) { c.globalCompositeOperation = "lighter"; c.translate(cx + jit, cy + jit * .6); }
+    mc.globalCompositeOperation = "lighter"; mc.translate(cx + jit, cy + jit * .6);
     ctx = mc;
 
     // halo extérieur
@@ -210,8 +207,8 @@ function creerOrbe(cv, opts = {}) {
       }
     }
 
-    // particules en orbite
-    ctx = tc;
+    // particules en orbite (traînée : les 7 dernières positions, de plus en plus pâles)
+    ctx = mc;
     const rayon = R * L.rayon * souffle;
     for (const p of parts) {
       p.vie += dt;
@@ -229,6 +226,13 @@ function creerOrbe(cv, opts = {}) {
       const a = fondu * (.2 + .6 * prof) * vacille * .8;
       const s = p.taille * D * (.6 + prof) * (E.effet === "eclats" ? 1.3 : 1);
       const col = p.r < .45 ? C.coeur : C.mi;
+      const h = p.h || (p.h = []);
+      for (let k = 0; k < h.length; k++) {
+        const q = h[k], f = Math.pow(.72, k + 1);
+        ctx.fillStyle = rgba(q[3], q[2] * .9 * f);
+        ctx.beginPath(); ctx.arc(q[0], q[1], s * (1 - k * .06), 0, 7); ctx.fill();
+      }
+      h.unshift([x, y, a, col]); if (h.length > 7) h.length = 7;
       if (E.effet === "eclats" && p.taille > 1.8) {
         ctx.save(); ctx.translate(x, y); ctx.rotate(temps * 2 + p.rot);
         ctx.fillStyle = rgba(C.coeur, a * .9);
@@ -265,7 +269,7 @@ function creerOrbe(cv, opts = {}) {
     g.addColorStop(1, rgba(C.bord, 0));
     ctx.fillStyle = g; ctx.beginPath(); ctx.arc(0, 0, cR * 2.2, 0, 7); ctx.fill();
 
-    ctx = tc;
+    ctx = mc;
     // éclairs : seulement pour l'école Foudre (plus d'éclairs en réflexion pour les autres écoles)
     arcT -= dt;
     const freqArc = E.effet === "arcs" ? (etat === "reflexion" ? .04 : .12) : 99;
@@ -291,19 +295,27 @@ function creerOrbe(cv, opts = {}) {
       if (E.effet === "monte") e.vy -= .0004 * 60 * dt;
       e.vie -= dt / e.t;
       if (e.vie <= 0) { etincelles.splice(i, 1); continue; }
+      const ex = e.x * R * 2, ey = e.y * R * 2, er = D * 1.6 * e.vie + D * .5, eh = e.h || (e.h = []);
+      for (let k = 0; k < eh.length; k++) {
+        ctx.fillStyle = rgba(C.coeur, eh[k][2] * .9 * vacille * Math.pow(.72, k + 1));
+        ctx.beginPath(); ctx.arc(eh[k][0], eh[k][1], er, 0, 7); ctx.fill();
+      }
+      eh.unshift([ex, ey, e.vie]); if (eh.length > 6) eh.length = 6;
       ctx.fillStyle = rgba(C.coeur, e.vie * .9 * vacille);
-      ctx.beginPath(); ctx.arc(e.x * R * 2, e.y * R * 2, D * 1.6 * e.vie + D * .5, 0, 7); ctx.fill();
+      ctx.beginPath(); ctx.arc(ex, ey, er, 0, 7); ctx.fill();
     }
     if (etincelles.length > 400) etincelles.splice(0, etincelles.length - 400);
 
     ctx = mc;
     mc.setTransform(1, 0, 0, 1, 0, 0);
-    mc.drawImage(trace, 0, 0);
     if (fond && motif) {
+      // tramage limité au halo : au-delà, le fond reste noir pur (écrans OLED)
       const ox = (Math.random() * 64) | 0, oy = (Math.random() * 64) | 0;
+      mc.save();
+      mc.beginPath(); mc.arc(cx + jit, cy + jit * .6, hR * .8, 0, 7); mc.clip();
       mc.globalCompositeOperation = "lighter";
       mc.translate(-ox, -oy); mc.fillStyle = motif; mc.fillRect(0, 0, W + 64, W + 64);
-      mc.setTransform(1, 0, 0, 1, 0, 0);
+      mc.restore();
     }
     // fondu circulaire des bords : aucun bord carré visible
     mc.globalCompositeOperation = "destination-in";
