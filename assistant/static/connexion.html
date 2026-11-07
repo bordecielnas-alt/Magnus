@@ -60,7 +60,11 @@ fetch('/api/securite').then(r => r.json()).then(s => {
       $('info').textContent = 'Aucun mot de passe pour l\'instant. Choisis-en un : il sera demandé sur les autres appareils (tablette, téléphone).';
       $('fDefinir').hidden = false; $('nouveau').focus();
     } else {
-      $('info').textContent = 'Aucun mot de passe n\'est encore défini. Ouvre l\'assistant sur l\'ordinateur où il tourne pour en choisir un.';
+      $('info').textContent = 'Aucun mot de passe n\'est encore défini. Il se choisit sur la machine de l\'assistant : sur le PC, ouvre http://127.0.0.1:8080/connexion ; dans Docker (Unraid), ouvre la console du conteneur et lance :';
+      const cmd = document.createElement('pre');
+      cmd.textContent = 'python -c "import json,getpass,urllib.request;r=urllib.request.Request(\'http://127.0.0.1:8080/api/securite/mot-de-passe\',data=json.dumps({\'nouveau\':getpass.getpass(\'Mot de passe : \')}).encode(),headers={\'Content-Type\':\'application/json\'});print(urllib.request.urlopen(r).read().decode())"';
+      cmd.style.cssText = 'text-align:left;white-space:pre-wrap;word-break:break-all;font-size:.75rem;padding:10px;border:1px solid var(--bord);border-radius:10px;user-select:all;margin:0';
+      $('info').after(cmd);
     }
   } else if (s.connecte) {
     location.replace(destination);

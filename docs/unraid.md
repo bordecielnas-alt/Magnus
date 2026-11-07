@@ -55,7 +55,7 @@ claude auth login
 - **Mot de passe** : depuis la console du conteneur on n'a pas de navigateur ; le plus simple est de le définir via l'API locale :
 
 ```bash
-python -c "import json,urllib.request;r=urllib.request.Request('http://127.0.0.1:8080/api/securite/mot-de-passe',data=json.dumps({'nouveau':input('Mot de passe : ')}).encode(),headers={'Content-Type':'application/json'});print(urllib.request.urlopen(r).read().decode())"
+python -c "import json,getpass,urllib.request;r=urllib.request.Request('http://127.0.0.1:8080/api/securite/mot-de-passe',data=json.dumps({'nouveau':getpass.getpass('Mot de passe : ')}).encode(),headers={'Content-Type':'application/json'});print(urllib.request.urlopen(r).read().decode())"
 ```
 
   (Le premier mot de passe n'est accepté que depuis la machine elle-même, c'est-à-dire depuis l'intérieur du conteneur.)
