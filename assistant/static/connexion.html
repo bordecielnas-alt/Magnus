@@ -1,0 +1,90 @@
+<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Connexion</title>
+<style>
+  :root { --bg:#0a1018; --fg:#e8ecef; --muted:#8a96a0; --accent:#3cc6c8; --bord:#26323b; --err:#ef7a73; }
+  @media (prefers-color-scheme: light) { :root { --bg:#f4f6f7; --fg:#14181c; --muted:#5b6670; --accent:#0f7c86; --bord:#d3dade; --err:#c0392b; } }
+  * { box-sizing:border-box; }
+  html,body { height:100%; margin:0; }
+  body { background:var(--bg); color:var(--fg); font-family:system-ui,sans-serif; display:flex; align-items:center; justify-content:center; padding:16px; }
+  main { width:min(360px, 100%); display:flex; flex-direction:column; gap:14px; text-align:center; }
+  .halo { width:72px; height:72px; margin:0 auto 4px; border-radius:50%;
+          background:radial-gradient(circle at 40% 35%, var(--accent), transparent 70%); filter:blur(4px); }
+  h1 { margin:0; font-size:1.6rem; font-weight:600; }
+  p { margin:0; color:var(--muted); font-size:.9rem; line-height:1.45; }
+  form { display:flex; flex-direction:column; gap:10px; margin-top:6px; }
+  input { padding:12px 14px; border-radius:12px; border:1px solid var(--bord); background:transparent; color:var(--fg); font-size:1rem; }
+  input:focus { outline:2px solid var(--accent); outline-offset:1px; }
+  button { padding:12px; border:0; border-radius:12px; background:var(--accent); color:#fff; font-size:1rem; font-weight:600; cursor:pointer; }
+  button:disabled { opacity:.5; cursor:default; }
+  .erreur { color:var(--err); min-height:1.2em; font-size:.9rem; }
+  [hidden] { display:none !important; }
+</style>
+</head>
+<body>
+<main>
+  <div class="halo" aria-hidden="true"></div>
+  <h1 id="titre">…</h1>
+  <p id="info">Chargement…</p>
+  <form id="fConnexion" hidden>
+    <input type="password" id="mdp" autocomplete="current-password" placeholder="Mot de passe" required>
+    <button id="bConnexion">Se connecter</button>
+  </form>
+  <form id="fDefinir" hidden>
+    <input type="password" id="nouveau" autocomplete="new-password" placeholder="Nouveau mot de passe (10 caractères minimum)" minlength="10" required>
+    <input type="password" id="confirme" autocomplete="new-password" placeholder="Confirme le mot de passe" minlength="10" required>
+    <button id="bDefinir">Définir le mot de passe</button>
+  </form>
+  <p class="erreur" id="erreur" role="alert"></p>
+</main>
+<script>
+const $ = id => document.getElementById(id);
+const suite = new URLSearchParams(location.search).get('suite') || '/';
+const destination = suite.startsWith('/') && !suite.startsWith('//') ? suite : '/';
+
+async function poster(url, corps) {
+  const r = await fetch(url, {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(corps)});
+  let o = {}; try { o = await r.json(); } catch (e) {}
+  if (!r.ok) throw new Error(o.detail || ('Erreur ' + r.status));
+  return o;
+}
+
+fetch('/api/securite').then(r => r.json()).then(s => {
+  $('titre').textContent = s.nom || 'Assistant';
+  document.title = 'Connexion · ' + (s.nom || 'Assistant');
+  if (!s.mot_de_passe_defini) {
+    if (s.locale) {
+      $('info').textContent = 'Aucun mot de passe pour l\'instant. Choisis-en un : il sera demandé sur les autres appareils (tablette, téléphone).';
+      $('fDefinir').hidden = false; $('nouveau').focus();
+    } else {
+      $('info').textContent = 'Aucun mot de passe n\'est encore défini. Ouvre l\'assistant sur l\'ordinateur où il tourne pour en choisir un.';
+    }
+  } else if (s.connecte) {
+    location.replace(destination);
+  } else {
+    $('info').textContent = 'Connexion à cet appareil (gardée ' + s.session_jours + ' jours).';
+    $('fConnexion').hidden = false; $('mdp').focus();
+  }
+}).catch(() => { $('info').textContent = 'Assistant injoignable.'; });
+
+$('fConnexion').onsubmit = async ev => {
+  ev.preventDefault(); $('erreur').textContent = ''; $('bConnexion').disabled = true;
+  try { await poster('/api/connexion', {mot_de_passe: $('mdp').value}); location.replace(destination); }
+  catch (e) { $('erreur').textContent = e.message; $('mdp').select(); }
+  finally { $('bConnexion').disabled = false; }
+};
+
+$('fDefinir').onsubmit = async ev => {
+  ev.preventDefault(); $('erreur').textContent = '';
+  if ($('nouveau').value !== $('confirme').value) { $('erreur').textContent = 'Les deux mots de passe sont différents.'; return; }
+  $('bDefinir').disabled = true;
+  try { await poster('/api/securite/mot-de-passe', {nouveau: $('nouveau').value}); location.replace(destination); }
+  catch (e) { $('erreur').textContent = e.message; }
+  finally { $('bDefinir').disabled = false; }
+};
+</script>
+</body>
+</html>

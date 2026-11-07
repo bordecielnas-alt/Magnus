@@ -1,16 +1,17 @@
-# Déploiement sur Unraid (Compose Manager ou ligne de commande).
-# Le nom de l'assistant se règle dans /config/config.yaml ou via ASSISTANT_NOM.
+# Alternative au template Unraid (Compose Manager) — voir docs/unraid.md
 services:
   orchestrateur:
-    build: .
-    image: homelab-assistant:latest
+    image: ghcr.io/bordecielnas-alt/magnus:latest
     restart: unless-stopped
+    runtime: nvidia
     ports:
       - "${ASSISTANT_PORT_HOTE:-8080}:8080"
     environment:
       - TZ=Europe/Paris
-      # - ASSISTANT_NOM=...
-      # - ASSISTANT_WAKE_WORD=...
+      - NVIDIA_VISIBLE_DEVICES=${GPU_UUID:-all}
+      - NVIDIA_DRIVER_CAPABILITIES=compute,utility
+      - ASSISTANT_TELECHARGER_MODELES=1
+      - ASSISTANT_PROXIES_DE_CONFIANCE=${PROXY_NPM:-}
     volumes:
-      # Sur Unraid : /mnt/user/appdata/<dossier>/config
-      - ${ASSISTANT_CONFIG_DIR:-./config-local}:/config
+      - ${ASSISTANT_CONFIG_DIR:-/mnt/user/appdata/magnus}:/config
+      - ${ASSISTANT_MODELES_DIR:-/mnt/user/appdata/magnus/modeles}:/modeles

@@ -19,6 +19,14 @@ RACINE = Path(__file__).resolve().parent.parent
 DEFAUTS = Path(__file__).resolve().parent / "defaults.yaml"
 
 # Variable d'environnement -> (section, clé)
+# Modèles (voix) : ASSISTANT_MODELES (conteneur : /modeles), sinon modeles/ du dépôt
+MODELES = Path(os.environ.get("ASSISTANT_MODELES") or (Path(__file__).resolve().parent.parent / "modeles"))
+
+ENV_LISTES: dict[str, tuple[str, str]] = {
+    "ASSISTANT_RESEAUX_AUTORISES": ("securite", "reseaux_autorises"),
+    "ASSISTANT_PROXIES_DE_CONFIANCE": ("securite", "proxies_de_confiance"),
+}
+
 ENV_MAP: dict[str, tuple[str, str]] = {
     "ASSISTANT_NOM": ("identite", "nom"),
     "ASSISTANT_WAKE_WORD": ("identite", "wake_word"),
@@ -135,11 +143,11 @@ class VoixConfig(BaseModel):
     def chemin_whisper(self) -> str:
         if self.whisper:
             return self.whisper
-        turbo = RACINE / "modeles" / "whisper-large-v3-turbo"
-        return str(turbo if (turbo / "model.bin").is_file() else RACINE / "modeles" / "whisper-small")
+        turbo = MODELES / "whisper-large-v3-turbo"
+        return str(turbo if (turbo / "model.bin").is_file() else MODELES / "whisper-small")
 
     def chemin_kokoro(self) -> Path:
-        return Path(self.kokoro) if self.kokoro else RACINE / "modeles" / "kokoro"
+        return Path(self.kokoro) if self.kokoro else MODELES / "kokoro"
 
     def kokoro_present(self) -> bool:
         d = self.chemin_kokoro()
@@ -158,8 +166,8 @@ class VoixConfig(BaseModel):
     def chemin_piper(self) -> str:
         if self.voix.startswith("piper:"):
             fichier = self.voix.split(":", 2)[1]
-            return str(RACINE / "modeles" / "piper" / (fichier + ".onnx"))
-        return self.piper or str(RACINE / "modeles" / "piper" / "fr_FR-siwis-medium.onnx")
+            return str(MODELES / "piper" / (fichier + ".onnx"))
+        return self.piper or str(MODELES / "piper" / "fr_FR-siwis-medium.onnx")
 
     def voix_kokoro_effective(self) -> str:
         return self.voix.split(":", 1)[1] if self.voix.startswith("kokoro:") else self.voix_kokoro
@@ -176,6 +184,29 @@ class VoixConfig(BaseModel):
 
     def piper_presente(self) -> bool:
         return Path(self.chemin_piper()).is_file()
+
+
+class SecuriteConfig(BaseModel):
+    """Accès en attendant les comptes (phase 3). Voir assistant/securite.py."""
+    active: bool = True
+    # Réseaux qui peuvent joindre l'assistant (en plus de la machine elle-même) : réseaux privés
+    # habituels et plage Tailscale. Tout le reste reçoit 403, même avec le mot de passe.
+    reseaux_autorises: list[str] = Field(default_factory=lambda: [
+        "10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", "100.64.0.0/10", "fc00::/7", "fe80::/10"])
+    # Proxys dont on croit X-Forwarded-For (Nginx Proxy Manager…). Vide = on ignore ces en-têtes.
+    proxies_de_confiance: list[str] = Field(default_factory=list)
+    machine_sans_mot_de_passe: bool = True     # sur la machine elle-même (127.0.0.1), pas de connexion
+    session_jours: float = Field(default=30, gt=0, le=365)
+    essais_max: int = Field(default=5, ge=1)
+    blocage_s: float = Field(default=300, gt=0)
+
+    @field_validator("reseaux_autorises", "proxies_de_confiance")
+    @classmethod
+    def _reseaux_valides(cls, v: list[str]) -> list[str]:
+        import ipaddress
+        for r in v:
+            ipaddress.ip_network(r, strict=False)   # lève ValueError si invalide
+        return v
 
 
 class RouteurConfig(BaseModel):
@@ -199,6 +230,7 @@ class Config(BaseModel):
     home_assistant: HomeAssistantConfig = Field(default_factory=HomeAssistantConfig)
     maison: MaisonConfig = Field(default_factory=MaisonConfig)
     voix: VoixConfig = Field(default_factory=VoixConfig)
+    securite: SecuriteConfig = Field(default_factory=SecuriteConfig)
 
     @model_validator(mode="after")
     def _roles_valides(self) -> "Config":
@@ -249,7 +281,7 @@ def chemin_config_utilisateur() -> Path:
     if explicite:
         return Path(explicite)
     conteneur = Path("/config/config.yaml")
-    if conteneur.is_file():
+    if conteneur.is_file() or (os.name != "nt" and conteneur.parent.is_dir()):
         return conteneur
     return RACINE / "config" / "config.yaml"
 
@@ -261,6 +293,9 @@ def charger(env: dict[str, str] | None = None, fichier: Path | None = None) -> C
     for var, (section, cle) in ENV_MAP.items():
         if env.get(var):
             data.setdefault(section, {})[cle] = env[var]
+    for var, (section, cle) in ENV_LISTES.items():   # listes séparées par des virgules
+        if env.get(var):
+            data.setdefault(section, {})[cle] = [x.strip() for x in env[var].split(",") if x.strip()]
     return Config.model_validate(data)
 
 
@@ -312,3 +347,13 @@ def enregistrer_reglages(section: str, valeurs: dict[str, Any], fichier: Path | 
     tmp.write_text(texte, encoding="utf-8")
     os.replace(tmp, chemin)
     return chemin
+
+
+def dossier_etat(cfg: "Config") -> Path:
+    """Où l'assistant garde son état (alias appris, sécurité) : /config dans le conteneur,
+    config/ du dépôt sur le PC, ou ASSISTANT_ETAT."""
+    if os.environ.get("ASSISTANT_ETAT"):
+        return Path(os.environ["ASSISTANT_ETAT"])
+    if os.name != "nt" and Path("/config").is_dir():
+        return Path("/config")
+    return RACINE / "config"

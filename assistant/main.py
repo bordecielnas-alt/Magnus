@@ -13,18 +13,19 @@ from pathlib import Path
 from typing import Literal
 
 from fastapi import FastAPI, Header, HTTPException, Request
-from fastapi.responses import FileResponse, Response, StreamingResponse
+from fastapi.responses import FileResponse, JSONResponse, RedirectResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from . import __version__
-from .config import Config, charger, charger_secrets, chemin_alias, enregistrer_reglages
+from .config import Config, charger, charger_secrets, chemin_alias, dossier_etat, enregistrer_reglages
 from .fournisseurs import FournisseurIndisponible, Message, Registre, Reponse
 from .home_assistant import HomeAssistant
 from .maison import Maison
 from .maison.alias import AliasAppris
 from .routeur import SIMPLE, Decision, Routeur
 from .reveil import Reveil
+from .securite import NOM_COOKIE, Securite, est_locale
 from .voix import Voix, sans_emoji
 
 STATIC = Path(__file__).resolve().parent / "static"
@@ -76,6 +77,20 @@ class ReglagesVoix(BaseModel):
     voix: str | None = Field(default=None, max_length=120)
 
 
+class Connexion(BaseModel):
+    mot_de_passe: str = Field(min_length=1, max_length=200)
+
+
+class NouveauMotDePasse(BaseModel):
+    nouveau: str = Field(min_length=10, max_length=200)
+    actuel: str | None = Field(default=None, max_length=200)
+
+
+# Accessibles sans être connecté (le reste demande une session hors de la machine elle-même)
+CHEMINS_PUBLICS = {"/health", "/connexion", "/api/connexion", "/api/securite", "/api/securite/mot-de-passe",
+                   "/favicon.ico"}
+
+
 class Parole(BaseModel):
     """Texte à lire à voix haute ; `voix` facultative pour un aperçu (« Écouter »)."""
     texte: str = Field(min_length=1, max_length=4000)
@@ -124,7 +139,8 @@ def _messages(cfg: Config, d: DemandeChat, outils: bool = False) -> list[Message
 
 def creer_app(config: Config | None = None, registre: Registre | None = None,
               ha: HomeAssistant | None = None, alias: AliasAppris | None = None,
-              voix: Voix | None = None, persister: bool | None = None) -> FastAPI:
+              voix: Voix | None = None, persister: bool | None = None,
+              securite: Securite | None = None) -> FastAPI:
     # persister : écrire les réglages modifiés depuis la page dans config.yaml (pas en test)
     persister = (config is None) if persister is None else persister
     cfg = config or charger()
@@ -134,6 +150,7 @@ def creer_app(config: Config | None = None, registre: Registre | None = None,
     extracteur = reg.pour_role(cfg.maison.extracteur) if cfg.maison.extracteur in reg.roles else None
     maison = Maison(cfg.maison, ha, alias or AliasAppris(chemin_alias(cfg)), extracteur)
     voix = voix or Voix(cfg.voix)
+    securite = securite or Securite(cfg.securite, dossier_etat(cfg))
     reveil = Reveil(cfg.voix.fenetre_s, cfg.voix.toujours_a_l_ecoute)
     import asyncio as _asyncio
     verrou_transcription = _asyncio.Lock()   # une transcription à la fois (sinon CPU/GPU saturé)
@@ -168,6 +185,88 @@ def creer_app(config: Config | None = None, registre: Registre | None = None,
     app.state.ha = ha
     app.state.maison = maison
     app.state.voix = voix
+    app.state.securite = securite
+
+    def ip_de(requete: Request) -> tuple[str, str]:
+        """(IP directe, IP réelle du client). « testclient » = client de test de Starlette, traité comme local."""
+        directe = requete.client.host if requete.client else ""
+        if directe == "testclient":
+            directe = "127.0.0.1"
+        return directe, securite.ip_client(directe, {k.lower(): v for k, v in requete.headers.items()})
+
+    def en_https(requete: Request, directe: str) -> bool:
+        if securite.proxies and securite.reseau_autorise(directe):
+            return requete.headers.get("x-forwarded-proto", "") == "https"
+        return requete.url.scheme == "https"
+
+    @app.middleware("http")
+    async def controle_acces(requete: Request, suite):
+        chemin = requete.url.path
+        directe, ip = ip_de(requete)
+        # API interne (serveur MCP lancé par l'assistant) : uniquement depuis la machine, jamais via le proxy
+        if chemin.startswith("/interne/"):
+            if not est_locale(directe) or requete.headers.get("x-forwarded-for"):
+                return JSONResponse({"detail": "interdit"}, 403)
+            return await suite(requete)
+        if not securite.reseau_autorise(ip):
+            journal.info("accès refusé (réseau non autorisé) : %s %s", ip, chemin)
+            return JSONResponse({"detail": "réseau non autorisé"}, 403)
+        if chemin in CHEMINS_PUBLICS or not securite.exige_connexion(ip):
+            return await suite(requete)
+        if securite.session_valide(requete.cookies.get(NOM_COOKIE)):
+            return await suite(requete)
+        if requete.method == "GET" and not chemin.startswith("/api/"):
+            return RedirectResponse(f"/connexion?suite={chemin}", 303)
+        return JSONResponse({"detail": "connexion requise"}, 401)
+
+    @app.get("/connexion", include_in_schema=False)
+    def page_connexion() -> FileResponse:
+        return FileResponse(STATIC / "connexion.html")
+
+    @app.get("/api/securite")
+    def etat_securite(requete: Request) -> dict:
+        directe, ip = ip_de(requete)
+        return {"nom": cfg.identite.nom, "mot_de_passe_defini": securite.mot_de_passe_defini,
+                "locale": est_locale(ip), "ip": ip, "session_jours": cfg.securite.session_jours,
+                "connecte": (not securite.exige_connexion(ip)) or securite.session_valide(requete.cookies.get(NOM_COOKIE))}
+
+    def poser_session(rep: Response, requete: Request, directe: str) -> None:
+        rep.set_cookie(NOM_COOKIE, securite.creer_session(), max_age=int(cfg.securite.session_jours * 86400),
+                       httponly=True, samesite="lax", secure=en_https(requete, directe), path="/")
+
+    @app.post("/api/connexion")
+    def se_connecter(c: Connexion, requete: Request, reponse: Response) -> dict:
+        directe, ip = ip_de(requete)
+        if not securite.mot_de_passe_defini:
+            raise HTTPException(409, "aucun mot de passe défini : choisis-le depuis la machine de l'assistant")
+        ok, message = securite.connexion(ip, c.mot_de_passe)
+        if not ok:
+            journal.info("connexion refusée : %s (%s)", ip, message)
+            raise HTTPException(429 if "Trop" in message else 401, message)
+        poser_session(reponse, requete, directe)
+        journal.info("connexion : %s", ip)
+        return {"ok": True}
+
+    @app.post("/api/deconnexion")
+    def se_deconnecter(reponse: Response) -> dict:
+        reponse.delete_cookie(NOM_COOKIE, path="/")
+        return {"ok": True}
+
+    @app.post("/api/securite/mot-de-passe")
+    def changer_mot_de_passe(m: NouveauMotDePasse, requete: Request, reponse: Response) -> dict:
+        """Premier mot de passe : seulement depuis la machine elle-même. Changement : depuis la machine,
+        ou en donnant l'actuel."""
+        directe, ip = ip_de(requete)
+        if not est_locale(ip):
+            if not securite.mot_de_passe_defini:
+                raise HTTPException(403, "le premier mot de passe se choisit sur la machine de l'assistant")
+            ok, message = securite.connexion(ip, m.actuel or "")
+            if not ok:
+                raise HTTPException(403, message)
+        securite.definir_mot_de_passe(m.nouveau)
+        poser_session(reponse, requete, directe)
+        journal.info("mot de passe défini depuis %s (toutes les sessions précédentes sont fermées)", ip)
+        return {"ok": True}
 
     @app.get("/health")
     def health() -> dict:

@@ -100,10 +100,16 @@ Avec un jeton d'utilisateur HA non administrateur, les registres (pièces, alias
 
 `tests/test_nom_pas_en_dur.py` échoue si le nom par défaut apparaît dans le code.
 
+## Accès et sécurité
+
+En attendant les comptes (phase 3) :
+- seuls les réseaux privés et Tailscale peuvent joindre l'assistant (`securite.reseaux_autorises`), les autres reçoivent 403 ;
+- hors de la machine elle-même, il faut se connecter (page `/connexion`) ; l'appareil garde une session signée 30 jours ;
+- le premier mot de passe se choisit depuis la machine (ouvrir `http://127.0.0.1:8080/connexion`) ; il est stocké haché (scrypt) dans `config/securite.json` (jamais versionné) ; le changer ferme toutes les sessions ;
+- 5 essais ratés bloquent l'adresse 5 minutes ;
+- derrière Nginx Proxy Manager, déclarer son adresse dans `securite.proxies_de_confiance` (ou `ASSISTANT_PROXIES_DE_CONFIANCE`) pour que la vraie IP du client soit utilisée ;
+- l'API interne (`/interne/…`, outils de Claude) n'est joignable que depuis la machine, jamais via le proxy.
+
 ## Déployer sur Unraid
 
-```bash
-ASSISTANT_CONFIG_DIR=/mnt/user/appdata/assistant/config docker compose up -d --build
-```
-
-La config utilisateur va dans `config.yaml` de ce dossier.
+Image publiée par GitHub Actions (`ghcr.io/bordecielnas-alt/magnus`), template `unraid/magnus.xml`, réglages Nginx Proxy Manager : voir **`docs/unraid.md`**.
