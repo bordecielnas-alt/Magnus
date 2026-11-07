@@ -287,7 +287,7 @@ let nom = 'l\'assistant';   // remplacé par le nom configuré dès que /api/inf
 const ORBE_DEFAUT = {ecole: 'givre', particules: 80, brume: 75};
 let reglagesOrbe = {...ORBE_DEFAUT};
 try { Object.assign(reglagesOrbe, JSON.parse(localStorage.getItem('orbe.reglages') || '{}')); } catch (e) {}
-const orbe = creerOrbe($('orbe'), {ecole: reglagesOrbe.ecole, particules: reglagesOrbe.particules, brume: reglagesOrbe.brume / 100});
+const orbe = creerOrbe($('orbe'), {ecole: reglagesOrbe.ecole, particules: reglagesOrbe.particules, brume: reglagesOrbe.brume / 100, fond: '#0a1018'});
 let occupe = false, minuteurEcoute = null, minuteurErreur = null;
 
 // Le nom de l'état de l'orbe est affiché sous le nom de l'assistant.
@@ -769,6 +769,7 @@ async function choisirVoix(id) {
 async function ecouterVoix(id, bouton) {
   if (apercu) { apercu.pause(); apercu = null; }
   bouton.classList.add('joue');
+  $('noteVoix').className = 'note'; $('noteVoix').textContent = 'Préparation de la voix… (quelques secondes la première fois)';
   try {
     const r = await fetch('/api/voix/parler', {method: 'POST', headers: {'Content-Type': 'application/json'},
       body: JSON.stringify({texte: 'Bonjour, je suis ' + nom + '. Voici ma voix.', voix: id})});
@@ -777,6 +778,7 @@ async function ecouterVoix(id, bouton) {
     apercu = new Audio(url);
     apercu.onended = apercu.onpause = () => { bouton.classList.remove('joue'); URL.revokeObjectURL(url); };
     await apercu.play();
+    $('noteVoix').textContent = '';
   } catch (e) { bouton.classList.remove('joue'); $('noteVoix').className = 'note ko'; $('noteVoix').textContent = 'Essai impossible pour cette voix.'; }
 }
 

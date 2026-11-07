@@ -265,9 +265,9 @@ function creerOrbe(cv, opts = {}) {
     ctx.fillStyle = g; ctx.beginPath(); ctx.arc(0, 0, cR * 2.2, 0, 7); ctx.fill();
 
     ctx = tc;
-    // éclairs (foudre, et un peu en réflexion)
+    // éclairs : seulement pour l'école Foudre (plus d'éclairs en réflexion pour les autres écoles)
     arcT -= dt;
-    const freqArc = E.effet === "arcs" ? (etat === "reflexion" ? .04 : .12) : (etat === "reflexion" ? .5 : 99);
+    const freqArc = E.effet === "arcs" ? (etat === "reflexion" ? .04 : .12) : 99;
     if (arcT <= 0) {
       arcT = freqArc * (.5 + Math.random());
       const a = Math.random() * Math.PI * 2, lg = R * (.8 + Math.random() * .6) * (1 + L.voix * .5);
