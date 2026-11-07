@@ -502,7 +502,10 @@ async function traiter(message, vocal) {
   orbe.etat('reflexion');
   const corps = bulleReponse();
   corps.innerHTML = '<span class="reflechit">' + echapper(nom) + ' réfléchit…</span>';
-  let texte = '', route = null;
+  let texte = '', route = null, lectureFlux = null;
+  // lecture à voix haute au fil de l'eau (dès la première phrase reçue)
+  const parole = (vocal || $('lireTout').checked) && !muet ? nouvelleParole() : null;
+  const t0Reponse = performance.now();
   try {
     const r = await fetch('/api/chat', {
       method: 'POST', headers: {'Content-Type': 'application/json'},
@@ -525,8 +528,10 @@ async function traiter(message, vocal) {
         if (o.delta) {
           if (orbe.etatCourant !== 'parole') orbe.etat('parole');
           orbe.impulsion(o.delta.length);
+          if (!texte) diag('réponse : premier mot après ' + Math.round(performance.now() - t0Reponse) + ' ms');
           texte += o.delta;
           corps.innerHTML = miseEnForme(texte);
+          if (parole) { parole.ajouter(texte); if (!lectureFlux && parole.phrases.length) lectureFlux = direAVoixHaute(parole); }
         }
         if (o.erreur) throw new Error(o.erreur);
         if (o.fin) ajouterPied(corps, o, route, texte);
@@ -534,8 +539,14 @@ async function traiter(message, vocal) {
       defiler();
     }
     historique.push({role: 'user', content: message}, {role: 'assistant', content: texte});
-    if (texte && (vocal || $('lireTout').checked)) await direAVoixHaute(texte);
+    diag('réponse : complète après ' + Math.round(performance.now() - t0Reponse) + ' ms (' + texte.length + ' caractères)');
+    if (parole) {
+      parole.ajouter(texte, true);
+      if (!lectureFlux && texte) lectureFlux = direAVoixHaute(parole);
+      await lectureFlux;
+    }
   } catch (e) {
+    if (parole) parole.ajouter(texte, true);   // la lecture s'arrête proprement après ce qui est arrivé
     if (!texte) corps.parentElement.remove();
     bulle('erreur', 'Erreur : ' + e.message);
     orbe.etat('erreur');
@@ -575,7 +586,7 @@ function ajouterPied(corps, o, route, texte) {
 
 // ----- Voix : un seul bouton. Clic -> j'écoute ; je m'arrête tout seul après un silence -----
 let enregistreur = null, morceaux = [], fluxMicro = null, lecture = null, bulleEcoute = null;
-let partielEnCours = false, minuteurPartiel = null;
+let partielEnCours = false, minuteurPartiel = null, partielAbandon = null;
 try { $('lireTout').checked = localStorage.getItem('voix.lireTout') === '1'; } catch (e) {}
 $('lireTout').onchange = () => { try { localStorage.setItem('voix.lireTout', $('lireTout').checked ? '1' : '0'); } catch (e) {} };
 
@@ -802,21 +813,47 @@ function micMortDictee(reessai) {
 
 function arreter() { if (enregistreur && enregistreur.state === 'recording') enregistreur.stop(); }
 
+// Volume du micro en dBFS (0 = saturation). Une voix normale près du téléphone donne environ
+// -30 à -12 dBFS en crête ; sous -40 c'est trop faible pour une bonne transcription.
+function mesureVolume() {
+  const db = x => x > 0 ? 20 * Math.log10(x) : -100;
+  let picS = 0, rmsS = 0, picT = 0, sommeParole = 0, nParole = 0, sature = 0;
+  const v = {n: 0,
+    ajouter(buf) {
+      let p = 0, q = 0;
+      for (let i = 0; i < buf.length; i++) { const a = Math.abs(buf[i]); if (a > p) p = a; q += buf[i] * buf[i]; }
+      const rms = Math.sqrt(q / buf.length);
+      v.n++; picS = Math.max(picS, p); rmsS = Math.max(rmsS, rms); picT = Math.max(picT, p);
+      if (p > .98) sature++;
+      if (db(rms) > -50) { sommeParole += rms; nParole++; }   // trames où il y a de la voix
+    },
+    seconde() { const r = 'crête ' + db(picS).toFixed(0) + ' dBFS, moyenne ' + db(rmsS).toFixed(0) + ' dBFS'; picS = rmsS = 0; return r; },
+    bilan() {
+      const moy = nParole ? db(sommeParole / nParole) : -100, pic = db(picT);
+      const verdict = sature > 3 ? 'SATURÉ (trop fort ou trop près)' : pic < -40 ? 'TROP FAIBLE' : pic < -28 ? 'faible mais utilisable' : 'correct';
+      return 'crête ' + pic.toFixed(0) + ' dBFS, voix moyenne ' + moy.toFixed(0) + ' dBFS · ' + verdict;
+    }};
+  return v;
+}
+
+// Pause tolérée avant de considérer que tu as fini ta phrase (on peut respirer, chercher un mot)
+const SILENCE_DICTEE = 2000, SILENCE_CONTINU = 1500;
 function suivreVolume(flux, reessai) {
   // niveau du micro, minuteur, et arrêt automatique : 1,2 s de silence après avoir parlé (ou 6 s sans rien)
   try {
     const {ctx, an} = analyseurMicro(flux);
     const buf = new Uint8Array(an.fftSize), debut = performance.now();
     let aParle = false, dernierSon = debut, picDiag = 0, dernierDiag = debut, vivant = false, debutAnalyse = 0;
-    const fbuf = new Float32Array(an.fftSize);
+    const fbuf = new Float32Array(an.fftSize), vol = mesureVolume();
     const tic = () => {
-      if (!enregistreur || enregistreur.state !== 'recording') { ctx.close(); return; }
+      if (!enregistreur || enregistreur.state !== 'recording') { if (vol.n) diag('dictée : volume ' + vol.bilan()); ctx.close(); return; }
       an.getByteTimeDomainData(buf);
       let m = 0; for (const v of buf) m = Math.max(m, Math.abs(v - 128));
       const t = performance.now();
       if (m > 14) { aParle = true; dernierSon = t; orbe.impulsion(Math.round(m / 6)); }
       picDiag = Math.max(picDiag, m);
-      if (t - dernierDiag > 1000) { diag('dictée : niveau max ' + picDiag + ' (contexte ' + ctx.state + ', piste ' + (flux.getAudioTracks()[0]?.muted ? 'muette' : 'ok') + ')'); picDiag = 0; dernierDiag = t; }
+      if (ctx.state === 'running') { an.getFloatTimeDomainData(fbuf); vol.ajouter(fbuf); }
+      if (t - dernierDiag > 1000) { diag('dictée : ' + vol.seconde() + ' (contexte ' + ctx.state + ', piste ' + (flux.getAudioTracks()[0]?.muted ? 'muette' : 'ok') + ')'); picDiag = 0; dernierDiag = t; }
       if (bulleEcoute) {
         bulleEcoute.querySelector('.niveau span').style.width = Math.min(100, m * 1.6) + '%';
         bulleEcoute.querySelector('.temps').textContent = Math.floor((t - debut) / 1000) + ' s';
@@ -830,7 +867,8 @@ function suivreVolume(flux, reessai) {
         for (let i = 0; i < fbuf.length; i++) if (fbuf[i] !== 0) { vivant = true; break; }
         if (!vivant && t - debutAnalyse > 2000) { micMortDictee(reessai); return; }
       }
-      if ((analyse && aParle && t - dernierSon > 1200) || (analyse && !aParle && t - debut > 6000) || t - debut > 30000) {
+      if ((analyse && aParle && t - dernierSon > SILENCE_DICTEE) || (analyse && !aParle && t - debut > 6000) || t - debut > 30000) {
+        diag('dictée : volume ' + vol.bilan());
         diag('dictée : arrêt auto (' + (aParle ? 'silence après la parole' : !analyse ? 'durée max, analyse inactive' : 'rien entendu en 6 s') + ')');
         arreter(); return;
       }
@@ -844,18 +882,23 @@ async function transcriptionPartielle() {
   // tes mots s'affichent pendant que tu parles (transcription de tout ce qui a été dit jusqu'ici)
   if (partielEnCours || !morceaux.length || !enregistreur || enregistreur.state !== 'recording') return;
   partielEnCours = true;
+  const ab = partielAbandon = new AbortController(), t0 = performance.now();
   try {
     const blob = new Blob(morceaux, {type: enregistreur.mimeType || 'audio/webm'});
-    const r = await fetch('/api/voix/transcrire?partiel=1', {method: 'POST', headers: {'Content-Type': blob.type}, body: blob});
-    if (r.ok && bulleEcoute && enregistreur && enregistreur.state === 'recording') {
-      const o = await r.json();
+    const r = await fetch('/api/voix/transcrire?partiel=1', {method: 'POST', headers: {'Content-Type': blob.type}, body: blob, signal: ab.signal});
+    const o = r.ok ? await r.json() : {};
+    diag('dictée en direct : ' + Math.round(performance.now() - t0) + ' ms' + (o.saute ? ' (sauté)' : '') + (o.texte ? ' · « ' + o.texte + ' »' : ''));
+    // réponse arrivée trop tard (dictée finie) : on l'ignore, la transcription finale fait foi
+    if (r.ok && bulleEcoute && enregistreur && enregistreur.state === 'recording' && !ab.signal.aborted) {
       if (o.texte) { bulleEcoute.querySelector('.mots').textContent = o.texte; defiler(); }
     }
-  } catch (e) {} finally { partielEnCours = false; }
+  } catch (e) { if (e.name !== 'AbortError') diag('dictée en direct : erreur ' + (e.name || e.message)); }
+  finally { partielEnCours = false; if (partielAbandon === ab) partielAbandon = null; }
 }
 
 async function transcrireEtEnvoyer() {
   clearInterval(minuteurPartiel);
+  if (partielAbandon) partielAbandon.abort();   // la transcription finale passe en premier
   $('micro').classList.remove('actif'); $('micro').innerHTML = ICONE_MICRO;
   if (fluxMicro) fluxMicro.getTracks().forEach(t => t.stop());
   const blob = new Blob(morceaux, {type: enregistreur.mimeType || 'audio/webm'});
@@ -871,9 +914,11 @@ async function transcrireEtEnvoyer() {
   if (bulleEcoute) bulleEcoute.querySelector('.tete').innerHTML = '<span>Je transcris…</span>';
   if (!occupe) orbe.etat('reflexion');
   try {
+    const t0 = performance.now();
     const r = await fetch('/api/voix/transcrire', {method: 'POST', headers: {'Content-Type': blob.type}, body: blob});
     const o = await r.json();
-    diag('transcription : HTTP ' + r.status + ', ' + (o.texte ? o.texte.length + ' caractères' : 'rien') + (o.detail ? ' · ' + o.detail : ''));
+    diag('transcription : HTTP ' + r.status + ' en ' + Math.round(performance.now() - t0) + ' ms' + (o.duree_audio_s ? ' (' + o.duree_audio_s + ' s d\'audio)' : '') +
+         ' · ' + (o.texte ? '« ' + o.texte + ' »' : 'rien entendu') + (o.detail ? ' · ' + o.detail : ''));
     finirBulle();
     if (!r.ok) throw new Error(o.detail || r.statusText);
     if (!o.texte) { if (!occupe) orbe.etat('repos'); bulle('erreur', 'Je n\'ai rien entendu.'); return; }
@@ -944,20 +989,61 @@ function couperLecture() {
   if (l) l.pause();
 }
 
-async function direAVoixHaute(texte) {
+// Parole au fil de l'eau : la réponse est lue phrase par phrase PENDANT qu'elle arrive,
+// sans attendre la fin. La latence du réseau et du modèle se cache derrière la lecture.
+function nouvelleParole() {
+  const attentes = [];
+  const f = {phrases: [], fini: false, pos: 0, surAjout: null,
+    attendre() { return new Promise(r => attentes.push(r)); },
+    ajouter(texte, fin) {
+      const reste = texte.slice(f.pos);
+      let coupe = -1;
+      if (fin) coupe = reste.length;
+      else { const re = /[.!?…:;](?=\s)|\n/g; let m; while ((m = re.exec(reste))) coupe = m.index + m[0].length; }
+      if (coupe > 0) {
+        const seg = reste.slice(0, coupe), long = seg.replace(/\s+/g, ' ').trim().length;
+        // la première phrase part dès 12 caractères (démarrage rapide), les suivantes par blocs d'au moins 40
+        if (fin || long >= (f.phrases.length ? 40 : 12)) {
+          for (const p of decouperPhrases(seg)) f.phrases.push(p);
+          f.pos += coupe;
+        }
+      }
+      if (fin) f.fini = true;
+      attentes.splice(0).forEach(r => r());
+      if (f.surAjout) f.surAjout();
+    }};
+  return f;
+}
+
+async function direAVoixHaute(source) {
   if (muet) return;
-  const phrases = decouperPhrases(texte);
-  if (!phrases.length) return;
+  let f = source;
+  if (typeof source === 'string') { f = nouvelleParole(); f.ajouter(source, true); }
+  if (f.fini && !f.phrases.length) return;
+  const phrases = f.phrases;
   const moi = ++numeroLecture;
   voixActive = true;
   orbe.etat('parole');
   const pulse = setInterval(() => orbe.impulsion(4), 180);
   try {
-    let suivante = synthetiser(phrases[0]);
-    for (let i = 0; i < phrases.length; i++) {
-      const blob = await suivante;
+    // deux phrases d'avance : avec un réseau lent, la suivante est prête quand la précédente finit
+    const prets = [], depart = [];
+    const preparer = k => { if (k < phrases.length && !prets[k]) { depart[k] = performance.now(); prets[k] = synthetiser(phrases[k]); } };
+    let enCours = 0;
+    f.surAjout = () => { preparer(enCours); preparer(enCours + 1); preparer(enCours + 2); };
+    preparer(0); preparer(1);
+    for (let i = 0; ; i++) {
+      enCours = i;
+      const attente = performance.now();
+      while (i >= phrases.length && !f.fini && moi === numeroLecture) await f.attendre();   // la suite de la réponse arrive
+      if (i >= phrases.length || moi !== numeroLecture) break;
+      preparer(i); preparer(i + 1); preparer(i + 2);
+      const blob = await prets[i];
       if (moi !== numeroLecture) break;   // coupée pendant la préparation de la phrase
-      if (i + 1 < phrases.length) suivante = synthetiser(phrases[i + 1]);   // prépare la suivante pendant la lecture
+      preparer(i + 1); preparer(i + 2);
+      const att = Math.round(performance.now() - attente);
+      diag('son : phrase ' + (i + 1) + (f.fini ? '/' + phrases.length : '') + ' prête en ' + Math.round(performance.now() - depart[i]) + ' ms' +
+           (i && att > 150 ? ', silence de ' + att + ' ms avant elle' : '') + (blob ? '' : ' · ÉCHEC de la synthèse'));
       if (!blob) continue;
       const url = URL.createObjectURL(blob);
       lecture = lecteur;
@@ -978,9 +1064,11 @@ async function direAVoixHaute(texte) {
       });
       lecteur.onended = lecteur.onerror = lecteur.onpause = null;
       URL.revokeObjectURL(url);
+      if (interrompu) diag('son : phrase ' + (i + 1) + ' interrompue à ' + (lecteur.currentTime || 0).toFixed(1) + ' s');
       if (interrompu || !lecture || moi !== numeroLecture) break;   // coupée : on s'arrête là
     }
   } finally {
+    f.surAjout = null;
     clearInterval(pulse);
     if (moi === numeroLecture) lecture = null;
     voixActive = false;
@@ -1136,7 +1224,7 @@ function analyserContinu() {
   try { ({ctx, an} = analyseurMicro(continu.flux)); }
   catch (e) { bulle('erreur', 'Écoute continue impossible : le navigateur refuse d\'analyser le son du micro (' + (e.name || e.message) + ').'); basculerContinu(false); return; }
   continu.ctx = ctx;
-  let picC = 0, dernierC = performance.now(), vivantC = false, debutC = 0;
+  let picC = 0, dernierC = performance.now(), vivantC = false, debutC = 0, volC = mesureVolume();
   const fbufC = new Float32Array(an.fftSize);
   const buf = new Uint8Array(an.fftSize);
   let enMorceau = false, debut = 0, dernierSon = 0, depart = 0;
@@ -1173,13 +1261,16 @@ function analyserContinu() {
       }
     }
     if (t - dernierC > 5000) { diag('écoute continue : niveau max ' + picC + ' (contexte ' + ctx.state + ')'); picC = 0; dernierC = t; }
+    if (enMorceau && ctx.state === 'running') { an.getFloatTimeDomainData(fbufC); volC.ajouter(fbufC); }
     if (voixActive) {
       // L'assistant parle : on n'enregistre pas sa voix, mais si TU parles plus de 0,3 s
       // (seuil plus haut, l'annulation d'écho retire l'essentiel de sa voix), il se tait.
       jeter(); enMorceau = false;
-      if (m > 30) { bargeDebut = bargeDebut || t; } else if (t - bargeDebut > 150) bargeDebut = 0;
-      if (bargeDebut && t - bargeDebut > 300) {
+      // seuil relevé : sur un haut-parleur de téléphone, l'écho de sa propre voix le coupait trop vite
+      if (m > 40) { bargeDebut = bargeDebut || t; } else if (t - bargeDebut > 200) bargeDebut = 0;
+      if (bargeDebut && t - bargeDebut > 500) {
         bargeDebut = 0;
+        diag('son : voix coupée car tu parles (niveau ' + m + ')');
         couperLecture();
         lancer(); enMorceau = true; debut = dernierSon = t;
         orbe.etat('ecoute');
@@ -1200,7 +1291,9 @@ function analyserContinu() {
       sonVisible = false;
       if (!occupe && !(continu.fin > Date.now()) && !continu.toujours) orbe.etat('repos');
     }
-    if (enMorceau && (t - dernierSon > 900 || t - debut > 15000)) {
+    if (enMorceau && (t - dernierSon > SILENCE_CONTINU || t - debut > 20000)) {
+      diag('écoute continue : fin du morceau après ' + Math.round(t - debut) + ' ms' + (t - debut > 20000 ? ' (durée max)' : '') + ' · volume ' + volC.bilan());
+      volC = mesureVolume();
       const r = continu.rec; continu.rec = null; enMorceau = false;
       r.onstop = () => envoyerMorceau(r);
       r.stop();
@@ -1217,13 +1310,16 @@ function envoyerMorceau(rec) {
   diag('écoute continue : morceau de ' + blob.size + ' octets');
   if (blob.size < 2000) return;   // bruit très court
   // un morceau après l'autre, dans l'ordre où ils ont été dits
+  const envoye = performance.now();
   continu.chaine = continu.chaine.then(async () => {
+    const t0 = performance.now();
+    if (t0 - envoye > 500) diag('écoute continue : morceau en attente ' + Math.round(t0 - envoye) + ' ms (le précédent n\'était pas fini)');
     try {
       const r = await fetch('/api/voix/ecoute?conversation=' + encodeURIComponent(conversation),
                             {method: 'POST', headers: {'Content-Type': blob.type}, body: blob});
-      if (!r.ok) return;
+      if (!r.ok) { diag('écoute continue : HTTP ' + r.status + ' en ' + Math.round(performance.now() - t0) + ' ms'); return; }
       const o = await r.json();
-      diag('écoute : action ' + o.action + (o.texte ? ' · « ' + o.texte.slice(0, 40) + ' »' : ''));
+      diag('écoute continue : ' + o.action + ' en ' + Math.round(performance.now() - t0) + ' ms' + (o.texte ? ' · entendu « ' + o.texte + ' »' : '') + (o.commande && o.commande !== o.texte ? ' · commande « ' + o.commande + ' »' : ''));
       if (o.wake_word) continu.wake = o.wake_word;
       if (typeof o.toujours === 'boolean') continu.toujours = o.toujours;
       if (o.action === 'ignorer') { montrerEntendu(o.texte); majVeille(); return; }
@@ -1237,7 +1333,7 @@ function envoyerMorceau(rec) {
         const b = demander(o.commande, true);
         if (b && o.duree_ms) b.title = 'Entendu en écoute continue · transcrit en ' + o.duree_ms + ' ms';
       }
-    } catch (e) {}
+    } catch (e) { diag('écoute continue : erreur réseau ' + (e.name || e.message)); }
   });
 }
 
