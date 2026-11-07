@@ -2,92 +2,254 @@
 <html lang="fr">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#0b1117">
 <title>Assistant</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,600&family=Atkinson+Hyperlegible:wght@400;700&display=swap">
 <style>
-  :root { --bg:#f6f7f8; --fg:#14181c; --muted:#5b6670; --accent:#0f8b8d; --bulle:#e7ecef; --bord:#d3dade; }
-  @media (prefers-color-scheme: dark) { :root { --bg:#0d1114; --fg:#e8ecef; --muted:#8a96a0; --accent:#3cc6c8; --bulle:#1a2126; --bord:#2a333a; } }
+  /* Ambiance « Immersif » : fond nuit, orbe au centre, seul le dernier échange est affiché.
+     Trois vues : Conversation (par défaut), Orbe (plein écran), Technique (tout le fil et les détails). */
+  :root {
+    --bg:#0b1117; --surface:#131c24; --fg:#e6edf2; --muted:#8b9aa6; --bord:#25313b;
+    --accent:#4cc3e0; --accent-fg:#06222b; --givre:#7fd6ff; --nuit:#0a1018; --rouge:#e0533d; --voile:rgba(8,14,20,.62);
+    --f-titre:"Fraunces", Georgia, serif; --f-texte:"Atkinson Hyperlegible", system-ui, sans-serif; --f-mono:ui-monospace, "Cascadia Mono", Consolas, monospace;
+    color-scheme:dark;
+  }
   * { box-sizing:border-box; }
-  html,body { height:100%; margin:0; }
-  body { background:var(--bg); color:var(--fg); font-family:system-ui,sans-serif; }
-  main { max-width:720px; height:100%; margin:0 auto; padding:16px; display:flex; flex-direction:column; }
-  header { position:relative; text-align:center; padding:4px 0 8px; }
-  /* Orbe : canvas animé (static/orbe.js), posé sur un fond sombre pour briller aussi en thème clair */
-  .orbe-cadre { width:160px; height:160px; margin:0 auto 4px; border-radius:50%;
-                background:radial-gradient(circle, #0a1018 0 44%, rgba(10,16,24,.5) 54%, transparent 66%); }
+  html, body { height:100%; margin:0; }
+  body { background:var(--bg); color:var(--fg); font-family:var(--f-texte); font-size:15px; }
+  button, textarea, input { font:inherit; color:inherit; }
+  :focus-visible { outline:2px solid var(--accent); outline-offset:2px; }
+
+  main { height:100%; max-width:760px; margin:0 auto; display:flex; flex-direction:column; gap:10px;
+         padding-left:max(16px, env(safe-area-inset-left, 0px)); padding-right:max(16px, env(safe-area-inset-right, 0px));
+         padding-top:max(10px, env(safe-area-inset-top, 0px)); padding-bottom:max(10px, env(safe-area-inset-bottom, 0px)); }
+
+  /* En-tête */
+  header { position:relative; display:flex; flex-direction:column; align-items:center; text-align:center; gap:4px; }
+  .orbe-cadre { width:min(200px, 48vw, 28vh); height:min(200px, 48vw, 28vh); border-radius:50%; transition:width .4s, height .4s;
+                background:radial-gradient(circle, var(--nuit) 0 44%, rgba(10,16,24,.5) 54%, transparent 68%);
+                filter:drop-shadow(0 0 28px rgba(127,214,255,.35)); }
   .orbe { width:100%; height:100%; display:block; }
-  #reglagesOrbe { position:absolute; top:4px; right:0; padding:6px 10px; background:transparent; color:var(--muted);
-                  border:1px solid var(--bord); font-size:1.1rem; line-height:1; }
-  #reglagesOrbe:hover { color:var(--fg); }
-  dialog { border:1px solid var(--bord); border-radius:14px; background:var(--bg); color:var(--fg); padding:18px 20px; width:min(92vw, 380px); }
-  #micro { padding:0 14px; background:var(--bulle); color:var(--fg); border:1px solid var(--bord); font-size:1.1rem; }
-  #micro.actif { background:#c0392b; color:#fff; border-color:#c0392b; }
-  .ecoute { align-self:flex-end; max-width:85%; padding:10px 14px; border-radius:14px; border:2px dashed #c0392b;
-            color:var(--fg); line-height:1.45; }
-  .ecoute .tete { display:flex; align-items:center; gap:8px; font-size:.8rem; color:#c0392b; font-weight:600; }
-  .ecoute .point { width:10px; height:10px; border-radius:50%; background:#c0392b; animation:clignote 1s ease-in-out infinite; }
+  h1 { margin:0; font-family:var(--f-titre); font-weight:600; font-size:1.6rem; line-height:1.1; letter-spacing:.01em; }
+  .statut { margin:0; font-size:.85rem; color:var(--muted); display:flex; gap:6px; align-items:center; justify-content:center; flex-wrap:wrap; }
+  .pastille { width:8px; height:8px; border-radius:50%; background:var(--muted); }
+  .pastille.ok { background:#3bb273; box-shadow:0 0 0 3px rgba(59,178,115,.18); }
+  .pastille.ko { background:var(--rouge); }
+  #etatOrbe { font-style:italic; }
+  .meta { display:none; margin:0; font-family:var(--f-mono); font-size:.72rem; color:var(--muted); }
+  .meta code { color:var(--fg); }
+  .outils { position:absolute; top:0; right:0; display:flex; gap:6px; }
+  .icone { border:1px solid var(--bord); background:transparent; border-radius:10px; width:38px; height:38px; cursor:pointer; color:var(--muted); font-size:1.05rem; padding:0; }
+  .icone:hover { color:var(--fg); }
+  .icone[aria-pressed="true"] { color:var(--accent); border-color:var(--accent); }
+
+  /* Fil */
+  #fil { flex:1; min-height:0; overflow-y:auto; display:flex; flex-direction:column; gap:14px; padding:6px 2px 10px; }
+  .accueil { display:grid; gap:14px; justify-items:center; text-align:center; padding:8px 0; }
+  .accueil p { margin:0; color:var(--muted); }
+  .suggestions { display:flex; flex-wrap:wrap; gap:8px; justify-content:center; }
+  .suggestions button { border:1px solid var(--bord); background:var(--surface); border-radius:12px; padding:8px 12px; cursor:pointer; }
+  .suggestions button:hover { border-color:var(--accent); }
+
+  .msg { display:flex; gap:10px; max-width:100%; line-height:1.55; overflow-wrap:anywhere; }
+  .moi { align-self:center; max-width:90%; color:var(--muted); font-style:italic; text-align:center; white-space:pre-wrap; }
+  .lui { align-self:center; width:100%; max-width:60ch; font-size:1.1rem; }
+  .lui .corps { min-width:0; flex:1; }
+  .avatar { display:none; flex:none; width:24px; height:24px; margin-top:3px; border-radius:50%;
+            background:radial-gradient(circle at 45% 40%, #f0fcff 0 12%, var(--givre) 30%, #2878d2 62%, var(--nuit) 74%); box-shadow:0 0 10px rgba(127,214,255,.45); }
+  .corps p { margin:0 0 .55em; } .corps p:last-child { margin-bottom:0; }
+  .corps ul { margin:.2em 0 .6em; padding-left:1.2em; }
+  .corps code { font-family:var(--f-mono); font-size:.85em; background:var(--surface); border:1px solid var(--bord); border-radius:5px; padding:1px 5px; }
+  .moi.en-attente { opacity:.6; }
+  .moi.en-attente::after { content:" · en attente"; font-size:.78rem; font-style:normal; }
+  #fil > .msg.en-attente { display:flex !important; }
+  .erreur { align-self:center; color:var(--rouge); font-size:.95rem; text-align:center; }
+  .reflechit { font-style:italic; background:linear-gradient(90deg, var(--muted) 0 40%, var(--accent) 50%, var(--muted) 60% 100%);
+               background-size:300% 100%; -webkit-background-clip:text; background-clip:text; color:transparent; animation:balaye 1.6s linear infinite; }
+  @keyframes balaye { from { background-position:100% 0; } to { background-position:0 0; } }
+  .pied { display:flex; align-items:center; gap:6px; flex-wrap:wrap; margin-top:8px; font-size:.78rem; color:var(--muted); }
+  .puce { border:1px solid var(--bord); border-radius:999px; padding:2px 9px; background:transparent; color:var(--muted); cursor:pointer; font-size:.78rem; }
+  .puce:hover { color:var(--fg); }
+  .details { flex-basis:100%; font-family:var(--f-mono); font-size:.72rem; }
+  .historique { align-self:center; }
+
+  /* Bulle d'écoute (micro) */
+  .ecoute { align-self:center; width:100%; max-width:60ch; padding:10px 14px; border-radius:14px; border:2px dashed var(--rouge); line-height:1.45; }
+  .ecoute .tete { display:flex; align-items:center; gap:8px; font-size:.8rem; color:var(--rouge); font-weight:700; }
+  .ecoute .point { width:10px; height:10px; border-radius:50%; background:var(--rouge); animation:clignote 1s ease-in-out infinite; }
   .ecoute .niveau { flex:1; min-width:60px; height:6px; border-radius:3px; background:var(--bord); overflow:hidden; }
-  .ecoute .niveau span { display:block; height:100%; width:0; background:#c0392b; transition:width .08s; }
-  .ecoute .mots { margin-top:4px; min-height:1.4em; }
+  .ecoute .niveau span { display:block; height:100%; width:0; background:var(--rouge); transition:width .08s; }
+  .ecoute .mots { margin-top:4px; min-height:1.4em; font-size:1.05rem; }
   .ecoute .mots:empty::before { content:"Parle, je t'écoute…"; color:var(--muted); font-style:italic; }
   @keyframes clignote { 50% { opacity:.35; } }
-  dialog .case { display:flex; gap:8px; align-items:center; margin-bottom:14px; font-size:.9rem; color:var(--muted); }
-  dialog::backdrop { background:rgba(0,0,0,.45); }
-  dialog form { display:block; padding:0; border:0; }
-  dialog input[type=range] { width:100%; flex:none; }
-  dialog h2 { margin:0 0 12px; font-size:1.1rem; }
+
+  /* Écoute continue (mot de réveil) */
+  .veille { display:none; margin:0; font-size:.78rem; color:var(--muted); align-items:center; justify-content:center; gap:6px; flex-wrap:wrap; }
+  .veille.on { display:flex; }
+  .veille .oreille { width:8px; height:8px; border-radius:50%; background:var(--accent); opacity:.5; }
+  .veille.son .oreille { opacity:1; box-shadow:0 0 0 3px rgba(76,195,224,.25); }
+  .veille.eveille { color:var(--accent); }
+  .veille .entendu { opacity:.6; font-style:italic; max-width:40ch; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .veille button { border:1px solid var(--bord); background:transparent; color:var(--muted); border-radius:999px; padding:1px 8px; font-size:.75rem; cursor:pointer; }
+  #micro.continu { border-color:var(--accent); color:var(--accent); box-shadow:0 0 0 3px rgba(76,195,224,.18); }
+
+  /* Saisie */
+  form#form { border:1px solid var(--bord); background:var(--surface); border-radius:20px; padding:8px 8px 8px 14px; display:grid; gap:6px; }
+  form#form:focus-within { border-color:var(--accent); }
+  textarea:focus-visible { outline:none; }
+  textarea { border:0; background:transparent; resize:none; outline:none; min-height:24px; max-height:160px; line-height:1.5; padding:4px 0; width:100%; font-size:1rem; }
+  .barre { display:flex; align-items:center; gap:6px; }
+  .roles { display:flex; gap:2px; background:var(--bg); border-radius:999px; padding:2px; }
+  .roles button { border:0; background:transparent; border-radius:999px; padding:4px 10px; font-size:.8rem; cursor:pointer; color:var(--muted); }
+  .roles button[aria-pressed="true"] { background:var(--surface); color:var(--fg); box-shadow:0 1px 2px rgba(0,0,0,.4); }
+  .espace { flex:1; }
+  .rond { border-radius:50%; width:38px; height:38px; padding:0; cursor:pointer; font-size:1.05rem; flex:none; }
+  #micro { border:1px solid var(--bord); background:transparent; }
+  #micro.actif { background:var(--rouge); border-color:var(--rouge); color:#fff; animation:pouls 1.2s ease-in-out infinite; }
+  @keyframes pouls { 50% { box-shadow:0 0 0 6px rgba(224,83,61,.25); } }
+  #envoyer { border:0; background:var(--accent); color:var(--accent-fg); }
+  .aide { margin:0; font-size:.72rem; color:var(--muted); text-align:center; }
+  .astuce-plein { display:none; }
+
+  /* ===== Vue technique ===== */
+  .tech .meta { display:block; }
+  .tech .orbe-cadre { width:90px; height:90px; }
+  .tech .historique { display:none; }
+  .tech .moi { align-self:flex-end; max-width:80%; font-style:normal; color:var(--accent-fg); background:var(--accent); padding:8px 14px; border-radius:18px 18px 4px 18px; text-align:left; }
+  .tech .lui { align-self:flex-start; max-width:92%; font-size:1rem; }
+  .tech .avatar { display:block; }
+  .tech .details { display:block !important; }
+  .tech .puce.route { display:none; }
+  .tech .ecoute { align-self:flex-end; }
+  /* hors vue technique : seul le dernier échange reste visible */
+  main:not(.tech):not(.tout) #fil > .msg:not(.dernier):not(.avant-dernier) { display:none; }
+  .tout .orbe-cadre { width:90px; height:90px; }
+
+  /* ===== Vue orbe plein écran ===== */
+  .plein .orbe-cadre { position:fixed; left:50%; top:44%; width:118vmin; height:118vmin; transform:translate(-50%,-50%);
+    z-index:0; cursor:pointer; filter:none; transition:none; background:radial-gradient(circle, var(--nuit) 0 26%, transparent 68%); }
+  .plein > * { position:relative; z-index:1; }
+  .plein header { pointer-events:none; gap:0; }
+  .plein header button { pointer-events:auto; }
+  .plein h1 { font-size:1.1rem; opacity:.9; }
+  .plein .statut { font-size:.78rem; }
+  .plein .historique { display:none !important; }
+  .plein #fil { justify-content:flex-end; pointer-events:none; }
+  .plein #fil > * { pointer-events:auto; }
+  .plein #fil > .msg:not(.dernier):not(.avant-dernier) { display:none !important; }
+  .plein .lui { max-height:34vh; overflow-y:auto; font-size:1.05rem; background:var(--voile); -webkit-backdrop-filter:blur(8px); backdrop-filter:blur(8px);
+                border:1px solid rgba(127,214,255,.18); border-radius:16px; padding:12px 16px; }
+  .plein .ecoute { background:var(--voile); -webkit-backdrop-filter:blur(8px); backdrop-filter:blur(8px); }
+  .plein form#form { background:var(--voile); -webkit-backdrop-filter:blur(8px); backdrop-filter:blur(8px); }
+  .plein .astuce-plein { display:inline; }
+  .plein .aide-texte { display:none; }
+  #fil, form#form, .aide, .statut { transition:opacity .3s; }
+  .plein.zen #fil, .plein.zen form#form, .plein.zen .aide, .plein.zen .statut { opacity:0; pointer-events:none; }
+
+  /* ===== Téléphone ===== */
+  .nav-tel { display:none; }
+  @media (max-width:640px) {
+    main { gap:8px; }
+    .outils, .aide { display:none !important; }
+    h1 { font-size:1.3rem; }
+    .orbe-cadre { width:min(120px, 34vw, 18vh); height:min(120px, 34vw, 18vh); }
+    .lui { font-size:1rem; }
+    .roles button { padding:4px 7px; }
+    .nav-tel { display:grid; grid-template-columns:repeat(4, 1fr); gap:4px; border-top:1px solid var(--bord); padding-top:4px; }
+    .nav-tel button { border:0; background:transparent; color:var(--muted); display:grid; justify-items:center; gap:1px; padding:6px 0; border-radius:12px; cursor:pointer; font-size:1.05rem; line-height:1.2; }
+    .nav-tel button span { font-size:.7rem; }
+    .nav-tel button[aria-pressed="true"] { color:var(--accent); background:var(--surface); }
+    .plein .nav-tel { background:var(--voile); -webkit-backdrop-filter:blur(8px); backdrop-filter:blur(8px); border-radius:14px; border-top:0; }
+    .plein .lui { max-height:30vh; }
+  }
+  @media (prefers-reduced-motion: reduce) { .reflechit, .ecoute .point, #micro.actif { animation:none; } .reflechit { color:var(--muted); } }
+
+  /* Réglages */
+  dialog { border:1px solid var(--bord); border-radius:14px; background:var(--surface); color:var(--fg); padding:18px 20px; width:min(92vw, 380px); }
+  dialog::backdrop { background:rgba(0,0,0,.55); }
+  dialog form { display:block; }
+  dialog h2 { margin:0 0 12px; font-size:1.1rem; font-family:var(--f-titre); }
   dialog .ligne { display:grid; gap:6px; margin-bottom:14px; font-size:.9rem; color:var(--muted); }
   dialog .ecoles { display:flex; flex-wrap:wrap; gap:6px; }
-  dialog .ecoles button { padding:6px 12px; background:var(--bulle); color:var(--fg); border:1px solid var(--bord); font-size:.9rem; }
+  dialog .ecoles button { padding:6px 12px; background:var(--bg); border:1px solid var(--bord); border-radius:10px; font-size:.9rem; cursor:pointer; }
   dialog .ecoles button[aria-pressed="true"] { border-color:var(--accent); outline:1px solid var(--accent); }
-  dialog input[type=range] { padding:0; accent-color:var(--accent); }
+  dialog input[type=range] { width:100%; padding:0; accent-color:var(--accent); }
+  dialog .case { display:flex; gap:8px; align-items:center; margin-bottom:14px; font-size:.9rem; color:var(--muted); }
+  dialog fieldset { border:1px solid var(--bord); border-radius:10px; padding:10px 12px 0; margin:0 0 14px; }
+  dialog legend { font-size:.85rem; color:var(--fg); padding:0 4px; }
+  dialog input[type=number] { width:5.5em; background:var(--bg); border:1px solid var(--bord); border-radius:8px; padding:4px 6px; }
+  dialog .note { margin:-6px 0 12px; font-size:.78rem; color:var(--muted); }
+  dialog .note.ko { color:var(--rouge); }
   dialog .actions { display:flex; justify-content:space-between; gap:8px; }
-  dialog .actions button { padding:8px 14px; }
+  dialog .actions button { padding:8px 14px; border-radius:10px; cursor:pointer; border:0; background:var(--accent); color:var(--accent-fg); }
   dialog .actions .discret { background:transparent; color:var(--muted); border:1px solid var(--bord); }
-  h1 { margin:0 0 4px; font-size:2rem; letter-spacing:.02em; }
-  .meta { margin:0; color:var(--muted); font-size:.85rem; }
-  code { color:var(--fg); }
-  #fil { flex:1; overflow-y:auto; padding:8px 0; display:flex; flex-direction:column; gap:8px; }
-  .msg { max-width:85%; padding:10px 14px; border-radius:14px; line-height:1.45; white-space:pre-wrap; overflow-wrap:anywhere; }
-  .moi { align-self:flex-end; background:var(--accent); color:#fff; }
-  .lui { align-self:flex-start; background:var(--bulle); }
-  .lui small { display:block; margin-top:6px; color:var(--muted); font-size:.75rem; }
-  .erreur { align-self:center; color:#c0392b; font-size:.9rem; }
-  form { display:flex; gap:8px; padding-top:8px; border-top:1px solid var(--bord); }
-  select { padding:0 8px; border-radius:10px; border:1px solid var(--bord); background:var(--bg); color:var(--fg); font-size:.95rem; }
-  input { flex:1; min-width:0; padding:12px; border-radius:10px; border:1px solid var(--bord);
-          background:var(--bg); color:var(--fg); font-size:1rem; }
-  button { padding:0 18px; border:0; border-radius:10px; background:var(--accent); color:#fff; font-size:1rem; cursor:pointer; }
-  button:disabled { opacity:.5; cursor:default; }
 </style>
 </head>
 <body>
-<main>
+<main id="page">
   <header>
     <div class="orbe-cadre"><canvas class="orbe" id="orbe" aria-hidden="true"></canvas></div>
-    <button type="button" id="reglagesOrbe" title="Apparence de l'orbe" aria-label="Apparence de l'orbe">⚙</button>
     <h1 id="nom">…</h1>
+    <p class="statut"><span class="pastille" id="pastille" aria-hidden="true"></span><span id="connexion">Connexion…</span>·<span id="etatOrbe">au repos</span></p>
+    <p class="veille" id="veille"><span class="oreille" aria-hidden="true"></span><span id="veilleTexte">À l'écoute</span><span class="entendu" id="entendu"></span><button type="button" id="btnEndormir" hidden>Endormir</button></p>
     <p class="meta">Wake word : <code id="wake">…</code> · <span id="version"></span> · <span id="modeles">modèles…</span></p>
+    <div class="outils">
+      <button type="button" class="icone" id="btnPlein" title="Orbe plein écran (Échap pour sortir)" aria-label="Orbe plein écran" aria-pressed="false">⛶</button>
+      <button type="button" class="icone" id="btnTech" title="Vue technique : tout le fil, routes, modèles et durées" aria-label="Vue technique" aria-pressed="false">&lt;/&gt;</button>
+      <button type="button" class="icone" id="reglagesOrbe" title="Réglages (orbe, voix)" aria-label="Réglages">⚙</button>
+    </div>
   </header>
-  <div id="fil" aria-live="polite"></div>
+
+  <div id="fil" aria-live="polite">
+    <div class="accueil" id="accueil">
+      <p id="salut">Que puis-je faire pour toi ?</p>
+      <div class="suggestions">
+        <button type="button">Quelles lumières sont allumées ?</button>
+        <button type="button">Qu'est-ce que tu sais faire ?</button>
+        <button type="button">Pourquoi la mer est salée ?</button>
+      </div>
+    </div>
+  </div>
+  <button type="button" class="puce historique" id="btnHisto" hidden>Voir toute la conversation</button>
+
   <form id="form">
-    <select id="role" aria-label="Rôle du modèle" title="Auto : le routeur choisit. Rapide ou Raisonnement : forcé à la main">
-      <option value="auto" selected>Auto</option>
-      <option value="rapide">Rapide</option>
-      <option value="raisonnement">Raisonnement</option>
-    </select>
-    <input id="saisie" autocomplete="off" placeholder="Écris un message…" required>
-    <button type="button" id="micro" title="Parler : je m'arrête tout seul quand tu te tais (re-clic pour arrêter)" aria-label="Parler">🎤</button>
-    <button id="envoyer">Envoyer</button>
+    <textarea id="saisie" rows="1" autocomplete="off" placeholder="Écris un message…" aria-label="Message"></textarea>
+    <div class="barre">
+      <div class="roles" id="roles" role="group" aria-label="Rôle du modèle" title="Auto : le routeur choisit. Rapide ou Raisonnement : forcé à la main">
+        <button type="button" data-role="auto" aria-pressed="true">Auto</button>
+        <button type="button" data-role="rapide" aria-pressed="false">Rapide</button>
+        <button type="button" data-role="raisonnement" aria-pressed="false">Raisonnement</button>
+      </div>
+      <span class="espace"></span>
+      <button type="button" class="rond" id="micro" title="Parler : je m'arrête tout seul quand tu te tais (re-clic pour arrêter)" aria-label="Parler">🎤</button>
+      <button class="rond" id="envoyer" title="Envoyer (Entrée)" aria-label="Envoyer">➤</button>
+    </div>
   </form>
+  <p class="aide"><span class="aide-texte">Entrée pour envoyer · Maj+Entrée pour aller à la ligne</span><span class="astuce-plein">Clique sur l'orbe pour ne garder qu'elle · Échap pour sortir</span></p>
+  <nav class="nav-tel" id="navTel" aria-label="Vues">
+    <button type="button" data-vue="orbe" aria-pressed="false">◉<span>Orbe</span></button>
+    <button type="button" data-vue="conv" aria-pressed="false">☰<span>Conversation</span></button>
+    <button type="button" data-vue="tech" aria-pressed="false">&lt;/&gt;<span>Technique</span></button>
+    <button type="button" data-vue="reglages" aria-pressed="false">⚙<span>Réglages</span></button>
+  </nav>
 </main>
 <dialog id="dlgOrbe">
   <form method="dialog">
-    <h2>Apparence de l'orbe</h2>
+    <h2>Réglages</h2>
     <div class="ligne">École de magie<div class="ecoles" id="ecoles"></div></div>
     <label class="ligne" for="rgParticules">Particules<input type="range" id="rgParticules" min="0" max="400" step="10"></label>
     <label class="ligne" for="rgBrume">Brume<input type="range" id="rgBrume" min="0" max="100"></label>
     <label class="case"><input type="checkbox" id="lireTout"> Lire aussi à voix haute les réponses aux messages écrits</label>
+    <fieldset>
+      <legend>Écoute continue</legend>
+      <label class="case"><input type="checkbox" id="continu"> Écouter en continu et réagir au mot de réveil (aussi : appui long sur 🎤)</label>
+      <label class="case" for="fenetre">Après le mot de réveil, écouter encore <input type="number" id="fenetre" min="0" max="3600" step="5"> s</label>
+      <p class="note">0 = dire le mot de réveil avant chaque phrase.</p>
+      <label class="case"><input type="checkbox" id="toujours"> Toujours à l'écoute, sans mot de réveil</label>
+      <p class="note" id="noteEcoute"></p>
+    </fieldset>
     <div class="actions">
       <button type="button" class="discret" id="orbeDefaut">Valeurs par défaut</button>
       <button value="ok">Fermer</button>
@@ -99,6 +261,7 @@
 const $ = id => document.getElementById(id);
 const historique = [];
 const conversation = (crypto.randomUUID ? crypto.randomUUID() : String(Math.random())).slice(0, 36);
+let nom = 'l\'assistant';   // remplacé par le nom configuré dès que /api/info répond (jamais écrit en dur)
 
 // ----- Orbe : apparence réglable, gardée dans ce navigateur -----
 const ORBE_DEFAUT = {ecole: 'givre', particules: 80, brume: 75};
@@ -107,6 +270,11 @@ try { Object.assign(reglagesOrbe, JSON.parse(localStorage.getItem('orbe.reglages
 const orbe = creerOrbe($('orbe'), {ecole: reglagesOrbe.ecole, particules: reglagesOrbe.particules, brume: reglagesOrbe.brume / 100});
 let occupe = false, minuteurEcoute = null, minuteurErreur = null;
 
+// Le nom de l'état de l'orbe est affiché sous le nom de l'assistant.
+const NOMS_ETATS = {repos: 'au repos', ecoute: "t'écoute", reflexion: 'réfléchit…', parole: 'parle', erreur: 'souci'};
+const etatOrigine = orbe.etat.bind(orbe);
+orbe.etat = e => { etatOrigine(e); if (NOMS_ETATS[e]) $('etatOrbe').textContent = NOMS_ETATS[e]; };
+
 function appliquerOrbe() {
   orbe.reglages({ecole: reglagesOrbe.ecole, particules: reglagesOrbe.particules, brume: reglagesOrbe.brume / 100});
   $('rgParticules').value = reglagesOrbe.particules;
@@ -114,9 +282,9 @@ function appliquerOrbe() {
   for (const b of $('ecoles').children) b.setAttribute('aria-pressed', String(b.dataset.ecole === reglagesOrbe.ecole));
   try { localStorage.setItem('orbe.reglages', JSON.stringify(reglagesOrbe)); } catch (e) {}
 }
-for (const [cle, nom] of Object.entries(creerOrbe.ECOLES)) {
+for (const [cle, n] of Object.entries(creerOrbe.ECOLES)) {
   const b = document.createElement('button');
-  b.type = 'button'; b.dataset.ecole = cle; b.textContent = nom;
+  b.type = 'button'; b.dataset.ecole = cle; b.textContent = n;
   b.onclick = () => { reglagesOrbe.ecole = cle; appliquerOrbe(); };
   $('ecoles').appendChild(b);
 }
@@ -126,56 +294,181 @@ $('orbeDefaut').onclick = () => { reglagesOrbe = {...ORBE_DEFAUT}; appliquerOrbe
 $('reglagesOrbe').onclick = () => $('dlgOrbe').showModal();
 appliquerOrbe();
 
+// ----- Vues : conversation, orbe plein écran, technique (gardée dans ce navigateur) -----
+const VUES = ['orbe', 'conv', 'tech'];
+let vue = 'conv', toutVoir = false;
+try { vue = localStorage.getItem('chat.vue') || 'conv'; } catch (e) {}
+function redimensionner() { dispatchEvent(new Event('resize')); setTimeout(() => dispatchEvent(new Event('resize')), 420); }
+function appliquerVue(v, sansPleinEcran) {
+  if (!VUES.includes(v)) v = 'conv';
+  const etaitOrbe = vue === 'orbe';
+  vue = v;
+  const p = $('page');
+  p.classList.toggle('tech', v === 'tech'); p.classList.toggle('plein', v === 'orbe'); p.classList.remove('zen');
+  $('btnTech').setAttribute('aria-pressed', String(v === 'tech'));
+  $('btnPlein').setAttribute('aria-pressed', String(v === 'orbe'));
+  for (const b of $('navTel').children) b.setAttribute('aria-pressed', String(b.dataset.vue === v));
+  try { localStorage.setItem('chat.vue', v); } catch (e) {}
+  // vrai plein écran du navigateur quand il le permet (sinon l'orbe remplit simplement la page)
+  if (!sansPleinEcran) {
+    try {
+      if (v === 'orbe' && !document.fullscreenElement) document.documentElement.requestFullscreen?.().catch(() => {});
+      else if (etaitOrbe && v !== 'orbe' && document.fullscreenElement) document.exitFullscreen?.().catch(() => {});
+    } catch (e) {}
+  }
+  redimensionner(); defiler();
+}
+$('btnTech').onclick = () => appliquerVue(vue === 'tech' ? 'conv' : 'tech');
+$('btnPlein').onclick = () => appliquerVue(vue === 'orbe' ? 'conv' : 'orbe');
+$('navTel').onclick = ev => {
+  const b = ev.target.closest('button'); if (!b) return;
+  if (b.dataset.vue === 'reglages') $('dlgOrbe').showModal(); else appliquerVue(b.dataset.vue);
+};
+$('orbe').addEventListener('click', () => { if (vue === 'orbe') $('page').classList.toggle('zen'); });
+addEventListener('keydown', ev => { if (ev.key === 'Escape' && vue === 'orbe' && !$('dlgOrbe').open) appliquerVue('conv'); });
+$('btnHisto').onclick = () => {
+  toutVoir = !toutVoir; $('page').classList.toggle('tout', toutVoir);
+  $('btnHisto').textContent = toutVoir ? 'Revenir au dernier échange' : 'Voir toute la conversation';
+  redimensionner(); defiler();
+};
+// Glisser à gauche ou à droite pour changer de vue (téléphone, tablette)
+let x0 = null, y0 = 0;
+$('page').addEventListener('touchstart', ev => {
+  if (ev.target.closest('textarea, .lui, .ecoute')) { x0 = null; return; }
+  x0 = ev.touches[0].clientX; y0 = ev.touches[0].clientY;
+}, {passive: true});
+$('page').addEventListener('touchend', ev => {
+  if (x0 === null) return;
+  const dx = ev.changedTouches[0].clientX - x0, dy = ev.changedTouches[0].clientY - y0; x0 = null;
+  if (Math.abs(dx) > 60 && Math.abs(dx) > Math.abs(dy) * 1.5)
+    appliquerVue(VUES[Math.max(0, Math.min(2, VUES.indexOf(vue) + (dx < 0 ? 1 : -1)))]);
+});
+appliquerVue(vue, true);
+
+// ----- Rôle du modèle -----
+let role = 'auto';
+$('roles').onclick = ev => {
+  const b = ev.target.closest('button'); if (!b) return;
+  role = b.dataset.role;
+  for (const x of $('roles').children) x.setAttribute('aria-pressed', String(x === b));
+};
+
+// ----- Saisie : plusieurs lignes, Entrée envoie, Maj+Entrée va à la ligne -----
+function ajusterSaisie() { const t = $('saisie'); t.style.height = 'auto'; t.style.height = Math.min(t.scrollHeight, 160) + 'px'; }
 // L'orbe « écoute » pendant qu'on lui écrit, puis revient au repos.
 $('saisie').addEventListener('input', () => {
+  ajusterSaisie();
   if (occupe) return;
   orbe.etat($('saisie').value ? 'ecoute' : 'repos');
   clearTimeout(minuteurEcoute);
   minuteurEcoute = setTimeout(() => { if (!occupe) orbe.etat('repos'); }, 2500);
 });
-$('saisie').addEventListener('blur', () => { if (!occupe) orbe.etat('repos'); });
+$('saisie').addEventListener('blur', () => { if (!occupe && !enregistreur) orbe.etat('repos'); });
+$('saisie').addEventListener('keydown', ev => {
+  if (ev.key === 'Enter' && !ev.shiftKey && !ev.isComposing) { ev.preventDefault(); $('form').requestSubmit(); }
+});
 
 fetch('/api/info').then(r => r.json()).then(i => {
+  nom = i.nom;
   document.title = i.nom;
   $('nom').textContent = i.nom;
   $('wake').textContent = i.wake_word;
   $('version').textContent = 'v' + i.version;
   $('saisie').placeholder = 'Écris à ' + i.nom + '…';
-}).catch(() => { $('nom').textContent = 'Orchestrateur injoignable'; });
+  $('pastille').className = 'pastille ok'; $('connexion').textContent = 'En ligne';
+}).catch(() => {
+  $('nom').textContent = 'Orchestrateur injoignable';
+  $('pastille').className = 'pastille ko'; $('connexion').textContent = 'Hors ligne';
+});
 
 fetch('/api/fournisseurs').then(r => r.json()).then(e => {
   $('modeles').textContent = e.fournisseurs
     .map(f => (f.disponible ? '● ' : '○ ') + f.modele + ' (' + f.roles.join(', ') + ')').join(' · ');
 }).catch(() => { $('modeles').textContent = 'modèles inconnus'; });
 
+// ----- Fil -----
+function defiler() { $('fil').scrollTop = $('fil').scrollHeight; }
+function marquerDerniers() {
+  const m = [...$('fil').querySelectorAll(':scope > .msg:not(.en-attente)')];
+  m.forEach(x => x.classList.remove('dernier', 'avant-dernier'));
+  if (m.at(-1)) m.at(-1).classList.add('dernier');
+  if (m.at(-2)) m.at(-2).classList.add('avant-dernier');
+  $('btnHisto').hidden = m.length <= 2;
+}
 function bulle(classe, texte) {
+  $('accueil')?.remove();
   const d = document.createElement('div');
   d.className = 'msg ' + classe;
   d.textContent = texte;
   $('fil').appendChild(d);
-  $('fil').scrollTop = $('fil').scrollHeight;
+  marquerDerniers(); defiler();
   return d;
 }
+function bulleReponse() {
+  const d = bulle('lui', '');
+  d.innerHTML = '<span class="avatar" aria-hidden="true"></span><div class="corps"></div>';
+  return d.querySelector('.corps');
+}
+
+// Mise en forme simple et sûre : tout est échappé, puis **gras**, `code` et listes « - ».
+function echapper(s) { return s.replace(/[&<>"]/g, c => ({'&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;'}[c])); }
+function miseEnForme(t) {
+  const enLigne = s => echapper(s).replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>').replace(/`([^`]+)`/g, '<code>$1</code>');
+  return t.split(/\n{2,}/).map(bloc => {
+    const lignes = bloc.split('\n');
+    if (lignes.every(l => /^\s*[-*•] /.test(l))) return '<ul>' + lignes.map(l => '<li>' + enLigne(l.replace(/^\s*[-*•] /, '')) + '</li>').join('') + '</ul>';
+    return '<p>' + lignes.map(enLigne).join('<br>') + '</p>';
+  }).join('');
+}
+function duree(ms) { return ms >= 1000 ? (ms / 1000).toFixed(1).replace('.', ',') + ' s' : Math.round(ms) + ' ms'; }
+
+$('fil').addEventListener('click', ev => {
+  const s = ev.target.closest('.suggestions button');
+  if (s) demander(s.textContent, false);
+});
 
 $('form').addEventListener('submit', ev => {
   ev.preventDefault();
   const message = $('saisie').value.trim();
   if (!message) return;
-  $('saisie').value = '';
-  envoyerMessage(message, false);
+  $('saisie').value = ''; ajusterSaisie();
+  demander(message, false);
 });
 
-async function envoyerMessage(message, vocal) {
-  $('envoyer').disabled = true;
+// File d'attente : un message envoyé pendant une réponse (clavier ou voix) s'affiche tout de suite
+// « en attente », puis il est traité à son tour, dans l'ordre.
+const file = [];
+function demander(message, vocal) {
+  if (occupe || file.length) {
+    const b = bulle('moi en-attente', message);
+    file.push({message, vocal, bulle: b});
+    return b;
+  }
+  return envoyerMessage(message, vocal);
+}
+function suivantDansLaFile() {
+  const s = file.shift();
+  if (s) envoyerMessage(s.message, s.vocal, s.bulle);
+}
+
+function envoyerMessage(message, vocal, bulleAttente) {
   occupe = true; clearTimeout(minuteurEcoute); clearTimeout(minuteurErreur);
+  let maBulle;
+  if (bulleAttente) { maBulle = bulleAttente; maBulle.classList.remove('en-attente'); $('fil').appendChild(maBulle); }
+  else maBulle = bulle('moi', message);
+  traiter(message, vocal);
+  return maBulle;
+}
+
+async function traiter(message, vocal) {
   orbe.etat('reflexion');
-  bulle('moi', message);
-  const rep = bulle('lui', '');
+  const corps = bulleReponse();
+  corps.innerHTML = '<span class="reflechit">' + echapper(nom) + ' réfléchit…</span>';
   let texte = '', route = null;
   try {
     const r = await fetch('/api/chat', {
       method: 'POST', headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({message, historique, flux: true, role: $('role').value, conversation}),
+      body: JSON.stringify({message, historique, flux: true, role, conversation}),
     });
     if (!r.ok) throw new Error((await r.json()).detail || r.statusText);
     const lecteur = r.body.getReader();
@@ -191,33 +484,55 @@ async function envoyerMessage(message, vocal) {
         if (!ligne) continue;
         const o = JSON.parse(ligne);
         if (o.route) route = o.route;
-        if (o.delta) { if (orbe.etatCourant !== 'parole') orbe.etat('parole'); orbe.impulsion(o.delta.length); texte += o.delta; rep.firstChild ? rep.firstChild.textContent = texte : rep.textContent = texte; }
-        if (o.erreur) throw new Error(o.erreur);
-        if (o.fin) {
-          const s = document.createElement('small');
-          let r = '';
-          if (route && route.categorie) r = route.categorie + ' (' + route.raison.replace(/^règle : .*/, 'règle') + ', ' + Math.round(route.duree_ms) + ' ms) → ';
-          else if (route) r = 'forcé → ';
-          s.textContent = r + ({'home-assistant': 'Home Assistant (Assist)', 'maison': 'Maison'}[o.fournisseur] || o.modele) + (o.secours ? ' (secours)' : '') + ' · 1er mot ' + o.premier_ms + ' ms · ' + o.duree_ms + ' ms';
-          if (route && route.raison) s.title = route.raison;
-          rep.appendChild(s);
+        if (o.delta) {
+          if (orbe.etatCourant !== 'parole') orbe.etat('parole');
+          orbe.impulsion(o.delta.length);
+          texte += o.delta;
+          corps.innerHTML = miseEnForme(texte);
         }
+        if (o.erreur) throw new Error(o.erreur);
+        if (o.fin) ajouterPied(corps, o, route, texte);
       }
-      $('fil').scrollTop = $('fil').scrollHeight;
+      defiler();
     }
     historique.push({role: 'user', content: message}, {role: 'assistant', content: texte});
     if (texte && (vocal || $('lireTout').checked)) await direAVoixHaute(texte);
   } catch (e) {
-    if (!texte) rep.remove();
+    if (!texte) corps.parentElement.remove();
     bulle('erreur', 'Erreur : ' + e.message);
     orbe.etat('erreur');
     minuteurErreur = setTimeout(() => { if (!occupe) orbe.etat('repos'); }, 4000);
   } finally {
-    $('envoyer').disabled = false;
     occupe = false;
-    if (orbe.etatCourant !== 'erreur') orbe.etat('repos');
-    $('saisie').focus();
+    if (orbe.etatCourant !== 'erreur' && !enregistreur) orbe.etat('repos');
+    marquerDerniers(); defiler();
+    if (!matchMedia('(pointer: coarse)').matches) $('saisie').focus();
+    suivantDansLaFile();
   }
+}
+
+// Sous chaque réponse : l'heure, un résumé cliquable (route · durée) et le détail technique complet.
+function ajouterPied(corps, o, route, texte) {
+  let r = '', categorie = 'forcé';
+  if (route && route.categorie) { categorie = route.categorie; r = route.categorie + ' (' + route.raison.replace(/^règle : .*/, 'règle') + ', ' + Math.round(route.duree_ms) + ' ms) → '; }
+  else if (route) r = 'forcé → ';
+  const detail = r + ({'home-assistant': 'Home Assistant (Assist)', 'maison': 'Maison'}[o.fournisseur] || o.modele) + (o.secours ? ' (secours)' : '') + ' · 1er mot ' + o.premier_ms + ' ms · ' + o.duree_ms + ' ms';
+  const pied = document.createElement('div');
+  pied.className = 'pied';
+  const heure = new Date().toLocaleTimeString('fr-FR', {hour: '2-digit', minute: '2-digit'});
+  pied.innerHTML = '<span>' + heure + '</span>'
+    + '<button type="button" class="puce route" aria-expanded="false">' + echapper(categorie + ' · ' + duree(o.duree_ms)) + ' ▾</button>'
+    + '<button type="button" class="puce copier">Copier</button>'
+    + '<span class="details" hidden></span>';
+  const d = pied.querySelector('.details');
+  d.textContent = detail;
+  if (route && route.raison) d.title = route.raison;
+  pied.querySelector('.route').onclick = e => { d.hidden = !d.hidden; e.currentTarget.setAttribute('aria-expanded', String(!d.hidden)); };
+  pied.querySelector('.copier').onclick = e => {
+    const b = e.currentTarget;
+    navigator.clipboard?.writeText(texte).then(() => { b.textContent = 'Copié'; setTimeout(() => { b.textContent = 'Copier'; }, 1500); }, () => {});
+  };
+  corps.appendChild(pied);
 }
 
 // ----- Voix : un seul bouton. Clic -> j'écoute ; je m'arrête tout seul après un silence -----
@@ -226,10 +541,20 @@ let partielEnCours = false, minuteurPartiel = null;
 try { $('lireTout').checked = localStorage.getItem('voix.lireTout') === '1'; } catch (e) {}
 $('lireTout').onchange = () => { try { localStorage.setItem('voix.lireTout', $('lireTout').checked ? '1' : '0'); } catch (e) {} };
 
+// Appui long sur 🎤 : écoute continue. Clic simple : une phrase (ou arrête l'écoute continue).
+let minuteurAppui = null, appuiLong = false;
+$('micro').addEventListener('pointerdown', () => {
+  appuiLong = false;
+  minuteurAppui = setTimeout(() => { appuiLong = true; basculerContinu(!continu.actif); }, 600);
+});
+for (const ev of ['pointerup', 'pointerleave', 'pointercancel']) $('micro').addEventListener(ev, () => clearTimeout(minuteurAppui));
+$('micro').addEventListener('contextmenu', ev => ev.preventDefault());
+
 $('micro').onclick = async () => {
+  if (appuiLong) { appuiLong = false; return; }
   if (lecture) { lecture.pause(); lecture = null; }
+  if (continu.actif && !(enregistreur && enregistreur.state === 'recording')) { basculerContinu(false); return; }
   if (enregistreur && enregistreur.state === 'recording') { enregistreur.stop(); return; }
-  if (occupe) return;
   try {
     fluxMicro = await navigator.mediaDevices.getUserMedia({audio: {echoCancellation: true, noiseSuppression: true}});
   } catch (e) {
@@ -242,10 +567,12 @@ $('micro').onclick = async () => {
   enregistreur.onstop = transcrireEtEnvoyer;
   enregistreur.start(500);   // un morceau toutes les 0,5 s : sert aux mots en direct
   $('micro').classList.add('actif'); $('micro').textContent = '⏹';
+  $('page').classList.remove('zen');
+  $('accueil')?.remove();
   bulleEcoute = document.createElement('div');
   bulleEcoute.className = 'ecoute';
   bulleEcoute.innerHTML = '<div class="tete"><span class="point"></span><span class="temps">0 s</span><span class="niveau"><span></span></span></div><div class="mots"></div>';
-  $('fil').appendChild(bulleEcoute); $('fil').scrollTop = $('fil').scrollHeight;
+  $('fil').appendChild(bulleEcoute); defiler();
   orbe.etat('ecoute');
   suivreVolume(fluxMicro);
   minuteurPartiel = setInterval(transcriptionPartielle, 1200);
@@ -286,7 +613,7 @@ async function transcriptionPartielle() {
     const r = await fetch('/api/voix/transcrire?partiel=1', {method: 'POST', headers: {'Content-Type': blob.type}, body: blob});
     if (r.ok && bulleEcoute && enregistreur && enregistreur.state === 'recording') {
       const o = await r.json();
-      if (o.texte) bulleEcoute.querySelector('.mots').textContent = o.texte;
+      if (o.texte) { bulleEcoute.querySelector('.mots').textContent = o.texte; defiler(); }
     }
   } catch (e) {} finally { partielEnCours = false; }
 }
@@ -298,17 +625,16 @@ async function transcrireEtEnvoyer() {
   const blob = new Blob(morceaux, {type: enregistreur.mimeType || 'audio/webm'});
   enregistreur = null;
   const finirBulle = () => { if (bulleEcoute) { bulleEcoute.remove(); bulleEcoute = null; } };
-  if (blob.size < 2000) { finirBulle(); orbe.etat('repos'); return; }
+  if (blob.size < 2000) { finirBulle(); if (!occupe) orbe.etat('repos'); return; }
   if (bulleEcoute) bulleEcoute.querySelector('.tete').innerHTML = '<span>Je transcris…</span>';
-  orbe.etat('reflexion');
+  if (!occupe) orbe.etat('reflexion');
   try {
     const r = await fetch('/api/voix/transcrire', {method: 'POST', headers: {'Content-Type': blob.type}, body: blob});
     const o = await r.json();
     finirBulle();
     if (!r.ok) throw new Error(o.detail || r.statusText);
-    if (!o.texte) { orbe.etat('repos'); bulle('erreur', 'Je n\'ai rien entendu.'); return; }
-    await envoyerMessage(o.texte, true);
-    const derniere = [...document.querySelectorAll('.msg.moi')].pop();
+    if (!o.texte) { if (!occupe) orbe.etat('repos'); bulle('erreur', 'Je n\'ai rien entendu.'); return; }
+    const derniere = demander(o.texte, true);
     if (derniere) derniere.title = 'Transcrit en ' + o.duree_ms + ' ms (' + o.duree_audio_s + ' s d\'audio)';
   } catch (e) {
     finirBulle();
@@ -318,21 +644,221 @@ async function transcrireEtEnvoyer() {
   }
 }
 
+function decouperPhrases(texte) {
+  // phrases courtes : la première est synthétisée et lue pendant que les suivantes se préparent
+  const morceaux = texte.replace(/[*`]/g, '').replace(/\s+/g, ' ').match(/[^.!?…]+[.!?…]*\s*/g) || [texte];
+  const phrases = [];
+  for (const m of morceaux) {
+    const p = m.trim(); if (!p) continue;
+    if (phrases.length && (phrases[phrases.length - 1].length < 40 || p.length < 12)) phrases[phrases.length - 1] += ' ' + p;
+    else phrases.push(p);
+  }
+  return phrases;
+}
+
+function synthetiser(phrase) {
+  return fetch('/api/voix/parler', {method: 'POST', headers: {'Content-Type': 'application/json'},
+                                    body: JSON.stringify({texte: phrase.slice(0, 4000)})})
+    .then(r => r.ok ? r.blob() : null).catch(() => null);
+}
+
 async function direAVoixHaute(texte) {
+  const phrases = decouperPhrases(texte);
+  if (!phrases.length) return;
+  orbe.etat('parole');
+  const pulse = setInterval(() => orbe.impulsion(4), 180);
   try {
-    const r = await fetch('/api/voix/parler', {method: 'POST', headers: {'Content-Type': 'application/json'},
-                                               body: JSON.stringify({texte: texte.slice(0, 4000)})});
-    if (!r.ok) return;
-    const url = URL.createObjectURL(await r.blob());
-    lecture = new Audio(url);
-    orbe.etat('parole');
-    const pulse = setInterval(() => orbe.impulsion(4), 180);
-    await new Promise(res => { lecture.onended = lecture.onerror = lecture.onpause = res; lecture.play().catch(res); });
+    let suivante = synthetiser(phrases[0]);
+    for (let i = 0; i < phrases.length; i++) {
+      const blob = await suivante;
+      if (i + 1 < phrases.length) suivante = synthetiser(phrases[i + 1]);   // prépare la suivante pendant la lecture
+      if (!blob) continue;
+      const url = URL.createObjectURL(blob);
+      lecture = new Audio(url);
+      const interrompu = await new Promise(res => {
+        lecture.onended = () => res(false);
+        lecture.onerror = () => res(false);
+        lecture.onpause = () => res(!lecture || !lecture.ended);
+        lecture.play().catch(() => res(false));
+      });
+      URL.revokeObjectURL(url);
+      if (interrompu || !lecture) break;   // clic sur le micro pendant la lecture : on s'arrête là
+    }
+  } finally {
     clearInterval(pulse);
-    URL.revokeObjectURL(url);
     lecture = null;
+    if (!occupe) orbe.etat('repos');
+  }
+}
+
+// ----- Écoute continue : micro ouvert, chaque morceau de parole part vers /api/voix/ecoute -----
+// Le serveur décide : « ignorer » (pas pour moi), « reveil » (mot de réveil seul), « commande » (à traiter).
+const continu = {actif: false, flux: null, ctx: null, rec: null, fin: 0, wake: '', toujours: false, fenetre: 10, chaine: Promise.resolve()};
+let minuteurFenetre = null, minuteurEntendu = null;
+
+fetch('/api/voix').then(r => r.ok ? r.json() : null).then(v => { if (v) lireReglagesVoix(v); }).catch(() => {});
+function lireReglagesVoix(v) {
+  continu.wake = v.wake_word || nom;
+  continu.toujours = !!v.toujours_a_l_ecoute;
+  if (typeof v.fenetre_s === 'number') continu.fenetre = v.fenetre_s;
+  $('fenetre').value = continu.fenetre;
+  $('toujours').checked = continu.toujours;
+  majVeille();
+}
+async function ecrireReglagesVoix() {
+  const corps = {fenetre_s: Math.max(0, Math.min(3600, +$('fenetre').value || 0)), toujours_a_l_ecoute: $('toujours').checked};
+  $('noteEcoute').className = 'note'; $('noteEcoute').textContent = 'Enregistrement…';
+  try {
+    const r = await fetch('/api/voix/reglages', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(corps)});
+    if (!r.ok) {
+      const d = (await r.json().catch(() => ({}))).detail;
+      throw new Error(r.status === 422 ? 'le délai doit être entre 0 et 3600 s' : typeof d === 'string' ? d : r.statusText || 'erreur ' + r.status);
+    }
+    const v = await (await fetch('/api/voix')).json();
+    lireReglagesVoix(v);
+    $('noteEcoute').textContent = 'Enregistré.';
+  } catch (e) {
+    $('noteEcoute').className = 'note ko'; $('noteEcoute').textContent = 'Non enregistré : ' + e.message;
+  }
+}
+$('fenetre').onchange = ecrireReglagesVoix;
+$('toujours').onchange = ecrireReglagesVoix;
+$('continu').onchange = () => basculerContinu($('continu').checked);
+
+function majVeille(texte) {
+  const v = $('veille');
+  v.classList.toggle('on', continu.actif);
+  const reste = Math.ceil((continu.fin - Date.now()) / 1000);
+  const eveille = continu.toujours || reste > 0;
+  v.classList.toggle('eveille', eveille);
+  $('btnEndormir').hidden = !(reste > 0) || continu.toujours;
+  $('veilleTexte').textContent = texte || (continu.toujours ? 'Toujours à l\'écoute'
+    : reste > 0 ? 'Je t\'écoute · ' + reste + ' s' : 'À l\'écoute de « ' + (continu.wake || nom) + ' »');
+}
+function ouvrirFenetre(s) {
+  clearInterval(minuteurFenetre);
+  continu.fin = s > 0 ? Date.now() + s * 1000 : 0;
+  majVeille();
+  if (s > 0) minuteurFenetre = setInterval(() => { majVeille(); if (Date.now() >= continu.fin) { clearInterval(minuteurFenetre); if (!occupe && !lecture) orbe.etat('repos'); } }, 500);
+}
+$('btnEndormir').onclick = () => {
+  fetch('/api/voix/endormir', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({conversation})}).catch(() => {});
+  ouvrirFenetre(0);
+};
+function montrerEntendu(t) {
+  $('entendu').textContent = t ? '« ' + t + ' »' : '';
+  clearTimeout(minuteurEntendu);
+  if (t) minuteurEntendu = setTimeout(() => { $('entendu').textContent = ''; }, 4000);
+}
+function bip() {
+  try {
+    const c = new AudioContext(), o = c.createOscillator(), g = c.createGain();
+    o.frequency.value = 880; g.gain.setValueAtTime(.0001, c.currentTime);
+    g.gain.exponentialRampToValueAtTime(.12, c.currentTime + .02); g.gain.exponentialRampToValueAtTime(.0001, c.currentTime + .18);
+    o.connect(g).connect(c.destination); o.start(); o.stop(c.currentTime + .2); o.onended = () => c.close();
   } catch (e) {}
 }
+
+async function basculerContinu(on) {
+  if (on === continu.actif) return;
+  if (!on) {
+    continu.actif = false;
+    if (continu.rec && continu.rec.state === 'recording') continu.rec.stop();
+    continu.rec = null;
+    if (continu.flux) continu.flux.getTracks().forEach(t => t.stop());
+    if (continu.ctx) continu.ctx.close().catch(() => {});
+    continu.flux = continu.ctx = null;
+    ouvrirFenetre(0);
+  } else {
+    try {
+      continu.flux = await navigator.mediaDevices.getUserMedia({audio: {echoCancellation: true, noiseSuppression: true}});
+    } catch (e) {
+      bulle('erreur', 'Micro inaccessible : autorise le micro pour cette page.');
+      on = false;
+    }
+    if (on) { continu.actif = true; analyserContinu(); }
+  }
+  $('continu').checked = continu.actif;
+  $('micro').classList.toggle('continu', continu.actif);
+  $('micro').title = continu.actif ? 'Écoute continue active : clic pour l\'arrêter' : 'Parler : je m\'arrête tout seul quand tu te tais (appui long : écoute continue)';
+  try { localStorage.setItem('voix.continu', continu.actif ? '1' : '0'); } catch (e) {}
+  majVeille();
+}
+
+function analyserContinu() {
+  // Même détection de niveau que suivreVolume : un morceau commence au son,
+  // se termine après ~0,9 s de silence, ou au bout de 15 s. L'enregistreur tourne déjà avant
+  // (relancé toutes les 3 s de silence) pour ne pas couper le début du mot de réveil.
+  const ctx = new AudioContext(), src = ctx.createMediaStreamSource(continu.flux), an = ctx.createAnalyser();
+  continu.ctx = ctx; an.fftSize = 512; src.connect(an);
+  const buf = new Uint8Array(an.fftSize);
+  let enMorceau = false, debut = 0, dernierSon = 0, depart = 0;
+  const lancer = () => {
+    const rec = new MediaRecorder(continu.flux), morceaux = [];
+    rec.ondataavailable = ev => { if (ev.data.size) morceaux.push(ev.data); };
+    rec.morceaux = morceaux; rec.start();
+    continu.rec = rec; depart = performance.now();
+  };
+  const jeter = () => { if (continu.rec) { const r = continu.rec; continu.rec = null; if (r.state === 'recording') r.stop(); } };
+  const tic = () => {
+    if (!continu.actif) { jeter(); return; }
+    // pendant que l'assistant parle ou qu'on dicte avec le bouton : on n'écoute pas (pas d'écho)
+    const enPause = !!lecture || !!enregistreur;
+    const t = performance.now();
+    if (enPause) {
+      jeter(); enMorceau = false; $('veille').classList.remove('son');
+      requestAnimationFrame(tic); return;
+    }
+    if (!continu.rec) lancer();
+    an.getByteTimeDomainData(buf);
+    let m = 0; for (const v of buf) m = Math.max(m, Math.abs(v - 128));
+    const son = m > 12;
+    $('veille').classList.toggle('son', son);
+    if (son) {
+      dernierSon = t;
+      if (!enMorceau) { enMorceau = true; debut = t; }
+      if (continu.fin > Date.now() || continu.toujours) orbe.impulsion(Math.round(m / 6));
+    }
+    if (enMorceau && (t - dernierSon > 900 || t - debut > 15000)) {
+      const r = continu.rec; continu.rec = null; enMorceau = false;
+      r.onstop = () => envoyerMorceau(r);
+      r.stop();
+    } else if (!enMorceau && t - depart > 3000) {
+      jeter();   // 3 s de silence : on repart d'un enregistrement neuf
+    }
+    requestAnimationFrame(tic);
+  };
+  tic();
+}
+
+function envoyerMorceau(rec) {
+  const blob = new Blob(rec.morceaux, {type: rec.mimeType || 'audio/webm'});
+  if (blob.size < 2000) return;   // bruit très court
+  // un morceau après l'autre, dans l'ordre où ils ont été dits
+  continu.chaine = continu.chaine.then(async () => {
+    try {
+      const r = await fetch('/api/voix/ecoute?conversation=' + encodeURIComponent(conversation),
+                            {method: 'POST', headers: {'Content-Type': blob.type}, body: blob});
+      if (!r.ok) return;
+      const o = await r.json();
+      if (o.wake_word) continu.wake = o.wake_word;
+      if (typeof o.toujours === 'boolean') continu.toujours = o.toujours;
+      if (o.action === 'ignorer') { montrerEntendu(o.texte); majVeille(); return; }
+      montrerEntendu('');
+      if (typeof o.fenetre_s === 'number') ouvrirFenetre(o.fenetre_s); else majVeille();
+      if (o.action === 'reveil') {
+        bip();
+        if (!occupe) orbe.etat('ecoute');
+      } else if (o.action === 'commande' && o.commande) {
+        $('page').classList.remove('zen');
+        const b = demander(o.commande, true);
+        if (b && o.duree_ms) b.title = 'Entendu en écoute continue · transcrit en ' + o.duree_ms + ' ms';
+      }
+    } catch (e) {}
+  });
+}
+
+try { if (localStorage.getItem('voix.continu') === '1') basculerContinu(true); } catch (e) {}
 </script>
 </body>
 </html>
