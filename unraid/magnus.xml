@@ -13,6 +13,7 @@
   <Overview>Assistant personnel du homelab : orchestrateur, voix locale (Whisper sur GPU, Kokoro), Home Assistant, Claude via l'abonnement.</Overview>
   <Category>HomeAutomation: Tools:</Category>
   <WebUI>http://[IP]:[PORT:8080]/</WebUI>
+  <Icon>https://raw.githubusercontent.com/bordecielnas-alt/magnus/main/unraid/icone.png</Icon>
   <ExtraParams>--runtime=nvidia</ExtraParams>
   <PostArgs/>
   <CPUset/>
