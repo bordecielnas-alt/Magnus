@@ -1,7 +1,7 @@
 """Lancement : python -m assistant.
 
 Le journal du serveur (démarrage, requêtes, erreurs avec leur trace) s'affiche dans la console
-et s'écrit aussi dans <état>/logs/assistant.log : /config/logs sur Unraid (appdata/magnus/logs),
+et s'écrit aussi dans <état>/logs/assistant.log : /config/logs dans le conteneur (le dossier appdata sur Unraid),
 config/logs sur le PC. 5 Mo par fichier, 5 fichiers gardés (assistant.log.1 … .5).
 """
 
