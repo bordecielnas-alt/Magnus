@@ -109,7 +109,8 @@
   .roles button[aria-pressed="true"] { color:var(--accent); }
   .espace { flex:1; }
   .rond { border-radius:50%; width:38px; height:38px; padding:0; cursor:pointer; font-size:1.05rem; flex:none; }
-  #micro { border:0; background:transparent; color:var(--muted); }
+  #micro, #btnMuet { border:0; background:transparent; color:var(--muted); }
+  #btnMuet[aria-pressed="true"] { color:var(--rouge); }
   #micro:hover { color:var(--fg); }
   #micro.actif { color:var(--rouge); animation:pouls 1.2s ease-in-out infinite; }
   @keyframes pouls { 50% { box-shadow:0 0 0 6px rgba(224,83,61,.25); } }
@@ -159,12 +160,14 @@
     .orbe-cadre { width:min(120px, 34vw, 18vh); height:min(120px, 34vw, 18vh); }
     .lui { font-size:1rem; }
     .roles button { padding:4px 7px; }
+    .barre { gap:2px; } .barre .rond { width:34px; height:34px; }
     .nav-tel { display:grid; grid-template-columns:repeat(4, 1fr); gap:4px; padding-top:2px; }
     .nav-tel button { border:0; background:transparent; color:var(--muted); display:grid; justify-items:center; gap:2px; padding:6px 0; cursor:pointer; line-height:1.2; }
     .nav-tel button span { font-size:.7rem; }
     .nav-tel button[aria-pressed="true"] { color:var(--accent); }
     .plein .lui { max-height:30vh; }
   }
+  @media (max-width:360px) { .roles button { padding:4px 4px; font-size:.74rem; } }
   @media (prefers-reduced-motion: reduce) { .reflechit, .ecoute .point, #micro.actif { animation:none; } .reflechit { color:var(--muted); } }
 
   /* Réglages */
@@ -234,6 +237,7 @@
         <button type="button" data-role="raisonnement" aria-pressed="false">Raisonnement</button>
       </div>
       <span class="espace"></span>
+      <button type="button" class="rond" id="btnMuet" title="Couper la voix de l'assistant" aria-label="Couper la voix" aria-pressed="false"></button>
       <button type="button" class="rond" id="micro" title="Parler : je m'arrête tout seul quand tu te tais (re-clic pour arrêter)" aria-label="Parler"><svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3a3 3 0 0 0-3 3v6a3 3 0 0 0 6 0V6a3 3 0 0 0-3-3z"/><path d="M19 11a7 7 0 0 1-14 0"/><path d="M12 18v3"/></svg></button>
       <button class="rond" id="envoyer" title="Envoyer (Entrée)" aria-label="Envoyer"><svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 19V5"/><path d="M6 11l6-6 6 6"/></svg></button>
     </div>
@@ -576,6 +580,19 @@ function erreurMicro(e) {
     : 'Micro inaccessible' + (n ? ' (' + n + ')' : '') + '.';
   bulle('erreur', m);
 }
+// Analyse du niveau du micro. Firefox refuse de relier un micro à un AudioContext qui n'a pas
+// la même fréquence d'échantillonnage (cela arrive quand la sortie audio change, par exemple
+// après la réouverture d'un onglet) : on crée donc le contexte à la fréquence du micro.
+function analyseurMicro(flux) {
+  const piste = flux.getAudioTracks()[0];
+  const sr = piste && piste.getSettings ? piste.getSettings().sampleRate : 0;
+  let ctx, src;
+  try { ctx = sr ? new AudioContext({sampleRate: sr}) : new AudioContext(); src = ctx.createMediaStreamSource(flux); }
+  catch (e) { if (ctx) ctx.close().catch(() => {}); ctx = new AudioContext(); src = ctx.createMediaStreamSource(flux); }
+  const an = ctx.createAnalyser(); an.fftSize = 512; src.connect(an);
+  if (ctx.state === 'suspended') ctx.resume().catch(() => {});
+  return {ctx, an};
+}
 function reveillerAudio() {
   if (continu.ctx && continu.ctx.state === 'suspended') { continu.reveil = performance.now(); continu.ctx.resume().then(() => majVeille()).catch(() => {}); }
 }
@@ -630,9 +647,7 @@ function arreter() { if (enregistreur && enregistreur.state === 'recording') enr
 function suivreVolume(flux) {
   // niveau du micro, minuteur, et arrêt automatique : 1,2 s de silence après avoir parlé (ou 6 s sans rien)
   try {
-    const ctx = new AudioContext(), src = ctx.createMediaStreamSource(flux), an = ctx.createAnalyser();
-    if (ctx.state === 'suspended') ctx.resume().catch(() => {});
-    an.fftSize = 512; src.connect(an);
+    const {ctx, an} = analyseurMicro(flux);
     const buf = new Uint8Array(an.fftSize), debut = performance.now();
     let aParle = false, dernierSon = debut;
     const tic = () => {
@@ -645,7 +660,9 @@ function suivreVolume(flux) {
         bulleEcoute.querySelector('.niveau span').style.width = Math.min(100, m * 1.6) + '%';
         bulleEcoute.querySelector('.temps').textContent = Math.floor((t - debut) / 1000) + ' s';
       }
-      if ((aParle && t - dernierSon > 1200) || (!aParle && t - debut > 6000) || t - debut > 30000) { arreter(); return; }
+      // si le navigateur n'a pas démarré l'analyse (contexte en pause), on ne coupe pas sur un faux silence
+      const analyse = ctx.state === 'running';
+      if ((analyse && aParle && t - dernierSon > 1200) || (analyse && !aParle && t - debut > 6000) || t - debut > 30000) { arreter(); return; }
       requestAnimationFrame(tic);
     };
     tic();
@@ -712,6 +729,37 @@ function synthetiser(phrase) {
 
 // La voix de l'assistant peut être coupée à tout moment (clic sur le micro, ou tu lui parles).
 let voixActive = false, numeroLecture = 0;
+
+// Un seul lecteur audio, débloqué au premier toucher : sur téléphone (Firefox surtout), un son lancé
+// sans geste de l'utilisateur est refusé. Une fois ce lecteur débloqué, les réponses passent dessus.
+const lecteur = new Audio();
+let lecteurDebloque = false, sonBloqueSignale = false;
+function debloquerSon() {
+  if (lecteurDebloque || lecteur.src && !lecteur.paused) return;
+  lecteur.src = 'data:audio/wav;base64,UklGRkQDAABXQVZFZm10IBAAAAABAAEAQB8AAEAfAAABAAgAZGF0YSADAACAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgA==';
+  lecteur.play().then(() => { lecteurDebloque = true; }).catch(() => {});
+}
+for (const ev of ['pointerdown', 'keydown']) document.addEventListener(ev, debloquerSon, true);
+
+// Bouton haut-parleur : coupe la voix de l'assistant (gardé d'une visite à l'autre)
+const ICONE_SON = '<svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 9h4l5-4v14l-5-4H4z"/><path d="M16.5 9a4 4 0 0 1 0 6"/><path d="M19 6.5a8 8 0 0 1 0 11"/></svg>';
+const ICONE_MUET = '<svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 9h4l5-4v14l-5-4H4z"/><path d="M17 9.5l5 5M22 9.5l-5 5"/></svg>';
+let muet = false;
+try { muet = localStorage.getItem('voix.muet') === '1'; } catch (e) {}
+function majMuet() {
+  const b = $('btnMuet');
+  b.innerHTML = muet ? ICONE_MUET : ICONE_SON;
+  b.setAttribute('aria-pressed', muet ? 'true' : 'false');
+  b.title = muet ? 'Voix coupée : clic pour la remettre' : 'Couper la voix de l\'assistant';
+  b.setAttribute('aria-label', muet ? 'Remettre la voix' : 'Couper la voix');
+}
+$('btnMuet').onclick = () => {
+  muet = !muet;
+  if (muet) couperLecture();
+  try { localStorage.setItem('voix.muet', muet ? '1' : '0'); } catch (e) {}
+  majMuet();
+};
+majMuet();
 function couperLecture() {
   numeroLecture++;
   const l = lecture; lecture = null;
@@ -719,6 +767,7 @@ function couperLecture() {
 }
 
 async function direAVoixHaute(texte) {
+  if (muet) return;
   const phrases = decouperPhrases(texte);
   if (!phrases.length) return;
   const moi = ++numeroLecture;
@@ -733,13 +782,22 @@ async function direAVoixHaute(texte) {
       if (i + 1 < phrases.length) suivante = synthetiser(phrases[i + 1]);   // prépare la suivante pendant la lecture
       if (!blob) continue;
       const url = URL.createObjectURL(blob);
-      lecture = new Audio(url);
+      lecture = lecteur;
+      lecteur.src = url;
       const interrompu = await new Promise(res => {
-        lecture.onended = () => res(false);
-        lecture.onerror = () => res(false);
-        lecture.onpause = () => res(!lecture || !lecture.ended);
-        lecture.play().catch(() => res(false));
+        lecteur.onended = () => res(false);
+        lecteur.onerror = () => res(false);
+        lecteur.onpause = () => res(!lecture || !lecteur.ended);
+        lecteur.play().then(() => { lecteurDebloque = true; }).catch(e => {
+          // son refusé par le navigateur : on le dit une fois, le prochain toucher le débloquera
+          if (e && e.name === 'NotAllowedError' && !sonBloqueSignale) {
+            sonBloqueSignale = true;
+            bulle('erreur', 'Le navigateur bloque le son : touche l\'écran une fois, puis les réponses seront lues.');
+          }
+          res(false);
+        });
       });
+      lecteur.onended = lecteur.onerror = lecteur.onpause = null;
       URL.revokeObjectURL(url);
       if (interrompu || !lecture || moi !== numeroLecture) break;   // coupée : on s'arrête là
     }
@@ -898,9 +956,10 @@ function analyserContinu() {
   // Même détection de niveau que suivreVolume : un morceau commence au son,
   // se termine après ~0,9 s de silence, ou au bout de 15 s. L'enregistreur tourne déjà avant
   // (relancé toutes les 3 s de silence) pour ne pas couper le début du mot de réveil.
-  const ctx = new AudioContext(), src = ctx.createMediaStreamSource(continu.flux), an = ctx.createAnalyser();
-  continu.ctx = ctx; an.fftSize = 512; src.connect(an);
-  if (ctx.state === 'suspended') ctx.resume().catch(() => {});
+  let ctx, an;
+  try { ({ctx, an} = analyseurMicro(continu.flux)); }
+  catch (e) { bulle('erreur', 'Écoute continue impossible : le navigateur refuse d\'analyser le son du micro (' + (e.name || e.message) + ').'); basculerContinu(false); return; }
+  continu.ctx = ctx;
   const buf = new Uint8Array(an.fftSize);
   let enMorceau = false, debut = 0, dernierSon = 0, depart = 0;
   const lancer = () => {
