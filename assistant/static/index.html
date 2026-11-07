@@ -384,11 +384,15 @@ $('page').addEventListener('touchend', ev => {
 appliquerVue(vue, true);
 
 // ----- Rôle du modèle -----
+// Rapide ou Raisonnement ne valent que pour le message suivant : la page revient sur Auto après chaque envoi.
 let role = 'auto';
+function choisirRole(r) {
+  role = r;
+  for (const x of $('roles').children) x.setAttribute('aria-pressed', String(x.dataset.role === r));
+}
 $('roles').onclick = ev => {
   const b = ev.target.closest('button'); if (!b) return;
-  role = b.dataset.role;
-  for (const x of $('roles').children) x.setAttribute('aria-pressed', String(x === b));
+  choisirRole(b.dataset.role);
 };
 
 // ----- Saisie : plusieurs lignes, Entrée envoie, Maj+Entrée va à la ligne -----
@@ -477,28 +481,30 @@ $('form').addEventListener('submit', ev => {
 // « en attente », puis il est traité à son tour, dans l'ordre.
 const file = [];
 function demander(message, vocal) {
+  const r = role;
+  if (r !== 'auto') choisirRole('auto');
   if (occupe || file.length) {
     const b = bulle('moi en-attente', message);
-    file.push({message, vocal, bulle: b});
+    file.push({message, vocal, bulle: b, role: r});
     return b;
   }
-  return envoyerMessage(message, vocal);
+  return envoyerMessage(message, vocal, null, r);
 }
 function suivantDansLaFile() {
   const s = file.shift();
-  if (s) envoyerMessage(s.message, s.vocal, s.bulle);
+  if (s) envoyerMessage(s.message, s.vocal, s.bulle, s.role);
 }
 
-function envoyerMessage(message, vocal, bulleAttente) {
+function envoyerMessage(message, vocal, bulleAttente, roleMessage = 'auto') {
   occupe = true; clearTimeout(minuteurEcoute); clearTimeout(minuteurErreur);
   let maBulle;
   if (bulleAttente) { maBulle = bulleAttente; maBulle.classList.remove('en-attente'); $('fil').appendChild(maBulle); }
   else maBulle = bulle('moi', message);
-  traiter(message, vocal);
+  traiter(message, vocal, roleMessage);
   return maBulle;
 }
 
-async function traiter(message, vocal) {
+async function traiter(message, vocal, role = 'auto') {
   orbe.etat('reflexion');
   const corps = bulleReponse();
   corps.innerHTML = '<span class="reflechit">' + echapper(nom) + ' réfléchit…</span>';
@@ -1228,6 +1234,7 @@ function analyserContinu() {
   const fbufC = new Float32Array(an.fftSize);
   const buf = new Uint8Array(an.fftSize);
   let enMorceau = false, debut = 0, dernierSon = 0, depart = 0;
+  continu.parle = () => enMorceau;
   const lancer = () => {
     const rec = new MediaRecorder(continu.flux), morceaux = [];
     rec.ondataavailable = ev => { if (ev.data.size) morceaux.push(ev.data); };
@@ -1305,23 +1312,63 @@ function analyserContinu() {
   tic();
 }
 
+// Phrase coupée par une pause (« <nom>, quand est-ce que sont les... » puis « prochaines élections »)
+const ATTENTE_SUITE = 1500;
+function phraseInachevee(t) { return /(\.\.\.|…)\s*$/.test(t) || !/[.!?»"]\s*$/.test(t.trim()); }
+function lancerCommandeVocale(texte, o) {
+  $('page').classList.remove('zen');
+  const b = demander(texte, true);
+  if (b && o && o.duree_ms) b.title = 'Entendu en écoute continue · transcrit en ' + o.duree_ms + ' ms';
+}
+function lacherSuspens(pourquoi) {
+  const s = continu.suspens; if (!s) return;
+  continu.suspens = null;
+  diag('écoute continue : pas de suite (' + pourquoi + '), j\'envoie « ' + s.texte + ' »');
+  lancerCommandeVocale(s.texte, s.o);
+}
+function surveillerSuspens() {
+  const s = continu.suspens; if (!s) return;
+  const ecoule = performance.now() - s.depuis;
+  // tant que tu parles encore, ou qu'un morceau est en route, la suite peut arriver
+  const enCours = (continu.parle && continu.parle()) || continu.enVol > 0;
+  if (!continu.actif) return lacherSuspens('écoute arrêtée');
+  if ((ecoule > ATTENTE_SUITE && !enCours) || ecoule > 15000) return lacherSuspens(Math.round(ecoule) + ' ms sans suite');
+  setTimeout(surveillerSuspens, 200);
+}
+
 function envoyerMorceau(rec) {
   const blob = new Blob(rec.morceaux, {type: rec.mimeType || 'audio/webm'});
   diag('écoute continue : morceau de ' + blob.size + ' octets');
   if (blob.size < 2000) return;   // bruit très court
   // un morceau après l'autre, dans l'ordre où ils ont été dits
   const envoye = performance.now();
+  continu.enVol = (continu.enVol || 0) + 1;
   continu.chaine = continu.chaine.then(async () => {
+    let compte = true;
+    const recu = () => { if (compte) { compte = false; continu.enVol--; } };
     const t0 = performance.now();
     if (t0 - envoye > 500) diag('écoute continue : morceau en attente ' + Math.round(t0 - envoye) + ' ms (le précédent n\'était pas fini)');
     try {
       const r = await fetch('/api/voix/ecoute?conversation=' + encodeURIComponent(conversation),
                             {method: 'POST', headers: {'Content-Type': blob.type}, body: blob});
-      if (!r.ok) { diag('écoute continue : HTTP ' + r.status + ' en ' + Math.round(performance.now() - t0) + ' ms'); return; }
+      if (!r.ok) { recu(); diag('écoute continue : HTTP ' + r.status + ' en ' + Math.round(performance.now() - t0) + ' ms'); return; }
       const o = await r.json();
+      recu();
       diag('écoute continue : ' + o.action + ' en ' + Math.round(performance.now() - t0) + ' ms' + (o.texte ? ' · entendu « ' + o.texte + ' »' : '') + (o.commande && o.commande !== o.texte ? ' · commande « ' + o.commande + ' »' : ''));
       if (o.wake_word) continu.wake = o.wake_word;
       if (typeof o.toujours === 'boolean') continu.toujours = o.toujours;
+      // une phrase coupée en deux par une pause : ce morceau est la suite de la commande en attente
+      const suite = o.action === 'commande' ? o.commande : o.action === 'ignorer' ? o.texte : '';
+      if (continu.suspens && suite && suite.trim()) {
+        const tout = continu.suspens.texte.replace(/(\.\.\.|…)\s*$/, '').trim() + ' ' + suite.trim();
+        continu.suspens = null;
+        diag('écoute continue : phrase recollée « ' + tout + ' »');
+        montrerEntendu('');
+        if (typeof o.fenetre_s === 'number') ouvrirFenetre(o.fenetre_s); else majVeille();
+        lancerCommandeVocale(tout, o);
+        return;
+      }
+      if (continu.suspens) lacherSuspens('autre chose est arrivé');
       if (o.action === 'ignorer') { montrerEntendu(o.texte); majVeille(); return; }
       montrerEntendu('');
       if (typeof o.fenetre_s === 'number') ouvrirFenetre(o.fenetre_s); else majVeille();
@@ -1329,11 +1376,14 @@ function envoyerMorceau(rec) {
         bip();
         if (!occupe) orbe.etat('ecoute');
       } else if (o.action === 'commande' && o.commande) {
-        $('page').classList.remove('zen');
-        const b = demander(o.commande, true);
-        if (b && o.duree_ms) b.title = 'Entendu en écoute continue · transcrit en ' + o.duree_ms + ' ms';
+        if (phraseInachevee(o.commande)) {
+          // pas de ponctuation finale, ou « ... » : on attend un peu une éventuelle suite
+          continu.suspens = {texte: o.commande, o, depuis: performance.now()};
+          diag('écoute continue : « ' + o.commande + ' » semble inachevée, j\'attends la suite');
+          surveillerSuspens();
+        } else lancerCommandeVocale(o.commande, o);
       }
-    } catch (e) { diag('écoute continue : erreur réseau ' + (e.name || e.message)); }
+    } catch (e) { recu(); diag('écoute continue : erreur réseau ' + (e.name || e.message)); }
   });
 }
 
