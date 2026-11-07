@@ -5,10 +5,13 @@
      const orbe = creerOrbe(canvas, { ecole: "givre", particules: 80, brume: .75 });
      orbe.etat("reflexion");      // change d'état
      orbe.impulsion(n);           // un morceau de réponse vient d'arriver (fait pulser la parole)
-     orbe.reglages({ ecole, particules, brume });
+     orbe.reglages({ ecole, particules, brume, trainees });   // trainees : 0 (net) à 12
    Option « fond » (couleur CSS) : l'orbe est peinte sur ce fond opaque, ce qui garde toute la
    finesse des dégradés (sur un canvas transparent, les halos très légers n'ont que quelques
-   niveaux de couleur et font des bandes). Un tramage temporel très faible casse les marches restantes.
+   niveaux de couleur et font des bandes).
+   Les grands dégradés doux (halo, brume, volutes, cœur) sont calculés par la carte graphique (WebGL)
+   en haute précision puis arrondis une seule fois, avec un tramage invisible : plus aucune bande.
+   Les particules restent sur le canvas d'origine, posé par-dessus en mode additif.
 */
 (function () {
 function creerOrbe(cv, opts = {}) {
@@ -31,11 +34,12 @@ function creerOrbe(cv, opts = {}) {
   const mc = cv.getContext("2d");
   let ctx = mc;
   const reduit = matchMedia("(prefers-reduced-motion: reduce)").matches;
-  let W = 0, D = 1;
+  let W = 0, D = 1, couche = null;   // couche : la toile WebGL des dégradés, si elle existe
   function taille() {
     D = Math.min(devicePixelRatio || 1, 2);
     W = Math.max(2, Math.min(1800, Math.round(cv.clientWidth * D)));   // plafond : plein écran fluide
     cv.width = cv.height = W;
+    if (couche) couche.width = couche.height = W;
   }
   addEventListener("resize", taille); taille();
 
@@ -49,11 +53,87 @@ function creerOrbe(cv, opts = {}) {
     bc.putImageData(im, 0, 0); }
   const motif = mc.createPattern(bruit, "repeat");
 
+  // Couche WebGL des dégradés (repli sur le dessin 2D si WebGL n'est pas disponible)
+  const NB = 26, gpu = fond ? initGPU() : null;
+  function initGPU() {
+    try {
+      const glc = document.createElement("canvas");
+      const gl = glc.getContext("webgl2", { alpha: false, antialias: false, premultipliedAlpha: true }) ||
+                 glc.getContext("webgl", { alpha: false, antialias: false, premultipliedAlpha: true });
+      if (!gl || gl.getParameter(gl.MAX_FRAGMENT_UNIFORM_VECTORS) < 3 * NB + 16) return null;
+      const vs = "attribute vec2 a;void main(){gl_Position=vec4(a,0.,1.);}";
+      const fs = `precision highp float;
+uniform vec2 uC; uniform float uW;
+uniform vec3 uMi, uBord, uCoeur;
+uniform vec3 uHalo;            // rayon, alpha centre, alpha à 45 %
+uniform vec4 uCore;            // rayon, alpha blanc, alpha cœur, alpha mi
+uniform int uNB;
+uniform vec4 uB1[${NB}];       // x, y, angle, étirement
+uniform vec3 uB2[${NB}];       // rayon, alpha, 1 = couleur cœur
+uniform vec4 uV[5];            // angle, écrasement, rayon, alpha
+float ign(vec2 v){ return fract(52.9829189 * fract(dot(v, vec2(.06711056, .00583715)))); }
+void main(){
+  vec2 p = vec2(gl_FragCoord.x, uW - gl_FragCoord.y) - uC;
+  vec3 c = vec3(0.);
+  float d = length(p) / uHalo.x;
+  if (d < 1.) c += d < .45 ? mix(uMi * uHalo.y, uBord * uHalo.z, d / .45) : mix(uBord * uHalo.z, vec3(0.), (d - .45) / .55);
+  for (int i = 0; i < ${NB}; i++) {
+    if (i >= uNB) break;
+    vec4 b = uB1[i]; vec3 b2 = uB2[i];
+    vec2 q = p - b.xy; float cs = cos(b.z), sn = sin(b.z);
+    vec2 l = vec2(cs * q.x + sn * q.y, -sn * q.x + cs * q.y); l.x /= b.w;
+    float e = length(l) / b2.x;
+    if (e < 1.) { vec3 c0 = mix(uMi, uCoeur, b2.z) * b2.y, c1 = uMi * b2.y * .45;
+      c += e < .5 ? mix(c0, c1, e / .5) : mix(c1, vec3(0.), (e - .5) / .5); }
+  }
+  for (int i = 0; i < 5; i++) {
+    vec4 v = uV[i]; float cs = cos(v.x), sn = sin(v.x);
+    vec2 l = vec2(cs * p.x + sn * p.y, -sn * p.x + cs * p.y); l.y /= v.y;
+    float e = length(l - vec2(v.z * .3, 0.)) / v.z;
+    if (e < 1.) c += mix(uMi * v.w, vec3(0.), e);
+  }
+  d = length(p) / uCore.x;
+  if (d < 1.) c += d < .15 ? mix(vec3(uCore.y), uCoeur * uCore.z, d / .15)
+           : d < .45 ? mix(uCoeur * uCore.z, uMi * uCore.w, (d - .15) / .3)
+           : mix(uMi * uCore.w, vec3(0.), (d - .45) / .55);
+  c = min(c, vec3(1.));
+  float f = clamp((.5 * uW - length(gl_FragCoord.xy - .5 * uW)) / (.2 * uW), 0., 1.);
+  vec3 o = c * f * 255.;
+  // tramage triangulaire fixe d'un niveau, avant l'unique arrondi ; le noir reste noir pur
+  float n = ign(gl_FragCoord.xy) + ign(gl_FragCoord.xy + vec2(47., 113.)) - 1.;
+  o += n * clamp(o * 4., 0., 1.);
+  gl_FragColor = vec4(floor(o + .5) / 255., 1.);
+}`;
+      const sh = (t, src) => { const x = gl.createShader(t); gl.shaderSource(x, src); gl.compileShader(x);
+        if (!gl.getShaderParameter(x, gl.COMPILE_STATUS)) throw new Error(gl.getShaderInfoLog(x)); return x; };
+      const pr = gl.createProgram();
+      gl.attachShader(pr, sh(gl.VERTEX_SHADER, vs)); gl.attachShader(pr, sh(gl.FRAGMENT_SHADER, fs));
+      gl.linkProgram(pr); if (!gl.getProgramParameter(pr, gl.LINK_STATUS)) throw new Error(gl.getProgramInfoLog(pr));
+      gl.useProgram(pr);
+      gl.bindBuffer(gl.ARRAY_BUFFER, gl.createBuffer());
+      gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1, -1, 3, -1, -1, 3]), gl.STATIC_DRAW);
+      const loc = gl.getAttribLocation(pr, "a"); gl.enableVertexAttribArray(loc); gl.vertexAttribPointer(loc, 2, gl.FLOAT, false, 0, 0);
+      const u = {}; for (const n of ["uC","uW","uMi","uBord","uCoeur","uHalo","uCore","uNB","uB1","uB2","uV"]) u[n] = gl.getUniformLocation(pr, n);
+      // la couche WebGL se place sous le canvas d'origine, qui s'y ajoute en mode additif
+      const par = cv.parentNode;
+      par.style.display = "grid";
+      glc.className = cv.className; glc.setAttribute("aria-hidden", "true");
+      glc.style.gridArea = cv.style.gridArea = "1 / 1"; glc.style.pointerEvents = "none";
+      par.insertBefore(glc, cv);
+      cv.style.mixBlendMode = CSS.supports("mix-blend-mode", "plus-lighter") ? "plus-lighter" : "screen";
+      return { gl, glc, u, b1: new Float32Array(NB * 4), b2: new Float32Array(NB * 3), v: new Float32Array(20), nb: 0,
+               halo: [1, 0, 0], core: [1, 0, 0, 0] };
+    } catch (e) { console.warn("orbe : WebGL indisponible, dessin 2D", e); return null; }
+  }
+  if (gpu) { couche = gpu.glc; couche.width = couche.height = W; }
+
   let ecole = ECOLES[opts.ecole] ? opts.ecole : "givre", etat = "repos";
   // valeurs lissées
   const L = { vit: .5, rayon: .78, aspir: 0, eclat: .75, rouge: 0, voix: 0 };
   let cible = Object.assign({}, ETATS.repos);
   let nbPart = opts.particules ?? 80, vapeur = opts.brume ?? .75, activite = 0;
+  // longueur des traînées : nombre d'images gardées derrière chaque particule (0 = particules nettes)
+  let traine = Math.max(0, Math.min(12, Math.round(opts.trainees ?? 0)));
   // Volutes de brume : grandes nappes douces qui tournent autour du cœur
   const brume = [];
   for (let i = 0; i < 26; i++) brume.push({ th: Math.random() * 7, r: .12 + Math.random() * .6, v: (.15 + Math.random() * .35) * (i % 3 ? 1 : -1),
@@ -133,17 +213,22 @@ function creerOrbe(cv, opts = {}) {
     // Image redessinée entièrement à chaque fois : aucune trace ne peut rester.
     // Les traînées des particules et des étincelles sont tracées à partir de leurs dernières positions.
     mc.setTransform(1, 0, 0, 1, 0, 0); mc.globalCompositeOperation = "source-over"; mc.clearRect(0, 0, W, W);
-    if (fond) { mc.fillStyle = fond; mc.fillRect(0, 0, W, W); }
+    if (fond && !gpu) { mc.fillStyle = fond; mc.fillRect(0, 0, W, W); }
+    if (gpu) gpu.nb = 0;
     mc.globalCompositeOperation = "lighter"; mc.translate(cx + jit, cy + jit * .6);
     ctx = mc;
 
     // halo extérieur
     const hR = Math.min(W * .5, R * 1.45 * souffle);
-    let g = ctx.createRadialGradient(0, 0, 0, 0, 0, hR);
-    g.addColorStop(0, rgba(C.mi, .09 * L.eclat * vacille));
-    g.addColorStop(.45, rgba(C.bord, .05 * L.eclat * vacille));
-    g.addColorStop(1, rgba(C.bord, 0));
-    ctx.fillStyle = g; ctx.beginPath(); ctx.arc(0, 0, hR, 0, 7); ctx.fill();
+    let g;
+    if (gpu) gpu.halo = [hR, .09 * L.eclat * vacille, .05 * L.eclat * vacille];
+    else {
+      g = ctx.createRadialGradient(0, 0, 0, 0, 0, hR);
+      g.addColorStop(0, rgba(C.mi, .09 * L.eclat * vacille));
+      g.addColorStop(.45, rgba(C.bord, .05 * L.eclat * vacille));
+      g.addColorStop(1, rgba(C.bord, 0));
+      ctx.fillStyle = g; ctx.beginPath(); ctx.arc(0, 0, hR, 0, 7); ctx.fill();
+    }
 
     // anneau de runes (arcane) ou anneau d'aspiration (écoute)
     if (E.effet === "runes" || etat === "reflexion") {
@@ -197,6 +282,11 @@ function creerOrbe(cv, opts = {}) {
         const x = Math.cos(b.th) * rr, y = Math.sin(b.th) * rr * .85 + b.dy * R;
         const tR = R * b.taille * (1 + L.voix * .3);
         const al = .2 * vapeur * L.eclat * vacille * (.7 + .3 * Math.sin(temps * 1.3 + b.ph)) * (b.dy ? 1 + b.dy : 1);
+        if (gpu) {
+          if (gpu.nb < NB) { const i = gpu.nb++;
+            gpu.b1.set([x, y, b.th + Math.PI / 2, b.etire], i * 4); gpu.b2.set([tR, al, b.r < .45 ? 1 : 0], i * 3); }
+          continue;
+        }
         ctx.save(); ctx.translate(x, y); ctx.rotate(b.th + Math.PI / 2); ctx.scale(b.etire, 1);
         g = ctx.createRadialGradient(0, 0, 0, 0, 0, tR);
         g.addColorStop(0, rgba(b.r < .45 ? C.coeur : C.mi, al));
@@ -226,13 +316,17 @@ function creerOrbe(cv, opts = {}) {
       const a = fondu * (.2 + .6 * prof) * vacille * .8;
       const s = p.taille * D * (.6 + prof) * (E.effet === "eclats" ? 1.3 : 1);
       const col = p.r < .45 ? C.coeur : C.mi;
+      // traînée continue : un filet qui relie les dernières positions et s'efface vers la queue
       const h = p.h || (p.h = []);
+      ctx.lineCap = "round";
+      let px = x, py = y;
       for (let k = 0; k < h.length; k++) {
         const q = h[k], f = Math.pow(.72, k + 1);
-        ctx.fillStyle = rgba(q[3], q[2] * .9 * f);
-        ctx.beginPath(); ctx.arc(q[0], q[1], s * (1 - k * .06), 0, 7); ctx.fill();
+        ctx.strokeStyle = rgba(q[3], q[2] * .8 * f); ctx.lineWidth = s * 1.6 * (1 - k * .1);
+        ctx.beginPath(); ctx.moveTo(px, py); ctx.lineTo(q[0], q[1]); ctx.stroke();
+        px = q[0]; py = q[1];
       }
-      h.unshift([x, y, a, col]); if (h.length > 7) h.length = 7;
+      h.unshift([x, y, a, col]); if (h.length > traine) h.length = traine;
       if (E.effet === "eclats" && p.taille > 1.8) {
         ctx.save(); ctx.translate(x, y); ctx.rotate(temps * 2 + p.rot);
         ctx.fillStyle = rgba(C.coeur, a * .9);
@@ -249,6 +343,11 @@ function creerOrbe(cv, opts = {}) {
     ctx = mc;
     // volutes internes : ellipses tournantes
     for (let i = 0; i < 5; i++) {
+      if (gpu) {
+        gpu.v.set([temps * (.4 + i * .23) * L.vit * (i % 2 ? -1 : 1) + i, .35 + .15 * Math.sin(temps * .7 + i),
+                   R * (.42 + i * .05) * souffle, .07 * L.eclat * vacille], i * 4);
+        continue;
+      }
       ctx.save();
       ctx.rotate(temps * (.4 + i * .23) * L.vit * (i % 2 ? -1 : 1) + i);
       ctx.scale(1, .35 + .15 * Math.sin(temps * .7 + i));
@@ -262,12 +361,15 @@ function creerOrbe(cv, opts = {}) {
 
     // cœur
     const cR = R * .3 * souffle * (etat === "reflexion" ? .85 + .15 * Math.sin(temps * 9) : 1);
-    g = ctx.createRadialGradient(0, 0, 0, 0, 0, cR * 2.2);
-    g.addColorStop(0, rgba([255,255,255], .7 * vacille));
-    g.addColorStop(.15, rgba(C.coeur, .45 * L.eclat * vacille));
-    g.addColorStop(.45, rgba(C.mi, .16 * L.eclat * vacille));
-    g.addColorStop(1, rgba(C.bord, 0));
-    ctx.fillStyle = g; ctx.beginPath(); ctx.arc(0, 0, cR * 2.2, 0, 7); ctx.fill();
+    if (gpu) gpu.core = [cR * 2.2, .7 * vacille, .45 * L.eclat * vacille, .16 * L.eclat * vacille];
+    else {
+      g = ctx.createRadialGradient(0, 0, 0, 0, 0, cR * 2.2);
+      g.addColorStop(0, rgba([255,255,255], .7 * vacille));
+      g.addColorStop(.15, rgba(C.coeur, .45 * L.eclat * vacille));
+      g.addColorStop(.45, rgba(C.mi, .16 * L.eclat * vacille));
+      g.addColorStop(1, rgba(C.bord, 0));
+      ctx.fillStyle = g; ctx.beginPath(); ctx.arc(0, 0, cR * 2.2, 0, 7); ctx.fill();
+    }
 
     ctx = mc;
     // éclairs : seulement pour l'école Foudre (plus d'éclairs en réflexion pour les autres écoles)
@@ -296,11 +398,14 @@ function creerOrbe(cv, opts = {}) {
       e.vie -= dt / e.t;
       if (e.vie <= 0) { etincelles.splice(i, 1); continue; }
       const ex = e.x * R * 2, ey = e.y * R * 2, er = D * 1.6 * e.vie + D * .5, eh = e.h || (e.h = []);
+      ctx.lineCap = "round";
+      let qx = ex, qy = ey;
       for (let k = 0; k < eh.length; k++) {
-        ctx.fillStyle = rgba(C.coeur, eh[k][2] * .9 * vacille * Math.pow(.72, k + 1));
-        ctx.beginPath(); ctx.arc(eh[k][0], eh[k][1], er, 0, 7); ctx.fill();
+        ctx.strokeStyle = rgba(C.coeur, eh[k][2] * .8 * vacille * Math.pow(.72, k + 1)); ctx.lineWidth = er * 1.6;
+        ctx.beginPath(); ctx.moveTo(qx, qy); ctx.lineTo(eh[k][0], eh[k][1]); ctx.stroke();
+        qx = eh[k][0]; qy = eh[k][1];
       }
-      eh.unshift([ex, ey, e.vie]); if (eh.length > 6) eh.length = 6;
+      eh.unshift([ex, ey, e.vie]); if (eh.length > traine) eh.length = traine;
       ctx.fillStyle = rgba(C.coeur, e.vie * .9 * vacille);
       ctx.beginPath(); ctx.arc(ex, ey, er, 0, 7); ctx.fill();
     }
@@ -308,11 +413,19 @@ function creerOrbe(cv, opts = {}) {
 
     ctx = mc;
     mc.setTransform(1, 0, 0, 1, 0, 0);
-    if (fond && motif) {
-      // tramage limité au halo : au-delà, le fond reste noir pur (écrans OLED)
+    if (gpu) {
+      const { gl, u } = gpu, c255 = c => [c[0] / 255, c[1] / 255, c[2] / 255];
+      gl.viewport(0, 0, W, W);
+      gl.uniform2f(u.uC, cx + jit, cy + jit * .6); gl.uniform1f(u.uW, W);
+      gl.uniform3fv(u.uMi, c255(C.mi)); gl.uniform3fv(u.uBord, c255(C.bord)); gl.uniform3fv(u.uCoeur, c255(C.coeur));
+      gl.uniform3fv(u.uHalo, gpu.halo); gl.uniform4fv(u.uCore, gpu.core);
+      gl.uniform1i(u.uNB, gpu.nb); gl.uniform4fv(u.uB1, gpu.b1); gl.uniform3fv(u.uB2, gpu.b2); gl.uniform4fv(u.uV, gpu.v);
+      gl.drawArrays(gl.TRIANGLES, 0, 3);
+    } else if (fond && motif) {
+      // tramage sur tout le halo, jusqu'à son bord : au-delà, le fond reste noir pur (écrans OLED)
       const ox = (Math.random() * 64) | 0, oy = (Math.random() * 64) | 0;
       mc.save();
-      mc.beginPath(); mc.arc(cx + jit, cy + jit * .6, hR * .8, 0, 7); mc.clip();
+      mc.beginPath(); mc.arc(cx + jit, cy + jit * .6, hR, 0, 7); mc.clip();
       mc.globalCompositeOperation = "lighter";
       mc.translate(-ox, -oy); mc.fillStyle = motif; mc.fillRect(0, 0, W + 64, W + 64);
       mc.restore();
@@ -339,6 +452,7 @@ function creerOrbe(cv, opts = {}) {
       if (r.ecole && ECOLES[r.ecole]) { ecole = r.ecole; for (const p of parts) p.dy = 0; }
       if (r.particules != null) { nbPart = Math.max(0, Math.min(400, +r.particules | 0)); ajuster(); }
       if (r.brume != null) vapeur = Math.max(0, Math.min(1, +r.brume));
+      if (r.trainees != null) traine = Math.max(0, Math.min(12, Math.round(+r.trainees)));
     },
     redimensionner: taille,
   };

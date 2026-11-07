@@ -251,6 +251,7 @@
     <h2>Réglages</h2>
     <div class="ligne">École de magie<div class="ecoles" id="ecoles"></div></div>
     <label class="ligne" for="rgParticules">Particules<input type="range" id="rgParticules" min="0" max="400" step="10"></label>
+    <label class="ligne" for="rgTrainees">Traînées (à gauche : particules nettes)<input type="range" id="rgTrainees" min="0" max="12" step="1"></label>
     <label class="ligne" for="rgBrume">Brume<input type="range" id="rgBrume" min="0" max="100"></label>
     <label class="case"><input type="checkbox" id="lireTout"> Lire aussi à voix haute les réponses aux messages écrits</label>
     <fieldset>
@@ -283,10 +284,10 @@ const conversation = (crypto.randomUUID ? crypto.randomUUID() : String(Math.rand
 let nom = 'l\'assistant';   // remplacé par le nom configuré dès que /api/info répond (jamais écrit en dur)
 
 // ----- Orbe : apparence réglable, gardée dans ce navigateur -----
-const ORBE_DEFAUT = {ecole: 'givre', particules: 80, brume: 75};
+const ORBE_DEFAUT = {ecole: 'givre', particules: 80, brume: 75, trainees: 0};
 let reglagesOrbe = {...ORBE_DEFAUT};
 try { Object.assign(reglagesOrbe, JSON.parse(localStorage.getItem('orbe.reglages') || '{}')); } catch (e) {}
-const orbe = creerOrbe($('orbe'), {ecole: reglagesOrbe.ecole, particules: reglagesOrbe.particules, brume: reglagesOrbe.brume / 100, fond: '#000'});
+const orbe = creerOrbe($('orbe'), {ecole: reglagesOrbe.ecole, particules: reglagesOrbe.particules, brume: reglagesOrbe.brume / 100, trainees: reglagesOrbe.trainees, fond: '#000'});
 let occupe = false, minuteurEcoute = null, minuteurErreur = null;
 
 // Le nom de l'état de l'orbe est affiché sous le nom de l'assistant.
@@ -295,9 +296,10 @@ const etatOrigine = orbe.etat.bind(orbe);
 orbe.etat = e => { etatOrigine(e); if (NOMS_ETATS[e]) $('etatOrbe').textContent = NOMS_ETATS[e]; };
 
 function appliquerOrbe() {
-  orbe.reglages({ecole: reglagesOrbe.ecole, particules: reglagesOrbe.particules, brume: reglagesOrbe.brume / 100});
+  orbe.reglages({ecole: reglagesOrbe.ecole, particules: reglagesOrbe.particules, brume: reglagesOrbe.brume / 100, trainees: reglagesOrbe.trainees});
   $('rgParticules').value = reglagesOrbe.particules;
   $('rgBrume').value = reglagesOrbe.brume;
+  $('rgTrainees').value = reglagesOrbe.trainees;
   for (const b of $('ecoles').children) b.setAttribute('aria-pressed', String(b.dataset.ecole === reglagesOrbe.ecole));
   try { localStorage.setItem('orbe.reglages', JSON.stringify(reglagesOrbe)); } catch (e) {}
 }
@@ -309,6 +311,7 @@ for (const [cle, n] of Object.entries(creerOrbe.ECOLES)) {
 }
 $('rgParticules').oninput = e => { reglagesOrbe.particules = +e.target.value; appliquerOrbe(); };
 $('rgBrume').oninput = e => { reglagesOrbe.brume = +e.target.value; appliquerOrbe(); };
+$('rgTrainees').oninput = e => { reglagesOrbe.trainees = +e.target.value; appliquerOrbe(); };
 $('orbeDefaut').onclick = () => { reglagesOrbe = {...ORBE_DEFAUT}; appliquerOrbe(); };
 $('reglagesOrbe').onclick = () => $('dlgOrbe').showModal();
 appliquerOrbe();
@@ -560,6 +563,29 @@ let partielEnCours = false, minuteurPartiel = null;
 try { $('lireTout').checked = localStorage.getItem('voix.lireTout') === '1'; } catch (e) {}
 $('lireTout').onchange = () => { try { localStorage.setItem('voix.lireTout', $('lireTout').checked ? '1' : '0'); } catch (e) {} };
 
+// Micro : message clair selon la cause, et réveil des contextes audio au premier geste
+// (sur téléphone, un AudioContext créé sans toucher l'écran reste muet).
+function erreurMicro(e) {
+  const n = e && e.name;
+  const m = n === 'NotAllowedError' || n === 'SecurityError'
+    ? 'Micro bloqué pour ce site : touche le cadenas à côté de l\'adresse et autorise le micro, puis recharge.'
+    : n === 'NotReadableError' || n === 'AbortError'
+    ? 'Le micro est déjà pris (autre onglet ou appli, ou page tout juste rechargée) : ferme-les et réessaie.'
+    : n === 'NotFoundError' ? 'Aucun micro trouvé sur cet appareil.'
+    : !window.isSecureContext || !navigator.mediaDevices ? 'Micro indisponible : la page doit être ouverte en https.'
+    : 'Micro inaccessible' + (n ? ' (' + n + ')' : '') + '.';
+  bulle('erreur', m);
+}
+function reveillerAudio() {
+  if (continu.ctx && continu.ctx.state === 'suspended') { continu.reveil = performance.now(); continu.ctx.resume().then(() => majVeille()).catch(() => {}); }
+}
+for (const ev of ['pointerdown', 'keydown']) document.addEventListener(ev, reveillerAudio, true);
+// on libère le micro en quittant la page : au rechargement, il n'est plus « déjà pris »
+addEventListener('pagehide', () => {
+  for (const f of [fluxMicro, continu.flux]) if (f) f.getTracks().forEach(t => t.stop());
+  if (continu.ctx) continu.ctx.close().catch(() => {});
+});
+
 // Appui long sur le micro : écoute continue. Clic simple : une phrase (ou arrête l'écoute continue).
 let minuteurAppui = null, appuiLong = false;
 $('micro').addEventListener('pointerdown', () => {
@@ -572,12 +598,14 @@ $('micro').addEventListener('contextmenu', ev => ev.preventDefault());
 $('micro').onclick = async () => {
   if (appuiLong) { appuiLong = false; return; }
   if (voixActive) couperLecture();
+  // ce toucher vient de réveiller l'écoute continue : on ne l'arrête pas
+  if (performance.now() - (continu.reveil || 0) < 1500 || (continu.actif && continu.ctx?.state === 'suspended')) { reveillerAudio(); continu.reveil = 0; return; }
   if (continu.actif && !(enregistreur && enregistreur.state === 'recording')) { basculerContinu(false); return; }
   if (enregistreur && enregistreur.state === 'recording') { enregistreur.stop(); return; }
   try {
     fluxMicro = await navigator.mediaDevices.getUserMedia({audio: {echoCancellation: true, noiseSuppression: true}});
   } catch (e) {
-    bulle('erreur', 'Micro inaccessible : autorise le micro pour cette page.');
+    erreurMicro(e);
     return;
   }
   morceaux = [];
@@ -603,6 +631,7 @@ function suivreVolume(flux) {
   // niveau du micro, minuteur, et arrêt automatique : 1,2 s de silence après avoir parlé (ou 6 s sans rien)
   try {
     const ctx = new AudioContext(), src = ctx.createMediaStreamSource(flux), an = ctx.createAnalyser();
+    if (ctx.state === 'suspended') ctx.resume().catch(() => {});
     an.fftSize = 512; src.connect(an);
     const buf = new Uint8Array(an.fftSize), debut = performance.now();
     let aParle = false, dernierSon = debut;
@@ -808,6 +837,8 @@ function majVeille(texte) {
   const eveille = continu.toujours || reste > 0;
   v.classList.toggle('eveille', eveille);
   $('btnEndormir').hidden = !(reste > 0) || continu.toujours;
+  if (!texte && (continu.enAttente || (continu.ctx && continu.ctx.state === 'suspended'))) texte = 'Touche l\'écran pour reprendre l\'écoute';
+  if (continu.enAttente) v.classList.add('on');
   $('veilleTexte').textContent = texte || (continu.toujours ? 'Toujours à l\'écoute'
     : reste > 0 ? 'Je t\'écoute · ' + reste + ' s' : 'À l\'écoute de « ' + (continu.wake || nom) + ' »');
 }
@@ -849,7 +880,8 @@ async function basculerContinu(on) {
     try {
       continu.flux = await navigator.mediaDevices.getUserMedia({audio: {echoCancellation: true, noiseSuppression: true}});
     } catch (e) {
-      bulle('erreur', 'Micro inaccessible : autorise le micro pour cette page.');
+      // au chargement de la page (écoute continue gardée), on ne remplit pas l'écran d'erreurs
+      if (!continu.auDemarrage) erreurMicro(e);
       on = false;
     }
     if (on) { continu.actif = true; analyserContinu(); }
@@ -857,7 +889,8 @@ async function basculerContinu(on) {
   $('continu').checked = continu.actif;
   $('micro').classList.toggle('continu', continu.actif);
   $('micro').title = continu.actif ? 'Écoute continue active : clic pour l\'arrêter' : 'Parler : je m\'arrête tout seul quand tu te tais (appui long : écoute continue)';
-  try { localStorage.setItem('voix.continu', continu.actif ? '1' : '0'); } catch (e) {}
+  if (!continu.auDemarrage) try { localStorage.setItem('voix.continu', continu.actif ? '1' : '0'); } catch (e) {}
+  continu.auDemarrage = false;
   majVeille();
 }
 
@@ -867,6 +900,7 @@ function analyserContinu() {
   // (relancé toutes les 3 s de silence) pour ne pas couper le début du mot de réveil.
   const ctx = new AudioContext(), src = ctx.createMediaStreamSource(continu.flux), an = ctx.createAnalyser();
   continu.ctx = ctx; an.fftSize = 512; src.connect(an);
+  if (ctx.state === 'suspended') ctx.resume().catch(() => {});
   const buf = new Uint8Array(an.fftSize);
   let enMorceau = false, debut = 0, dernierSon = 0, depart = 0;
   const lancer = () => {
@@ -953,7 +987,22 @@ function envoyerMorceau(rec) {
   });
 }
 
-try { if (localStorage.getItem('voix.continu') === '1') basculerContinu(true); } catch (e) {}
+// Écoute continue gardée d'une visite à l'autre : on n'ouvre PAS le micro au chargement
+// (Firefox Android met alors la demande d'autorisation en attente et bloque ensuite le micro).
+// Elle reprend au premier toucher de l'écran, ce qui compte comme un geste de l'utilisateur.
+try {
+  if (localStorage.getItem('voix.continu') === '1') {
+    continu.enAttente = true; majVeille();
+    const reprendre = ev => {
+      document.removeEventListener('pointerdown', reprendre, true);
+      if (!continu.enAttente) return;
+      continu.enAttente = false; continu.auDemarrage = true;
+      if (ev.target.closest && ev.target.closest('#micro')) continu.reveil = performance.now();   // ce toucher sert à reprendre
+      basculerContinu(true);
+    };
+    document.addEventListener('pointerdown', reprendre, true);
+  }
+} catch (e) {}
 </script>
 <script src="/static/reglages.js"></script>
 </body>
