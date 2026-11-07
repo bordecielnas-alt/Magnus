@@ -276,3 +276,21 @@ def chemin_alias(cfg: "Config") -> Path:
     if os.name != "nt" and Path("/config").is_dir():
         return Path("/config/alias_appris.json")
     return RACINE / "config" / "alias_appris.json"
+
+
+def enregistrer_reglages(section: str, valeurs: dict[str, Any], fichier: Path | None = None) -> Path:
+    """Écrit `valeurs` dans la section `section` du fichier de config utilisateur (config.yaml),
+    en gardant tout le reste. Renvoie le fichier écrit."""
+    chemin = fichier or chemin_config_utilisateur()
+    data = _lire_yaml(chemin)
+    data.setdefault(section, {})
+    if not isinstance(data[section], dict):
+        data[section] = {}
+    data[section].update(valeurs)
+    chemin.parent.mkdir(parents=True, exist_ok=True)
+    texte = "# Config locale (non versionnée). Modifiée aussi depuis l'interface.\n" + yaml.safe_dump(
+        data, allow_unicode=True, sort_keys=False)
+    tmp = chemin.with_suffix(".tmp")
+    tmp.write_text(texte, encoding="utf-8")
+    os.replace(tmp, chemin)
+    return chemin

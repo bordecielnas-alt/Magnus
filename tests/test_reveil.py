@@ -68,3 +68,28 @@ def test_api_ecoute_utilise_le_wake_word_configure(tmp_path, monkeypatch):
     c = TestClient(creer_app(cfg, r.registre, voix=v))
     rep = c.post("/api/voix/ecoute?conversation=x", content=b"a" * 3000).json()
     assert rep["action"] == "commande" and rep["commande"] == "allume le globe" and rep["wake_word"] == "akatosh"
+
+
+def test_api_reglages(tmp_path, monkeypatch):
+    import assistant.main as main
+    r, _ = routeur()
+    cfg = charger(env={}, fichier=Path("inexistant.yaml"))
+    ecrit = {}
+    monkeypatch.setattr(main, "enregistrer_reglages", lambda section, v: ecrit.update({section: v}))
+    c = TestClient(creer_app(cfg, r.registre, voix=FausseVoix(), persister=True))
+    rep = c.post("/api/voix/reglages", json={"fenetre_s": 30, "toujours_a_l_ecoute": True}).json()
+    assert rep == {"fenetre_s": 30, "toujours_a_l_ecoute": True}
+    assert ecrit == {"voix": {"fenetre_s": 30, "toujours_a_l_ecoute": True}}
+    assert c.get("/api/voix").json()["fenetre_s"] == 30
+    assert c.post("/api/voix/reglages", json={}).status_code == 400
+    assert c.post("/api/voix/reglages", json={"fenetre_s": -1}).status_code == 422
+
+
+def test_enregistrer_reglages_garde_le_reste(tmp_path):
+    from assistant.config import enregistrer_reglages
+    import yaml
+    f = tmp_path / "config.yaml"
+    f.write_text("home_assistant:\n  url: https://ha\nvoix:\n  lenteur: 1.1\n", encoding="utf-8")
+    enregistrer_reglages("voix", {"fenetre_s": 20}, f)
+    d = yaml.safe_load(f.read_text(encoding="utf-8"))
+    assert d == {"home_assistant": {"url": "https://ha"}, "voix": {"lenteur": 1.1, "fenetre_s": 20}}

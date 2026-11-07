@@ -18,7 +18,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from . import __version__
-from .config import Config, charger, charger_secrets, chemin_alias
+from .config import Config, charger, charger_secrets, chemin_alias, enregistrer_reglages
 from .fournisseurs import FournisseurIndisponible, Message, Registre, Reponse
 from .home_assistant import HomeAssistant
 from .maison import Maison
@@ -63,6 +63,12 @@ class Action(BaseModel):
 
 class Conv(BaseModel):
     conversation: str = ""
+
+
+class ReglagesVoix(BaseModel):
+    """Réglages de l'écoute continue modifiables depuis la page (⚙)."""
+    fenetre_s: float | None = Field(default=None, ge=0, le=3600)
+    toujours_a_l_ecoute: bool | None = None
 
 
 class Parole(BaseModel):
@@ -113,7 +119,9 @@ def _messages(cfg: Config, d: DemandeChat, outils: bool = False) -> list[Message
 
 def creer_app(config: Config | None = None, registre: Registre | None = None,
               ha: HomeAssistant | None = None, alias: AliasAppris | None = None,
-              voix: Voix | None = None) -> FastAPI:
+              voix: Voix | None = None, persister: bool | None = None) -> FastAPI:
+    # persister : écrire les réglages modifiés depuis la page dans config.yaml (pas en test)
+    persister = (config is None) if persister is None else persister
     cfg = config or charger()
     reg = registre or Registre.depuis_config(cfg)
     routeur = Routeur(cfg.routeur, reg)
@@ -271,6 +279,22 @@ def creer_app(config: Config | None = None, registre: Registre | None = None,
             journal.info("écoute : « %s » -> %s (%d ms)", t.texte[:120], r["action"], t.duree_ms)
         return {"texte": t.texte, "duree_ms": t.duree_ms, "wake_word": cfg.identite.wake_word_effectif,
                 "toujours": reveil.toujours, **r}
+
+    @app.post("/api/voix/reglages")
+    def regler_voix(r: ReglagesVoix) -> dict:
+        """Change la fenêtre d'écoute après le wake word et le mode « toujours à l'écoute »,
+        tout de suite et dans config.yaml (gardé au redémarrage)."""
+        valeurs = {k: v for k, v in r.model_dump().items() if v is not None}
+        if not valeurs:
+            raise HTTPException(400, "aucun réglage fourni")
+        if "fenetre_s" in valeurs:
+            cfg.voix.fenetre_s = reveil.fenetre_s = valeurs["fenetre_s"]
+        if "toujours_a_l_ecoute" in valeurs:
+            cfg.voix.toujours_a_l_ecoute = reveil.toujours = valeurs["toujours_a_l_ecoute"]
+        if persister:
+            enregistrer_reglages("voix", valeurs)
+        journal.info("réglages voix : %s", valeurs)
+        return {"fenetre_s": cfg.voix.fenetre_s, "toujours_a_l_ecoute": cfg.voix.toujours_a_l_ecoute}
 
     @app.post("/api/voix/endormir")
     def endormir(c: Conv) -> dict:
