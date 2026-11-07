@@ -11,3 +11,7 @@ config-local/
 config/alias_appris.json
 modeles/
 config/securite.json
+config/audit*.jsonl
+config/diagnostic/
+config/logs/
+diagnostic/
