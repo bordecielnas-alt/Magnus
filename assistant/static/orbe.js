@@ -6,6 +6,9 @@
      orbe.etat("reflexion");      // change d'état
      orbe.impulsion(n);           // un morceau de réponse vient d'arriver (fait pulser la parole)
      orbe.reglages({ ecole, particules, brume });
+   Option « fond » (couleur CSS) : l'orbe est peinte sur ce fond opaque, ce qui garde toute la
+   finesse des dégradés (sur un canvas transparent, les halos très légers n'ont que quelques
+   niveaux de couleur et font des bandes). Un léger grain (tramage) casse les bandes restantes.
 */
 (function () {
 function creerOrbe(cv, opts = {}) {
@@ -32,10 +35,19 @@ function creerOrbe(cv, opts = {}) {
   let W = 0, D = 1;
   function taille() {
     D = Math.min(devicePixelRatio || 1, 2);
-    W = Math.max(2, Math.round(cv.clientWidth * D));
+    W = Math.max(2, Math.min(1800, Math.round(cv.clientWidth * D)));   // plafond : plein écran fluide
     cv.width = cv.height = trace.width = trace.height = W;
   }
   addEventListener("resize", taille); taille();
+
+  // Tramage : petite texture de bruit centrée sur le gris moyen, appliquée en « overlay »
+  // (±quelques niveaux seulement, invisible à l'œil, mais les marches des dégradés disparaissent)
+  const fond = opts.fond || null;
+  const bruit = document.createElement("canvas"); bruit.width = bruit.height = 64;
+  { const bc = bruit.getContext("2d"), im = bc.createImageData(64, 64);
+    for (let i = 0; i < im.data.length; i += 4) { const v = 128 + (Math.random() - .5) * 7; im.data[i] = im.data[i + 1] = im.data[i + 2] = v; im.data[i + 3] = 255; }
+    bc.putImageData(im, 0, 0); }
+  const motif = mc.createPattern(bruit, "repeat");
 
   let ecole = ECOLES[opts.ecole] ? opts.ecole : "givre", etat = "repos";
   // valeurs lissées
@@ -121,6 +133,7 @@ function creerOrbe(cv, opts = {}) {
     // traînées : on assombrit l'image précédente
     // (les particules ont leur propre calque à traînées, la brume est redessinée nette)
     mc.setTransform(1, 0, 0, 1, 0, 0); mc.globalCompositeOperation = "source-over"; mc.clearRect(0, 0, W, W);
+    if (fond) { mc.fillStyle = fond; mc.fillRect(0, 0, W, W); }
     tc.setTransform(1, 0, 0, 1, 0, 0); tc.globalCompositeOperation = "destination-out";
     tc.fillStyle = "rgba(0,0,0,0.22)"; tc.fillRect(0, 0, W, W);
     for (const c of [mc, tc]) { c.globalCompositeOperation = "lighter"; c.translate(cx + jit, cy + jit * .6); }
@@ -285,6 +298,12 @@ function creerOrbe(cv, opts = {}) {
     ctx = mc;
     mc.setTransform(1, 0, 0, 1, 0, 0);
     mc.drawImage(trace, 0, 0);
+    if (fond && motif) {
+      const ox = (Math.random() * 64) | 0, oy = (Math.random() * 64) | 0;
+      mc.globalCompositeOperation = "overlay";
+      mc.translate(-ox, -oy); mc.fillStyle = motif; mc.fillRect(0, 0, W + 64, W + 64);
+      mc.setTransform(1, 0, 0, 1, 0, 0);
+    }
     // fondu circulaire des bords : aucun bord carré visible
     mc.globalCompositeOperation = "destination-in";
     g = mc.createRadialGradient(W / 2, W / 2, W * .3, W / 2, W / 2, W * .5);

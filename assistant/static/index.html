@@ -41,17 +41,19 @@
   .meta { display:none; margin:0; font-family:var(--f-mono); font-size:.72rem; color:var(--muted); }
   .meta code { color:var(--fg); }
   .outils { position:absolute; top:0; right:0; display:flex; gap:6px; }
-  .icone { border:1px solid var(--bord); background:transparent; border-radius:10px; width:38px; height:38px; cursor:pointer; color:var(--muted); font-size:1.05rem; padding:0; }
+  .ico { width:20px; height:20px; fill:none; stroke:currentColor; stroke-width:1.7; stroke-linecap:round; stroke-linejoin:round; display:block; margin:auto; }
+  .icone { border:0; background:transparent; border-radius:10px; width:38px; height:38px; cursor:pointer; color:var(--muted); padding:0; }
   .icone:hover { color:var(--fg); }
-  .icone[aria-pressed="true"] { color:var(--accent); border-color:var(--accent); }
+  .icone[aria-pressed="true"] { color:var(--accent); }
 
   /* Fil */
   #fil { flex:1; min-height:0; overflow-y:auto; display:flex; flex-direction:column; gap:14px; padding:6px 2px 10px; }
   .accueil { display:grid; gap:14px; justify-items:center; text-align:center; padding:8px 0; }
   .accueil p { margin:0; color:var(--muted); }
   .suggestions { display:flex; flex-wrap:wrap; gap:8px; justify-content:center; }
-  .suggestions button { border:1px solid var(--bord); background:var(--surface); border-radius:12px; padding:8px 12px; cursor:pointer; }
-  .suggestions button:hover { border-color:var(--accent); }
+  .suggestions { gap:4px 18px; }
+  .suggestions button { border:0; background:transparent; color:var(--muted); padding:4px 0; cursor:pointer; border-bottom:1px solid transparent; }
+  .suggestions button:hover { color:var(--fg); border-bottom-color:var(--accent); }
 
   .msg { display:flex; gap:10px; max-width:100%; line-height:1.55; overflow-wrap:anywhere; }
   .moi { align-self:center; max-width:90%; color:var(--muted); font-style:italic; text-align:center; white-space:pre-wrap; }
@@ -70,16 +72,17 @@
                background-size:300% 100%; -webkit-background-clip:text; background-clip:text; color:transparent; animation:balaye 1.6s linear infinite; }
   @keyframes balaye { from { background-position:100% 0; } to { background-position:0 0; } }
   .pied { display:flex; align-items:center; gap:6px; flex-wrap:wrap; margin-top:8px; font-size:.78rem; color:var(--muted); }
-  .puce { border:1px solid var(--bord); border-radius:999px; padding:2px 9px; background:transparent; color:var(--muted); cursor:pointer; font-size:.78rem; }
+  .puce { border:0; border-radius:999px; padding:2px 4px; background:transparent; color:var(--muted); cursor:pointer; font-size:.78rem; }
   .puce:hover { color:var(--fg); }
   .details { flex-basis:100%; font-family:var(--f-mono); font-size:.72rem; }
   .historique { align-self:center; }
 
   /* Bulle d'écoute (micro) */
-  .ecoute { align-self:center; width:100%; max-width:60ch; padding:10px 14px; border-radius:14px; border:2px dashed var(--rouge); line-height:1.45; }
+  .ecoute { align-self:center; width:100%; max-width:60ch; padding:4px 0; line-height:1.45; text-align:center; }
+  .ecoute .tete { justify-content:center; }
   .ecoute .tete { display:flex; align-items:center; gap:8px; font-size:.8rem; color:var(--rouge); font-weight:700; }
   .ecoute .point { width:10px; height:10px; border-radius:50%; background:var(--rouge); animation:clignote 1s ease-in-out infinite; }
-  .ecoute .niveau { flex:1; min-width:60px; height:6px; border-radius:3px; background:var(--bord); overflow:hidden; }
+  .ecoute .niveau { flex:0 1 120px; min-width:60px; height:2px; border-radius:1px; background:var(--bord); overflow:hidden; }
   .ecoute .niveau span { display:block; height:100%; width:0; background:var(--rouge); transition:width .08s; }
   .ecoute .mots { margin-top:4px; min-height:1.4em; font-size:1.05rem; }
   .ecoute .mots:empty::before { content:"Parle, je t'écoute…"; color:var(--muted); font-style:italic; }
@@ -92,24 +95,26 @@
   .veille.son .oreille { opacity:1; box-shadow:0 0 0 3px rgba(76,195,224,.25); }
   .veille.eveille { color:var(--accent); }
   .veille .entendu { opacity:.6; font-style:italic; max-width:40ch; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
-  .veille button { border:1px solid var(--bord); background:transparent; color:var(--muted); border-radius:999px; padding:1px 8px; font-size:.75rem; cursor:pointer; }
-  #micro.continu { border-color:var(--accent); color:var(--accent); box-shadow:0 0 0 3px rgba(76,195,224,.18); }
+  .veille button { border:0; border-bottom:1px solid var(--bord); background:transparent; color:var(--muted); padding:0 2px; font-size:.75rem; cursor:pointer; }
+  #micro.continu { color:var(--accent); }
+  #micro.continu::after { content:""; display:block; width:4px; height:4px; border-radius:50%; background:var(--accent); margin:2px auto 0; }
 
   /* Saisie */
-  form#form { border:1px solid var(--bord); background:var(--surface); border-radius:20px; padding:8px 8px 8px 14px; display:grid; gap:6px; }
-  form#form:focus-within { border-color:var(--accent); }
+  form#form { border:0; border-bottom:1px solid var(--bord); background:transparent; border-radius:0; padding:6px 0 6px; display:grid; gap:4px; transition:border-color .2s; }
+  form#form:focus-within { border-bottom-color:var(--accent); }
   textarea:focus-visible { outline:none; }
   textarea { border:0; background:transparent; resize:none; outline:none; min-height:24px; max-height:160px; line-height:1.5; padding:4px 0; width:100%; font-size:1rem; }
   .barre { display:flex; align-items:center; gap:6px; }
-  .roles { display:flex; gap:2px; background:var(--bg); border-radius:999px; padding:2px; }
+  .roles { display:flex; gap:2px; }
   .roles button { border:0; background:transparent; border-radius:999px; padding:4px 10px; font-size:.8rem; cursor:pointer; color:var(--muted); }
-  .roles button[aria-pressed="true"] { background:var(--surface); color:var(--fg); box-shadow:0 1px 2px rgba(0,0,0,.4); }
+  .roles button[aria-pressed="true"] { color:var(--accent); }
   .espace { flex:1; }
   .rond { border-radius:50%; width:38px; height:38px; padding:0; cursor:pointer; font-size:1.05rem; flex:none; }
-  #micro { border:1px solid var(--bord); background:transparent; }
-  #micro.actif { background:var(--rouge); border-color:var(--rouge); color:#fff; animation:pouls 1.2s ease-in-out infinite; }
+  #micro { border:0; background:transparent; color:var(--muted); }
+  #micro:hover { color:var(--fg); }
+  #micro.actif { color:var(--rouge); animation:pouls 1.2s ease-in-out infinite; }
   @keyframes pouls { 50% { box-shadow:0 0 0 6px rgba(224,83,61,.25); } }
-  #envoyer { border:0; background:var(--accent); color:var(--accent-fg); }
+  #envoyer { border:0; background:transparent; color:var(--accent); }
   .aide { margin:0; font-size:.72rem; color:var(--muted); text-align:center; }
   .astuce-plein { display:none; }
 
@@ -117,7 +122,7 @@
   .tech .meta { display:block; }
   .tech .orbe-cadre { width:90px; height:90px; }
   .tech .historique { display:none; }
-  .tech .moi { align-self:flex-end; max-width:80%; font-style:normal; color:var(--accent-fg); background:var(--accent); padding:8px 14px; border-radius:18px 18px 4px 18px; text-align:left; }
+  .tech .moi { align-self:flex-end; max-width:80%; font-style:normal; color:var(--accent); text-align:right; }
   .tech .lui { align-self:flex-start; max-width:92%; font-size:1rem; }
   .tech .avatar { display:block; }
   .tech .details { display:block !important; }
@@ -139,10 +144,8 @@
   .plein #fil { justify-content:flex-end; pointer-events:none; }
   .plein #fil > * { pointer-events:auto; }
   .plein #fil > .msg:not(.dernier):not(.avant-dernier) { display:none !important; }
-  .plein .lui { max-height:34vh; overflow-y:auto; font-size:1.05rem; background:var(--voile); -webkit-backdrop-filter:blur(8px); backdrop-filter:blur(8px);
-                border:1px solid rgba(127,214,255,.18); border-radius:16px; padding:12px 16px; }
-  .plein .ecoute { background:var(--voile); -webkit-backdrop-filter:blur(8px); backdrop-filter:blur(8px); }
-  .plein form#form { background:var(--voile); -webkit-backdrop-filter:blur(8px); backdrop-filter:blur(8px); }
+  .plein .lui { max-height:34vh; overflow-y:auto; font-size:1.1rem; text-shadow:0 1px 3px rgba(0,0,0,.9), 0 0 18px rgba(0,0,0,.8); }
+  .plein .ecoute { text-shadow:0 1px 3px rgba(0,0,0,.9); }
   .plein .astuce-plein { display:inline; }
   .plein .aide-texte { display:none; }
   #fil, form#form, .aide, .statut { transition:opacity .3s; }
@@ -157,11 +160,10 @@
     .orbe-cadre { width:min(120px, 34vw, 18vh); height:min(120px, 34vw, 18vh); }
     .lui { font-size:1rem; }
     .roles button { padding:4px 7px; }
-    .nav-tel { display:grid; grid-template-columns:repeat(4, 1fr); gap:4px; border-top:1px solid var(--bord); padding-top:4px; }
-    .nav-tel button { border:0; background:transparent; color:var(--muted); display:grid; justify-items:center; gap:1px; padding:6px 0; border-radius:12px; cursor:pointer; font-size:1.05rem; line-height:1.2; }
+    .nav-tel { display:grid; grid-template-columns:repeat(4, 1fr); gap:4px; padding-top:2px; }
+    .nav-tel button { border:0; background:transparent; color:var(--muted); display:grid; justify-items:center; gap:2px; padding:6px 0; cursor:pointer; line-height:1.2; }
     .nav-tel button span { font-size:.7rem; }
-    .nav-tel button[aria-pressed="true"] { color:var(--accent); background:var(--surface); }
-    .plein .nav-tel { background:var(--voile); -webkit-backdrop-filter:blur(8px); backdrop-filter:blur(8px); border-radius:14px; border-top:0; }
+    .nav-tel button[aria-pressed="true"] { color:var(--accent); }
     .plein .lui { max-height:30vh; }
   }
   @media (prefers-reduced-motion: reduce) { .reflechit, .ecoute .point, #micro.actif { animation:none; } .reflechit { color:var(--muted); } }
@@ -182,6 +184,16 @@
   dialog input[type=number] { width:5.5em; background:var(--bg); border:1px solid var(--bord); border-radius:8px; padding:4px 6px; }
   dialog .note { margin:-6px 0 12px; font-size:.78rem; color:var(--muted); }
   dialog .note.ko { color:var(--rouge); }
+  .voix { display:grid; gap:2px; margin-bottom:10px; }
+  .voix label { display:flex; align-items:center; gap:10px; padding:6px 4px; border-radius:8px; cursor:pointer; }
+  .voix label:hover { background:var(--bg); }
+  .voix input { accent-color:var(--accent); }
+  .voix .nomVoix { flex:1; min-width:0; }
+  .voix small { display:block; color:var(--muted); font-size:.75rem; }
+  .voix .ecouter { border:0; background:transparent; color:var(--muted); width:32px; height:32px; border-radius:50%; cursor:pointer; padding:0; }
+  .voix .ecouter:hover, .voix .ecouter.joue { color:var(--accent); }
+  .voix .ico { width:16px; height:16px; }
+  dialog { max-height:90vh; overflow-y:auto; }
   dialog .actions { display:flex; justify-content:space-between; gap:8px; }
   dialog .actions button { padding:8px 14px; border-radius:10px; cursor:pointer; border:0; background:var(--accent); color:var(--accent-fg); }
   dialog .actions .discret { background:transparent; color:var(--muted); border:1px solid var(--bord); }
@@ -196,9 +208,9 @@
     <p class="veille" id="veille"><span class="oreille" aria-hidden="true"></span><span id="veilleTexte">À l'écoute</span><span class="entendu" id="entendu"></span><button type="button" id="btnEndormir" hidden>Endormir</button></p>
     <p class="meta">Wake word : <code id="wake">…</code> · <span id="version"></span> · <span id="modeles">modèles…</span></p>
     <div class="outils">
-      <button type="button" class="icone" id="btnPlein" title="Orbe plein écran (Échap pour sortir)" aria-label="Orbe plein écran" aria-pressed="false">⛶</button>
-      <button type="button" class="icone" id="btnTech" title="Vue technique : tout le fil, routes, modèles et durées" aria-label="Vue technique" aria-pressed="false">&lt;/&gt;</button>
-      <button type="button" class="icone" id="reglagesOrbe" title="Réglages (orbe, voix)" aria-label="Réglages">⚙</button>
+      <button type="button" class="icone" id="btnPlein" title="Orbe plein écran (Échap pour sortir)" aria-label="Orbe plein écran" aria-pressed="false"><svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5"/></svg></button>
+      <button type="button" class="icone" id="btnTech" title="Vue technique : tout le fil, routes, modèles et durées" aria-label="Vue technique" aria-pressed="false"><svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><path d="M8 7l-5 5 5 5M16 7l5 5-5 5"/></svg></button>
+      <button type="button" class="icone" id="reglagesOrbe" title="Réglages (orbe, voix)" aria-label="Réglages"><svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h9M17 7h3M4 17h3M11 17h9"/><circle cx="15" cy="7" r="2"/><circle cx="9" cy="17" r="2"/></svg></button>
     </div>
   </header>
 
@@ -223,16 +235,16 @@
         <button type="button" data-role="raisonnement" aria-pressed="false">Raisonnement</button>
       </div>
       <span class="espace"></span>
-      <button type="button" class="rond" id="micro" title="Parler : je m'arrête tout seul quand tu te tais (re-clic pour arrêter)" aria-label="Parler">🎤</button>
-      <button class="rond" id="envoyer" title="Envoyer (Entrée)" aria-label="Envoyer">➤</button>
+      <button type="button" class="rond" id="micro" title="Parler : je m'arrête tout seul quand tu te tais (re-clic pour arrêter)" aria-label="Parler"><svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3a3 3 0 0 0-3 3v6a3 3 0 0 0 6 0V6a3 3 0 0 0-3-3z"/><path d="M19 11a7 7 0 0 1-14 0"/><path d="M12 18v3"/></svg></button>
+      <button class="rond" id="envoyer" title="Envoyer (Entrée)" aria-label="Envoyer"><svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 19V5"/><path d="M6 11l6-6 6 6"/></svg></button>
     </div>
   </form>
   <p class="aide"><span class="aide-texte">Entrée pour envoyer · Maj+Entrée pour aller à la ligne</span><span class="astuce-plein">Clique sur l'orbe pour ne garder qu'elle · Échap pour sortir</span></p>
   <nav class="nav-tel" id="navTel" aria-label="Vues">
-    <button type="button" data-vue="orbe" aria-pressed="false">◉<span>Orbe</span></button>
-    <button type="button" data-vue="conv" aria-pressed="false">☰<span>Conversation</span></button>
-    <button type="button" data-vue="tech" aria-pressed="false">&lt;/&gt;<span>Technique</span></button>
-    <button type="button" data-vue="reglages" aria-pressed="false">⚙<span>Réglages</span></button>
+    <button type="button" data-vue="orbe" aria-pressed="false"><svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="8"/><circle cx="12" cy="12" r="3"/></svg><span>Orbe</span></button>
+    <button type="button" data-vue="conv" aria-pressed="false"><svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16M4 12h11M4 17h7"/></svg><span>Conversation</span></button>
+    <button type="button" data-vue="tech" aria-pressed="false"><svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><path d="M8 7l-5 5 5 5M16 7l5 5-5 5"/></svg><span>Technique</span></button>
+    <button type="button" data-vue="reglages" aria-pressed="false"><svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h9M17 7h3M4 17h3M11 17h9"/><circle cx="15" cy="7" r="2"/><circle cx="9" cy="17" r="2"/></svg><span>Réglages</span></button>
   </nav>
 </main>
 <dialog id="dlgOrbe">
@@ -243,8 +255,13 @@
     <label class="ligne" for="rgBrume">Brume<input type="range" id="rgBrume" min="0" max="100"></label>
     <label class="case"><input type="checkbox" id="lireTout"> Lire aussi à voix haute les réponses aux messages écrits</label>
     <fieldset>
+      <legend>Voix</legend>
+      <div class="voix" id="listeVoix" role="radiogroup" aria-label="Voix de l'assistant"></div>
+      <p class="note" id="noteVoix">Chargement des voix…</p>
+    </fieldset>
+    <fieldset>
       <legend>Écoute continue</legend>
-      <label class="case"><input type="checkbox" id="continu"> Écouter en continu et réagir au mot de réveil (aussi : appui long sur 🎤)</label>
+      <label class="case"><input type="checkbox" id="continu"> Écouter en continu et réagir au mot de réveil (aussi : appui long sur le micro)</label>
       <label class="case" for="fenetre">Après le mot de réveil, écouter encore <input type="number" id="fenetre" min="0" max="3600" step="5"> s</label>
       <p class="note">0 = dire le mot de réveil avant chaque phrase.</p>
       <label class="case"><input type="checkbox" id="toujours"> Toujours à l'écoute, sans mot de réveil</label>
@@ -259,6 +276,9 @@
 <script src="/static/orbe.js"></script>
 <script>
 const $ = id => document.getElementById(id);
+const ICONE_MICRO = '<svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3a3 3 0 0 0-3 3v6a3 3 0 0 0 6 0V6a3 3 0 0 0-3-3z"/><path d="M19 11a7 7 0 0 1-14 0"/><path d="M12 18v3"/></svg>';
+const ICONE_STOP = '<svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><rect x="7" y="7" width="10" height="10" rx="2" fill="currentColor" stroke="none"/></svg>';
+const ICONE_ECOUTER = '<svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><path d="M8 5l11 7-11 7z"/></svg>';
 const historique = [];
 const conversation = (crypto.randomUUID ? crypto.randomUUID() : String(Math.random())).slice(0, 36);
 let nom = 'l\'assistant';   // remplacé par le nom configuré dès que /api/info répond (jamais écrit en dur)
@@ -541,7 +561,7 @@ let partielEnCours = false, minuteurPartiel = null;
 try { $('lireTout').checked = localStorage.getItem('voix.lireTout') === '1'; } catch (e) {}
 $('lireTout').onchange = () => { try { localStorage.setItem('voix.lireTout', $('lireTout').checked ? '1' : '0'); } catch (e) {} };
 
-// Appui long sur 🎤 : écoute continue. Clic simple : une phrase (ou arrête l'écoute continue).
+// Appui long sur le micro : écoute continue. Clic simple : une phrase (ou arrête l'écoute continue).
 let minuteurAppui = null, appuiLong = false;
 $('micro').addEventListener('pointerdown', () => {
   appuiLong = false;
@@ -552,7 +572,7 @@ $('micro').addEventListener('contextmenu', ev => ev.preventDefault());
 
 $('micro').onclick = async () => {
   if (appuiLong) { appuiLong = false; return; }
-  if (lecture) { lecture.pause(); lecture = null; }
+  if (voixActive) couperLecture();
   if (continu.actif && !(enregistreur && enregistreur.state === 'recording')) { basculerContinu(false); return; }
   if (enregistreur && enregistreur.state === 'recording') { enregistreur.stop(); return; }
   try {
@@ -566,7 +586,7 @@ $('micro').onclick = async () => {
   enregistreur.ondataavailable = ev => { if (ev.data.size) morceaux.push(ev.data); };
   enregistreur.onstop = transcrireEtEnvoyer;
   enregistreur.start(500);   // un morceau toutes les 0,5 s : sert aux mots en direct
-  $('micro').classList.add('actif'); $('micro').textContent = '⏹';
+  $('micro').classList.add('actif'); $('micro').innerHTML = ICONE_STOP;
   $('page').classList.remove('zen');
   $('accueil')?.remove();
   bulleEcoute = document.createElement('div');
@@ -620,7 +640,7 @@ async function transcriptionPartielle() {
 
 async function transcrireEtEnvoyer() {
   clearInterval(minuteurPartiel);
-  $('micro').classList.remove('actif'); $('micro').textContent = '🎤';
+  $('micro').classList.remove('actif'); $('micro').innerHTML = ICONE_MICRO;
   if (fluxMicro) fluxMicro.getTracks().forEach(t => t.stop());
   const blob = new Blob(morceaux, {type: enregistreur.mimeType || 'audio/webm'});
   enregistreur = null;
@@ -662,15 +682,26 @@ function synthetiser(phrase) {
     .then(r => r.ok ? r.blob() : null).catch(() => null);
 }
 
+// La voix de l'assistant peut être coupée à tout moment (clic sur le micro, ou tu lui parles).
+let voixActive = false, numeroLecture = 0;
+function couperLecture() {
+  numeroLecture++;
+  const l = lecture; lecture = null;
+  if (l) l.pause();
+}
+
 async function direAVoixHaute(texte) {
   const phrases = decouperPhrases(texte);
   if (!phrases.length) return;
+  const moi = ++numeroLecture;
+  voixActive = true;
   orbe.etat('parole');
   const pulse = setInterval(() => orbe.impulsion(4), 180);
   try {
     let suivante = synthetiser(phrases[0]);
     for (let i = 0; i < phrases.length; i++) {
       const blob = await suivante;
+      if (moi !== numeroLecture) break;   // coupée pendant la préparation de la phrase
       if (i + 1 < phrases.length) suivante = synthetiser(phrases[i + 1]);   // prépare la suivante pendant la lecture
       if (!blob) continue;
       const url = URL.createObjectURL(blob);
@@ -682,11 +713,12 @@ async function direAVoixHaute(texte) {
         lecture.play().catch(() => res(false));
       });
       URL.revokeObjectURL(url);
-      if (interrompu || !lecture) break;   // clic sur le micro pendant la lecture : on s'arrête là
+      if (interrompu || !lecture || moi !== numeroLecture) break;   // coupée : on s'arrête là
     }
   } finally {
     clearInterval(pulse);
-    lecture = null;
+    if (moi === numeroLecture) lecture = null;
+    voixActive = false;
     if (!occupe) orbe.etat('repos');
   }
 }
@@ -698,6 +730,7 @@ let minuteurFenetre = null, minuteurEntendu = null;
 
 fetch('/api/voix').then(r => r.ok ? r.json() : null).then(v => { if (v) lireReglagesVoix(v); }).catch(() => {});
 function lireReglagesVoix(v) {
+  remplirVoix(v);
   continu.wake = v.wake_word || nom;
   continu.toujours = !!v.toujours_a_l_ecoute;
   if (typeof v.fenetre_s === 'number') continu.fenetre = v.fenetre_s;
@@ -705,6 +738,48 @@ function lireReglagesVoix(v) {
   $('toujours').checked = continu.toujours;
   majVeille();
 }
+// Panneau de voix : la liste vient du serveur (GET /api/voix -> voix_disponibles), « Écouter » fait un essai.
+let apercu = null;
+function remplirVoix(v) {
+  const liste = $('listeVoix'), dispo = Array.isArray(v.voix_disponibles) ? v.voix_disponibles : [];
+  liste.innerHTML = '';
+  if (!dispo.length) { $('noteVoix').textContent = 'Le choix de la voix n\'est pas encore proposé par le serveur.'; return; }
+  $('noteVoix').textContent = '';
+  for (const x of dispo) {
+    const l = document.createElement('label');
+    l.innerHTML = '<input type="radio" name="voix"><span class="nomVoix"><span></span><small></small></span>'
+      + '<button type="button" class="ecouter" title="Écouter cette voix" aria-label="Écouter">' + ICONE_ECOUTER + '</button>';
+    const r = l.querySelector('input');
+    r.value = x.id; r.checked = x.id === v.voix;
+    l.querySelector('.nomVoix > span').textContent = x.nom || x.id;
+    l.querySelector('small').textContent = [x.description, x.langue, x.moteur].filter(Boolean).join(' · ');
+    r.onchange = () => choisirVoix(x.id);
+    l.querySelector('.ecouter').onclick = ev => { ev.preventDefault(); ecouterVoix(x.id, ev.currentTarget); };
+    liste.appendChild(l);
+  }
+}
+async function choisirVoix(id) {
+  $('noteVoix').className = 'note'; $('noteVoix').textContent = 'Enregistrement…';
+  try {
+    const r = await fetch('/api/voix/reglages', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({voix: id})});
+    if (!r.ok) { const d = (await r.json().catch(() => ({}))).detail; throw new Error(typeof d === 'string' ? d : 'voix refusée par le serveur'); }
+    $('noteVoix').textContent = 'Voix enregistrée.';
+  } catch (e) { $('noteVoix').className = 'note ko'; $('noteVoix').textContent = 'Non enregistré : ' + e.message; }
+}
+async function ecouterVoix(id, bouton) {
+  if (apercu) { apercu.pause(); apercu = null; }
+  bouton.classList.add('joue');
+  try {
+    const r = await fetch('/api/voix/parler', {method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({texte: 'Bonjour, je suis ' + nom + '. Voici ma voix.', voix: id})});
+    if (!r.ok) throw new Error();
+    const url = URL.createObjectURL(await r.blob());
+    apercu = new Audio(url);
+    apercu.onended = apercu.onpause = () => { bouton.classList.remove('joue'); URL.revokeObjectURL(url); };
+    await apercu.play();
+  } catch (e) { bouton.classList.remove('joue'); $('noteVoix').className = 'note ko'; $('noteVoix').textContent = 'Essai impossible pour cette voix.'; }
+}
+
 async function ecrireReglagesVoix() {
   const corps = {fenetre_s: Math.max(0, Math.min(3600, +$('fenetre').value || 0)), toujours_a_l_ecoute: $('toujours').checked};
   $('noteEcoute').className = 'note'; $('noteEcoute').textContent = 'Enregistrement…';
@@ -800,24 +875,43 @@ function analyserContinu() {
     continu.rec = rec; depart = performance.now();
   };
   const jeter = () => { if (continu.rec) { const r = continu.rec; continu.rec = null; if (r.state === 'recording') r.stop(); } };
+  let bargeDebut = 0, sonVisible = false, finSonVisible = 0;
   const tic = () => {
     if (!continu.actif) { jeter(); return; }
-    // pendant que l'assistant parle ou qu'on dicte avec le bouton : on n'écoute pas (pas d'écho)
-    const enPause = !!lecture || !!enregistreur;
     const t = performance.now();
-    if (enPause) {
+    // dictée avec le bouton : c'est elle qui écoute
+    if (enregistreur) {
       jeter(); enMorceau = false; $('veille').classList.remove('son');
       requestAnimationFrame(tic); return;
     }
-    if (!continu.rec) lancer();
     an.getByteTimeDomainData(buf);
     let m = 0; for (const v of buf) m = Math.max(m, Math.abs(v - 128));
+    if (voixActive) {
+      // L'assistant parle : on n'enregistre pas sa voix, mais si TU parles plus de 0,3 s
+      // (seuil plus haut, l'annulation d'écho retire l'essentiel de sa voix), il se tait.
+      jeter(); enMorceau = false;
+      if (m > 30) { bargeDebut = bargeDebut || t; } else if (t - bargeDebut > 150) bargeDebut = 0;
+      if (bargeDebut && t - bargeDebut > 300) {
+        bargeDebut = 0;
+        couperLecture();
+        lancer(); enMorceau = true; debut = dernierSon = t;
+        orbe.etat('ecoute');
+      }
+      requestAnimationFrame(tic); return;
+    }
+    if (!continu.rec) lancer();
     const son = m > 12;
     $('veille').classList.toggle('son', son);
+    // Réaction immédiate : au moindre son, l'orbe passe en écoute et suit le volume
     if (son) {
-      dernierSon = t;
+      dernierSon = t; finSonVisible = t + 600;
       if (!enMorceau) { enMorceau = true; debut = t; }
-      if (continu.fin > Date.now() || continu.toujours) orbe.impulsion(Math.round(m / 6));
+      if (!occupe && orbe.etatCourant !== 'ecoute') orbe.etat('ecoute');
+      sonVisible = true;
+      orbe.impulsion(Math.round(m / 5));
+    } else if (sonVisible && t > finSonVisible) {
+      sonVisible = false;
+      if (!occupe && !(continu.fin > Date.now()) && !continu.toujours) orbe.etat('repos');
     }
     if (enMorceau && (t - dernierSon > 900 || t - debut > 15000)) {
       const r = continu.rec; continu.rec = null; enMorceau = false;
