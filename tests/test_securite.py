@@ -102,3 +102,15 @@ def test_api_interne_seulement_depuis_la_machine(tmp_path):
 def test_reseau_invalide_refuse_dans_la_config():
     with pytest.raises(ValueError):
         SecuriteConfig(reseaux_autorises=["pas un réseau"])
+
+
+def test_derriere_cloudflare_et_npm(tmp_path):
+    a, sec = app(tmp_path, proxies_de_confiance=[NPM + "/32"])
+    sec.definir_mot_de_passe("correct horse battery")
+    c = client(a, NPM)
+    # visiteur sur Internet via Cloudflare : son IP réelle est dans CF-Connecting-IP -> refusé
+    h = {"X-Forwarded-For": AILLEURS + ", 172.70.1.1", "CF-Connecting-IP": AILLEURS}
+    assert c.get("/api/info", headers=h).status_code == 403
+    # sans proxy de confiance, l'en-tête Cloudflare n'est pas cru
+    a2, _ = app(tmp_path / "b")
+    assert client(a2, AILLEURS).get("/api/info", headers={"CF-Connecting-IP": "127.0.0.1"}).status_code == 403

@@ -110,6 +110,10 @@ class Securite:
     def ip_client(self, ip_directe: str, entetes: dict[str, str]) -> str:
         """IP réelle : celle du proxy de confiance remplacée par X-Forwarded-For / X-Real-IP."""
         if self.proxies and dans(ip_directe, self.proxies):
+            # Derrière Cloudflare : l'IP du visiteur est dans CF-Connecting-IP (X-Forwarded-For se
+            # termine par l'adresse d'un serveur Cloudflare, pas par celle du visiteur)
+            if entetes.get("cf-connecting-ip"):
+                return entetes["cf-connecting-ip"].strip()
             xff = entetes.get("x-forwarded-for", "")
             if xff:
                 # dernière adresse non-proxy de la chaîne (la plus proche, donc la moins falsifiable)
