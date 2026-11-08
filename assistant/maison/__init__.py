@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import re
 import time
+from contextvars import ContextVar
 from dataclasses import dataclass, field
 
 from ..config import MaisonConfig
@@ -12,6 +13,12 @@ from ..fournisseurs import Fournisseur
 from ..home_assistant import HomeAssistant
 from .alias import AliasAppris
 from .historique import Historique
+
+# Pièce par défaut de la personne qui parle (profil) : « allume la lumière » sans pièce y vise d'abord
+piece_preferee: ContextVar[str] = ContextVar("piece_preferee", default="")
+# Catégories d'informations à ne pas révéler dans le contexte de la demande (distant, appareil partagé, enfant)
+masques: ContextVar[frozenset] = ContextVar("masques", default=frozenset())
+NON_REVELE = "information non donnée sur cet appareil"
 from .commande import Commande, corriger_verbe, par_modele, par_regles
 from .inventaire import Entite, Inventaire
 from .resolution import resoudre
@@ -163,6 +170,11 @@ MOTS_AMBIANCE = {"sombre", "noir", "ambiance", "cinema", "film", "lumineux", "ec
                  "pars", "rentre", "reveil", "ouvert", "ferme", "resté", "reste"}
 
 
+# Phrase qui vise un appareil sensible : jamais confiée à Assist (il pourrait ouvrir une serrure)
+RE_SENSIBLE = re.compile(r"\b(serrures?|verrou\w*|d[ée]verrouill\w*|porte d.entr[ée]e|alarmes?|portails?|garages?|"
+                         r"chauffages?|thermostats?|radiateurs?|chaudi[eè]res?)\b", re.I)
+REFUS_SENSIBLE = "Je ne pilote pas {noms} : action sensible, à faire depuis Home Assistant."
+
 VERBES_FAIT = {"allumer": "allumé", "eteindre": "éteint", "ouvrir": "ouvert", "fermer": "fermé", "regler": "réglé"}
 
 
@@ -177,6 +189,25 @@ class Maison:
         self.inventaire = Inventaire(ha, cfg.domaines_autorises, cfg.rafraichir_s)
         self._attentes: dict[str, _Attente] = {}
         self._contextes: dict[str, _Contexte] = {}
+
+    def sensible(self, e: Entite) -> bool:
+        """Appareil qu'on ne pilote pas : chauffage, portail, garage, porte… (lecture de l'état permise)."""
+        if e.domaine in self.cfg.domaines_sensibles:
+            return True
+        if e.domaine == "cover" and (e.attributs or {}).get("device_class") in self.cfg.classes_sensibles:
+            return True
+        if e.domaine == "light":
+            return False        # « Lumière garage » reste une lumière
+        nom = f"{e.nom} {e.nom_appareil}"
+        if e.domaine == "cover" and re.search(r"\b(garage|porte)\b", nom, re.I):
+            return True
+        return bool(self.cfg.noms_sensibles and re.search(rf"\b({self.cfg.noms_sensibles})\b", nom, re.I))
+
+    def masque(self, e: Entite) -> bool:
+        return "etat_sensible" in masques.get() and self.sensible(e)
+
+    def mentionne_sensible(self, texte: str) -> bool:
+        return bool(RE_SENSIBLE.search(texte))
 
     def _contexte(self, conversation: str) -> _Contexte | None:
         c = self._contextes.get(conversation)
@@ -288,6 +319,13 @@ class Maison:
             return r
         res = resoudre(cmd.cible, cmd.action, entites, cmd.tous, self.alias.table())
         detail = {"commande": cmd.__dict__, "analyse": origine, "resolution": res.raison}
+        pref = normaliser(piece_preferee.get())
+        if res.ambigues and pref:
+            chez_moi = [e for e in res.ambigues if pref in {normaliser(e.piece), *map(normaliser, e.alias_piece)}]
+            if chez_moi and len(chez_moi) < len(res.ambigues) and (len(chez_moi) == 1 or cmd.tous):
+                r = await self._executer(cmd, chez_moi, conversation)
+                r.detail.update(commande=cmd.__dict__, analyse=origine, resolution="pièce du profil", duree_ms=ms())
+                return r
         if res.ambigues:
             self._attentes[conversation] = _Attente(cmd, res.ambigues, time.monotonic())
             q = f"Lequel : {_ou(_noms_courts(res.ambigues))} ?"
@@ -386,7 +424,8 @@ class Maison:
             return f"Je ne vois aucun appareil pour « {filtre} »."
         par_piece: dict[str, list[str]] = {}
         for e in sorted(choix, key=lambda x: (x.piece or "~", x.nom.lower())):
-            par_piece.setdefault(e.piece or "Sans pièce", []).append(f"{e.nom} ({ETATS_FR.get(e.etat, e.etat or '?')})")
+            etat = "?" if self.masque(e) else ETATS_FR.get(e.etat, e.etat or "?")
+            par_piece.setdefault(e.piece or "Sans pièce", []).append(f"{e.nom} ({etat})")
         lignes = [f"{p} : {', '.join(n)}" for p, n in par_piece.items()]
         entete = f"{len(choix)} appareil{'s' if len(choix) > 1 else ''} pilotable{'s' if len(choix) > 1 else ''}"
         return entete + " —\n" + "\n".join(lignes)
@@ -442,11 +481,19 @@ class Maison:
         if cmd.action == "etat":
             lignes = []
             for e in entites:
+                if self.masque(e):
+                    lignes.append(f"{e.libelle} : {NON_REVELE}.")
+                    continue
                 s = await self.ha.etat_entite(e.entity_id)
                 lignes.append(_decrire_etat(e, s) if s else f"{e.libelle} : état inconnu.")
             # « éteins-le » juste après « le projo est-il allumé ? » vise le projo
             self._contextes[conversation] = _Contexte(cmd, entites, [], time.monotonic())
             return ReponseMaison(True, " ".join(lignes), {"entites": ids})
+        refuses = [e for e in entites if self.sensible(e)]
+        entites = [e for e in entites if not self.sensible(e)]
+        if refuses and not entites:
+            return ReponseMaison(True, REFUS_SENSIBLE.format(noms=_et(_noms_courts(refuses))),
+                                 {"entites": ids, "sensibles": [e.entity_id for e in refuses]})
         avant = [s for s in [await self.ha.etat_entite(e.entity_id) for e in entites] if s]
         faits, rates, impossibles = [], [], []
         for e in entites:
@@ -476,7 +523,10 @@ class Maison:
             morceaux.append(f"Sauf {_et(_noms_courts(rates))} : refusé.")
         if impossibles:
             morceaux.append(f"Impossible sur {_et(_noms_courts(impossibles))}.")
-        return ReponseMaison(True, " ".join(morceaux), {"entites": ids, "echecs": [e.entity_id for e in rates]})
+        if refuses:
+            morceaux.append(f"Pas {_et(_noms_courts(refuses))} : action sensible.")
+        return ReponseMaison(True, " ".join(morceaux), {"entites": ids, "echecs": [e.entity_id for e in rates],
+                                                       "sensibles": [e.entity_id for e in refuses]})
 
 
     async def _restaurer(self, ctx: _Contexte) -> ReponseMaison:
@@ -504,6 +554,9 @@ class Maison:
         avant = [await self.ha.etat_entite(e.entity_id) for e in ctx.entites]
         faits, impossibles = [], []
         for e, s in zip(ctx.entites, avant):
+            if self.sensible(e):
+                impossibles.append(e)
+                continue
             svc = _relatif(e, s, sens)
             if svc and await self.ha.appeler_service(*svc):
                 faits.append(e)
@@ -585,12 +638,14 @@ class Maison:
             entites = [e for e in entites if (not domaines or e.domaine in domaines)
                        and (not autres or autres & (e.mots_nom() | e.mots_piece()))]
         return [{"entity_id": e.entity_id, "nom": e.nom, "piece": e.piece, "type": e.domaine,
-                 "etat": ETATS_FR.get(e.etat, e.etat)} for e in entites]
+                 "etat": NON_REVELE if self.masque(e) else ETATS_FR.get(e.etat, e.etat)} for e in entites]
 
     async def etat_detaille(self, entity_id: str) -> dict | None:
         connus = {e.entity_id: e for e in await self.inventaire.obtenir()}
         if entity_id not in connus:
             return None
+        if self.masque(connus[entity_id]):
+            return {"entity_id": entity_id, "etat": NON_REVELE, "description": f"{connus[entity_id].libelle} : {NON_REVELE}."}
         s = await self.ha.etat_entite(entity_id)
         if not s:
             return None

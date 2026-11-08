@@ -22,7 +22,7 @@ from . import __version__
 from .config import Config, charger, charger_secrets, chemin_alias, dossier_etat, enregistrer_reglages
 from .fournisseurs import FournisseurIndisponible, Message, Registre, Reponse
 from .home_assistant import HomeAssistant
-from .maison import Maison
+from .maison import Maison, masques, piece_preferee
 from .maison.historique import Historique
 from .maison.historique import demande as demande_en_cours
 from .maison.alias import AliasAppris
@@ -104,6 +104,40 @@ class NouveauMotDePasse(BaseModel):
     actuel: str | None = Field(default=None, max_length=200)
 
 
+COOKIE_APPAREIL = "assistant_appareil"     # « partage » : tablette commune, on en dit moins
+
+
+class AppareilPartage(BaseModel):
+    partage: bool
+
+
+class Profil(BaseModel):
+    ton: Literal["concis", "normal", "chaleureux"] | None = None
+    consigne: str | None = Field(default=None, max_length=500)
+    piece: str | None = Field(default=None, max_length=40)
+    type: Literal["adulte", "enfant"] | None = None       # modifiable par un administrateur seulement
+
+
+TONS = {"concis": "Réponds de la façon la plus brève possible, sans formule de politesse.",
+        "normal": "",
+        "chaleureux": "Sois chaleureux et un peu plus détaillé, avec une touche d'humour légère."}
+NOTE_ENFANT = ("Tu parles à un enfant : phrases simples, ton bienveillant, aucun contenu inadapté à son âge ; "
+               "pour un sujet délicat, propose d'en parler à un adulte.")
+
+
+def note_profil(nom: str, p: dict) -> str:
+    morceaux = [f"La personne qui te parle s'appelle {nom}."] if nom else []
+    if p.get("type") == "enfant":
+        morceaux.append(NOTE_ENFANT)
+    if TONS.get(p.get("ton", "normal")):
+        morceaux.append(TONS[p["ton"]])
+    if p.get("piece"):
+        morceaux.append(f"Sa pièce habituelle : {p['piece']} (pièce par défaut quand il n'en précise pas).")
+    if p.get("consigne"):
+        morceaux.append(f"Ses préférences : {p['consigne']}")
+    return " ".join(morceaux)
+
+
 class NouveauCompte(BaseModel):
     nom: str = Field(min_length=1, max_length=40)
     admin: bool = False
@@ -172,13 +206,15 @@ NOTE_OUTILS_MAISON = (
     "qui dit ce que tu as fait (« Projo monté à 100 %. »), sans détailler ce que tu n'as pas changé. "
     "Pour plusieurs appareils, ne les énumère pas (« C'est éteint. ») ; cite seulement ceux qui ont échoué, "
     "brièvement. "
+    "Le chauffage, les portails, portes, serrures et l'alarme sont des actions sensibles : agir les refusera, "
+    "ne cherche pas à contourner ; dis simplement que c'est à faire depuis Home Assistant. "
     "Les réponses précédentes sur les appareils viennent du module maison et sont fiables. "
     "Tu n'as ni fichiers ni commandes."
 )
 
 
-def _messages(cfg: Config, d: DemandeChat, outils: bool = False) -> list[Message]:
-    msgs = [Message("system", cfg.consigne_effective + "\n\n" + NOTE_STYLE)]
+def _messages(cfg: Config, d: DemandeChat, outils: bool = False, profil: str = "") -> list[Message]:
+    msgs = [Message("system", cfg.consigne_effective + "\n\n" + NOTE_STYLE + ("\n\n" + profil if profil else ""))]
     if cfg.home_assistant.url and not outils:
         msgs.append(Message("system", NOTE_MAISON))
     msgs += [Message(t.role, t.content) for t in d.historique[-HISTORIQUE_MAX:]]
@@ -264,6 +300,27 @@ def creer_app(config: Config | None = None, registre: Registre | None = None,
 
     compte_conversation: dict[str, tuple[str, str]] = {}    # conversation -> (compte, ip)
     texte_conversation: dict[str, str] = {}                  # conversation -> dernière demande (historique)
+    masques_conversation: dict[str, frozenset] = {}          # conversation -> ce qu'on ne révèle pas (outils de Claude)
+
+    def contexte_de(requete: Request) -> dict:
+        """D'où vient la demande : à distance ? appareil partagé ? compte enfant ? Et donc ce qu'on masque."""
+        import ipaddress
+        ip = ip_de(requete)[1]
+        try:
+            a = ipaddress.ip_address(ip.split("%")[0])
+            distant = not (a.is_private or a.is_loopback or a.is_link_local)
+        except ValueError:
+            distant = True
+        partage = requete.cookies.get(COOKIE_APPAREIL) == "partage"
+        compte = compte_de(requete)
+        enfant = bool(compte and compte != COMPTE_MACHINE and securite.profil(compte).get("type") == "enfant")
+        actifs = [n for n, v in (("distant", distant), ("partage", partage), ("enfant", enfant)) if v]
+        caches = frozenset(c for n in actifs for c in cfg.revelation.masquer.get(n, []))
+        return {"distant": distant, "partage": partage, "enfant": enfant, "masques": sorted(caches)}
+
+    def exiger_revelation(requete: Request, categorie: str) -> None:
+        if categorie in contexte_de(requete)["masques"]:
+            raise HTTPException(403, "information non donnée sur cet appareil")
 
     @app.middleware("http")
     async def controle_acces(requete: Request, suite):
@@ -520,6 +577,48 @@ def creer_app(config: Config | None = None, registre: Registre | None = None,
         audit.noter("codes_secours_regénérés", compte, ip_de(requete)[1])
         return {"codes_de_secours": securite.nouveaux_codes_secours(compte)}
 
+    @app.get("/api/appareil")
+    def contexte_appareil(requete: Request) -> dict:
+        """Contexte de cet appareil (pour ⚙) : à distance, partagé, enfant, et ce qui est masqué."""
+        return contexte_de(requete)
+
+    @app.post("/api/appareil")
+    def marquer_appareil(a: AppareilPartage, requete: Request, reponse: Response) -> dict:
+        if a.partage:
+            reponse.set_cookie(COOKIE_APPAREIL, "partage", max_age=10 * 365 * 86400, httponly=True, samesite="lax",
+                               secure=en_https(requete, ip_de(requete)[0]), path="/")
+        else:
+            reponse.delete_cookie(COOKIE_APPAREIL, path="/")
+        auditer(requete, "appareil_partagé" if a.partage else "appareil_personnel")
+        return {"ok": True, "partage": a.partage}
+
+    @app.get("/api/compte/profil")
+    def lire_profil(requete: Request) -> dict:
+        compte = compte_de(requete)
+        if not compte or compte == COMPTE_MACHINE:
+            raise HTTPException(409, "pas de profil pour la machine elle-même")
+        return {"profil": securite.profil(compte)}
+
+    @app.post("/api/compte/profil")
+    def ecrire_profil(p: Profil, requete: Request) -> dict:
+        compte = compte_de(requete)
+        if not compte or compte == COMPTE_MACHINE:
+            raise HTTPException(409, "pas de profil pour la machine elle-même")
+        maj = p.model_dump(exclude_none=True)
+        if "type" in maj and not securite.est_admin(compte):
+            raise HTTPException(403, "seul un administrateur change le type d'un compte")
+        auditer(requete, "profil_modifié", champs=sorted(maj))
+        return {"profil": securite.definir_profil(compte, maj)}
+
+    @app.post("/api/comptes/{ident}/profil")
+    def profil_d_un_compte(ident: str, p: Profil, requete: Request) -> dict:
+        admin = exiger_admin(requete)
+        if ident not in securite.comptes:
+            raise HTTPException(404, "compte inconnu")
+        maj = p.model_dump(exclude_none=True)
+        audit.noter("profil_modifié", admin, ip_de(requete)[1], cible=ident, champs=sorted(maj))
+        return {"profil": securite.definir_profil(ident, maj)}
+
     @app.get("/api/audit")
     def lire_audit(requete: Request, n: int = 200, type: str = "") -> dict:
         exiger_admin(requete)
@@ -567,25 +666,30 @@ def creer_app(config: Config | None = None, registre: Registre | None = None,
 
     # --- API interne : seulement pour le serveur MCP « maison » (jeton requis) -----------
     @app.get("/interne/maison/appareils", include_in_schema=False)
-    async def interne_appareils(filtre: str = "", x_jeton_interne: str | None = Header(None)) -> list[dict]:
+    async def interne_appareils(filtre: str = "", conversation: str = "",
+                                x_jeton_interne: str | None = Header(None)) -> list[dict]:
         verifier_jeton(x_jeton_interne)
+        masques.set(masques_conversation.get(conversation, frozenset()))
         return await maison.appareils(filtre)
 
     @app.get("/interne/maison/etat/{entity_id}", include_in_schema=False)
-    async def interne_etat(entity_id: str, x_jeton_interne: str | None = Header(None)) -> dict:
+    async def interne_etat(entity_id: str, conversation: str = "", x_jeton_interne: str | None = Header(None)) -> dict:
         verifier_jeton(x_jeton_interne)
+        masques.set(masques_conversation.get(conversation, frozenset()))
         e = await maison.etat_detaille(entity_id)
         if e is None:
             raise HTTPException(404, "appareil inconnu ou non autorisé")
         return e
 
     @app.get("/api/actions")
-    def historique_actions(limite: int = 50) -> dict:
+    def historique_actions(requete: Request, limite: int = 50) -> dict:
+        exiger_revelation(requete, "historique")
         h = maison.historique
         return {"actions": h.liste(max(1, min(limite, 500))) if h else []}
 
     @app.post("/api/actions/{ident}/annuler")
     async def annuler_action(ident: str, requete: Request) -> dict:
+        exiger_revelation(requete, "historique")
         ok, message = await maison.annuler_action(ident)
         if not ok:
             raise HTTPException(404 if message == "action inconnue" else 409, message)
@@ -593,7 +697,8 @@ def creer_app(config: Config | None = None, registre: Registre | None = None,
         return {"ok": True, "message": message}
 
     @app.get("/api/appareils/etat")
-    async def etat_des_appareils() -> dict:
+    async def etat_des_appareils(requete: Request) -> dict:
+        exiger_revelation(requete, "historique")
         return {"appareils": await maison.etats_appareils()}
 
     @app.post("/interne/maison/agir", include_in_schema=False)
@@ -845,6 +950,15 @@ def creer_app(config: Config | None = None, registre: Registre | None = None,
     @app.post("/api/chat")
     async def chat(d: DemandeChat, requete: Request):
         demande_en_cours.set((d.source, d.message))
+        compte = compte_de(requete)
+        ctx_revel = frozenset(contexte_de(requete)["masques"])
+        masques.set(ctx_revel)
+        masques_conversation[d.conversation] = ctx_revel
+        profil = securite.profil(compte) if compte and compte != COMPTE_MACHINE else {}
+        if "personnel" in ctx_revel:
+            profil = {k: v for k, v in profil.items() if k in ("type", "ton")}   # ni pièce ni préférences
+        piece_preferee.set(profil.get("piece", ""))
+        consigne_profil = note_profil(securite.comptes.get(compte or "", {}).get("nom", ""), profil) if profil else ""
         decision = None
         compte_conversation[d.conversation] = (compte_de(requete) or "", ip_de(requete)[1])
         texte_conversation[d.conversation] = d.message
@@ -875,6 +989,12 @@ def creer_app(config: Config | None = None, registre: Registre | None = None,
                             entites=rm.detail.get("entites"), resultat=rm.texte[:200])
                 _tracer(route, d.message)
                 return _reponse_ha(d.flux, rm.texte, route, "maison", "inventaire", rm.detail.get("duree_ms", 0))
+            if "commande" in rm.detail and cfg.maison.assist_en_secours and maison.mentionne_sensible(d.message):
+                # Assist pourrait ouvrir une serrure ou un portail : on refuse sans lui demander
+                route["maison"]["sensible"] = True
+                _tracer(route, d.message)
+                return _reponse_ha(d.flux, "Je ne pilote pas ça : action sensible, à faire depuis Home Assistant.",
+                                   route, "maison", "inventaire", 0)
             if "commande" in rm.detail and cfg.maison.assist_en_secours:
                 # commande comprise mais appareil introuvable : l'agent Assist de HA tente sa chance
                 debut_ha = time.perf_counter()
@@ -915,7 +1035,7 @@ def creer_app(config: Config | None = None, registre: Registre | None = None,
                 echec_ha = ""
         _tracer(route, d.message)
 
-        msgs = _messages(cfg, d, outils=bool(outils))
+        msgs = _messages(cfg, d, outils=bool(outils), profil=consigne_profil)
         # garde-fou : le modèle rapide ne doit pas prétendre avoir agi sur la maison
         garde = ha.configure and role == cfg.routeur.role_simple
         if echec_ha:

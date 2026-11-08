@@ -136,8 +136,9 @@ def test_alias_de_piece(maison):
     m, ha = maison
     r = dire(m, "Quelle température dans le séjour ?") or None
     # pas une phrase reconnue par les règles d'état, mais « règle le chauffage du séjour à 21 » l'est
-    dire(m, "Règle le chauffage du séjour à 21")
-    assert ("climate", "set_temperature", {"entity_id": "climate.salon", "temperature": 21.0}) in ha.appels
+    r = dire(m, "Règle le chauffage du séjour à 21")
+    # résolu sur le bon appareil grâce à l'alias de pièce, mais le chauffage est une action sensible
+    assert r.detail["sensibles"] == ["climate.salon"] and not ha.appels and "sensible" in r.texte
 
 
 def test_ambigu_puis_choix_et_alias_appris(maison):
@@ -544,3 +545,59 @@ def test_transcription_approchee(maison):
 @pytest.mark.parametrize("texte", ["Rallume L3", "réallume le globe", "ralume le globe"])
 def test_rallume(texte):
     assert par_regles(texte).action == "allumer"
+
+
+def test_actions_sensibles_refusees(maison):
+    m, ha = maison
+    r = dire(m, "Mets le thermostat à 23")
+    assert not ha.appels and "action sensible" in r.texte
+    # lecture permise
+    assert "19.5 °C" in dire(m, "Est-ce que le thermostat est allumé ?").texte
+
+
+def test_sensible_parmi_d_autres(maison):
+    m, ha = maison
+    r = dire(m, "éteins le plafonnier et le thermostat")
+    assert {a[2]["entity_id"] for a in ha.appels} == {"light.plafonnier"}
+    assert "Pas Thermostat" in r.texte
+
+
+def test_portail_par_nom_ou_classe(maison):
+    from assistant.maison.inventaire import Entite
+    m, _ = maison
+    assert m.sensible(Entite("cover.portail", "Portail"))
+    assert m.sensible(Entite("cover.x", "Grand volet", attributs={"device_class": "garage"}))
+    assert not m.sensible(Entite("cover.volet_chambre", "Volet", attributs={"device_class": "shutter"}))
+    assert m.mentionne_sensible("ouvre le portail") and not m.mentionne_sensible("ouvre le volet")
+
+
+def test_lumiere_du_garage_n_est_pas_sensible(maison):
+    from assistant.maison.inventaire import Entite
+    m, _ = maison
+    assert not m.sensible(Entite("light.garage", "Lumière garage"))
+    assert m.sensible(Entite("switch.portail", "Portail"))
+    assert not m.sensible(Entite("switch.prise_garage", "Prise garage"))
+
+
+def test_piece_du_profil_leve_l_ambiguite(maison):
+    from assistant.maison import piece_preferee
+    m, ha = maison
+
+    async def scenario():
+        piece_preferee.set("Salon")
+        return await m.traiter("Allume la lampe", "c9")
+    r = asyncio.run(scenario())
+    assert r.detail.get("resolution") == "pièce du profil"
+    assert {a[2]["entity_id"] for a in ha.appels} == {"light.lampe_pied"}
+
+
+def test_etat_sensible_masque_selon_le_contexte(maison):
+    from assistant.maison import masques
+    m, _ = maison
+
+    async def scenario():
+        masques.set(frozenset({"etat_sensible"}))
+        return await m.traiter("Est-ce que le thermostat est allumé ?", "c8"), await m.appareils("thermostat")
+    r, liste = asyncio.run(scenario())
+    assert "non donnée" in r.texte and "19.5" not in r.texte
+    assert liste[0]["etat"] == "information non donnée sur cet appareil"

@@ -31,6 +31,7 @@ SCRYPT = {"n": 2 ** 14, "r": 8, "p": 1, "dklen": 32}
 DUREE_ETAPE_S = 300            # entre le mot de passe et le code TOTP
 DUREE_INVITATION_S = 7 * 86400
 COMPTE_MACHINE = "machine"
+PROFIL_DEFAUT = {"type": "adulte", "ton": "normal", "consigne": "", "piece": ""}
 
 
 # --- empreintes -------------------------------------------------------------------------
@@ -211,11 +212,29 @@ class Securite:
         c["gen"] = c.get("gen", 0) + 1
         self._ecrire()
 
+    # --- profils -----------------------------------------------------------------------------------
+    def profil(self, compte: str | None) -> dict:
+        """Ton, consigne personnelle, pièce par défaut et type (adulte / enfant) du compte."""
+        p = dict(PROFIL_DEFAUT)
+        p.update((self.comptes.get(compte or "") or {}).get("profil") or {})
+        return p
+
+    def definir_profil(self, compte: str, maj: dict) -> dict:
+        c = self.comptes[compte]
+        p = {**PROFIL_DEFAUT, **(c.get("profil") or {})}
+        for cle, val in maj.items():
+            if cle in PROFIL_DEFAUT and val is not None:
+                p[cle] = val
+        c["profil"] = p
+        self._ecrire()
+        return p
+
     def est_admin(self, compte: str | None) -> bool:
         return compte == COMPTE_MACHINE or bool(self.comptes.get(compte or "", {}).get("admin"))
 
     def liste(self) -> list[dict]:
         return [{"id": i, "nom": c.get("nom", i), "admin": bool(c.get("admin")), "actif": bool(c.get("mdp")),
+                 "type": self.profil(i)["type"],
                  "totp": bool(c.get("totp")), "secours_restants": len(c.get("secours", [])),
                  "invitation_en_cours": bool(c.get("invitation")), "derniere_connexion": c.get("derniere_connexion")}
                 for i, c in self.comptes.items()]

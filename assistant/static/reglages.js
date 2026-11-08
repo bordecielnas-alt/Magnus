@@ -49,6 +49,7 @@
   const zone = document.createElement('div');
   zone.id = 'config';
   zone.innerHTML = `
+    <p class="aide" id="cVersionHaut" style="margin:0 0 8px;text-align:right"></p>
     <div id="bandeauRedemarrage" hidden><span>Certains changements s'appliqueront au redémarrage.</span>
       <button type="button" class="bouton principal" id="cfgRedemarrer">Redémarrer</button></div>
     <details id="cfgAssistant"><summary>Assistant <span class="etat" id="eAssistant"></span></summary>
@@ -84,6 +85,12 @@
       <div class="rangee"><button type="button" class="bouton principal" data-enr="acces">Enregistrer</button><span class="aide" data-msg="acces"></span></div>
     </details>
     <details id="cfgMonCompte"><summary>Mon compte <span class="etat" id="eMonCompte"></span></summary>
+      <label class="champ">Ton des réponses<select id="cTon"><option value="concis">Concis</option><option value="normal">Normal</option><option value="chaleureux">Chaleureux</option></select></label>
+      <label class="champ">Ma pièce (par défaut quand je n'en précise pas)<input id="cPiece" maxlength="40" placeholder="ex. Salon"></label>
+      <label class="champ">Mes préférences (consigne pour l'assistant)<input id="cConsigne" maxlength="500" placeholder="ex. tutoie-moi, températures en °C"></label>
+      <div class="rangee"><button type="button" class="bouton principal" id="cProfilBtn">Enregistrer mon profil</button><span class="aide" data-msg="profil"></span></div>
+      <label class="aide" style="display:flex;gap:8px;align-items:center;margin-top:12px"><input type="checkbox" id="cPartage"> Cet appareil est partagé (tablette commune) : l'assistant en dit moins</label>
+      <p class="aide" id="cContexte"></p>
       <label class="champ">Mot de passe actuel<input id="cMdpActuel" type="password" autocomplete="current-password"></label>
       <label class="champ">Nouveau mot de passe (10 caractères min.)<input id="cMdpNouveau" type="password" autocomplete="new-password" minlength="10"></label>
       <div class="rangee"><button type="button" class="bouton" id="cMdpBtn">Changer le mot de passe</button><span class="aide" data-msg="mdp"></span></div>
@@ -178,6 +185,7 @@
     const v = e.voix || {};
     $('cSystemeInfo').textContent = `Version ${e.version} · ${e.conteneur ? 'conteneur Docker' : 'PC'} · transcription sur ${v.appareil || '?'} · voix ${v.moteur || '?'}`;
     etat('eSysteme', 'v' + e.version);
+    $('cVersionHaut').textContent = 'Version ' + e.version;
   }
 
   async function charger() {
@@ -192,14 +200,21 @@
     secret_modifié: 'secret modifié', 'redémarrage': 'redémarrage', compte_créé: 'compte créé', compte_supprimé: 'compte supprimé',
     compte_réinitialisé: 'compte réinitialisé', invitation_acceptée: 'invitation acceptée', totp_activé: 'code téléphone activé',
     mot_de_passe_changé: 'mot de passe changé', codes_secours_regénérés: 'codes de secours', alias_oublié: 'alias oublié',
-    modèle_téléchargé: 'modèle téléchargé', totp_activation: 'code téléphone', invitation: 'invitation'};
+    modèle_téléchargé: 'modèle téléchargé', profil_modifié: 'profil modifié', appareil_partagé: 'appareil marqué partagé', appareil_personnel: 'appareil marqué personnel', totp_activation: 'code téléphone', invitation: 'invitation'};
 
   async function chargerComptes() {
     let s;
     try { s = await api('/api/securite'); } catch (e) { return; }
     const machine = s.compte === 'machine';
     $('cfgMonCompte').hidden = machine || !s.compte;
-    if (!machine && s.compte) etat('eMonCompte', s.compte_nom + (s.admin ? ' · admin' : '') + (s.totp ? ' · code téléphone' : ''), s.totp ? 'ok' : '');
+    if (!machine && s.compte) {
+      etat('eMonCompte', s.compte_nom + (s.admin ? ' · admin' : '') + (s.totp ? ' · code téléphone' : ''), s.totp ? 'ok' : '');
+      try {
+        const {profil} = await api('/api/compte/profil');
+        $('cTon').value = profil.ton; $('cPiece').value = profil.piece || ''; $('cConsigne').value = profil.consigne || '';
+      } catch (e) {}
+      afficherContexte();
+    }
     $('cfgComptes').hidden = $('cfgJournal').hidden = !s.admin;
     if (!s.admin) return;
     try {
@@ -221,6 +236,14 @@
           catch (e) { msg('comptes', e.message, false); }
         };
         boutons.appendChild(reinv);
+        const type = document.createElement('select'); type.className = 'bouton'; type.title = 'Type de compte';
+        for (const t of ['adulte', 'enfant']) type.appendChild(Object.assign(document.createElement('option'), {value: t, textContent: t}));
+        type.value = c.type || 'adulte';
+        type.onchange = async () => {
+          try { await api(`/api/comptes/${encodeURIComponent(c.id)}/profil`, {type: type.value}); msg('comptes', `${c.nom} : compte ${type.value}.`, true); }
+          catch (e) { msg('comptes', e.message, false); }
+        };
+        boutons.appendChild(type);
         if (c.id !== moi) {
           const suppr = texte('button', 'Supprimer'); suppr.type = 'button'; suppr.className = 'bouton';
           suppr.onclick = async () => {
@@ -265,6 +288,28 @@
       $('cNouveauNom').value = ''; $('cNouveauAdmin').checked = false;
       montrerLien(nom, o.lien); chargerComptes();
     } catch (e) { msg('comptes', e.message, false); }
+  };
+
+  const NOMS_MASQUES = {etat_sensible: 'état du chauffage, du portail…', historique: 'historique des actions', personnel: 'tes préférences'};
+  async function afficherContexte() {
+    try {
+      const c = await api('/api/appareil');
+      $('cPartage').checked = c.partage;
+      const ou = [c.distant ? 'hors de la maison' : 'à la maison', c.partage ? 'appareil partagé' : 'appareil personnel']
+        .concat(c.enfant ? ['compte enfant'] : []).join(' · ');
+      $('cContexte').textContent = 'Ici : ' + ou + (c.masques.length ? ' — non révélé : ' + c.masques.map(m => NOMS_MASQUES[m] || m).join(', ') : ' — tout est accessible');
+    } catch (e) {}
+  }
+  $('cPartage').onchange = async () => {
+    try { await api('/api/appareil', {partage: $('cPartage').checked}); afficherContexte(); }
+    catch (e) { $('cContexte').textContent = e.message; }
+  };
+
+  $('cProfilBtn').onclick = async () => {
+    try {
+      await api('/api/compte/profil', {ton: $('cTon').value, piece: $('cPiece').value.trim(), consigne: $('cConsigne').value.trim()});
+      msg('profil', 'Profil enregistré.', true);
+    } catch (e) { msg('profil', e.message, false); }
   };
 
   $('cSecoursBtn').onclick = async () => {

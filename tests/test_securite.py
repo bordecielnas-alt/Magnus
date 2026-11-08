@@ -249,3 +249,55 @@ def test_icones_visibles_avant_connexion(tmp_path):
     m = c.get("/manifest.webmanifest")
     assert m.status_code == 200 and m.json()["icons"][0]["src"] == "/static/icones/icone-192.png"
     assert c.get("/static/index.html").status_code == 303            # le reste de /static demande la connexion
+
+
+# --- profils ------------------------------------------------------------------------------------------
+def test_profil_et_consigne(tmp_path):
+    from assistant.main import note_profil
+    a, sec = app(tmp_path, totp_obligatoire=False)
+    sec.creer_premier(MDP)
+    c = client(a, LAN)
+    c.post("/api/connexion", json={"mot_de_passe": MDP})
+    assert c.get("/api/compte/profil").json()["profil"]["ton"] == "normal"
+    p = c.post("/api/compte/profil", json={"ton": "concis", "piece": "Salon", "consigne": "tutoie-moi"}).json()["profil"]
+    assert p["ton"] == "concis" and p["piece"] == "Salon"
+    note = note_profil("Principal", p)
+    assert "Principal" in note and "brève" in note and "Salon" in note and "tutoie-moi" in note
+    # un compte non administrateur ne change pas son type
+    machine = client(a, "127.0.0.1")
+    lien = machine.post("/api/comptes", json={"nom": "Invité"}).json()["lien"]
+    c2 = client(a, LAN)
+    c2.post("/api/invitation", json={"invitation": lien.split("invitation=")[1], "mot_de_passe": "mot de passe invité"})
+    c2.post("/api/connexion", json={"identifiant": "invite", "mot_de_passe": "mot de passe invité"})
+    assert c2.post("/api/compte/profil", json={"type": "enfant"}).status_code == 403
+    assert machine.post("/api/comptes/invite/profil", json={"type": "enfant"}).json()["profil"]["type"] == "enfant"
+    assert "enfant" in note_profil("Invité", sec.profil("invite"))
+
+
+# --- ce qui est révélé selon le contexte (t305) -------------------------------------------------------
+def test_contexte_et_masques(tmp_path):
+    a, sec = app(tmp_path, totp_obligatoire=False, proxies_de_confiance=[NPM + "/32"],
+                 reseaux_autorises=["0.0.0.0/0"])
+    sec.creer_premier(MDP)
+    lan = client(a, LAN)
+    lan.post("/api/connexion", json={"mot_de_passe": MDP})
+    ctx = lan.get("/api/appareil").json()
+    assert ctx == {"distant": False, "partage": False, "enfant": False, "masques": []}
+    assert lan.get("/api/actions").status_code == 200
+    # tablette commune : historique masqué
+    assert lan.post("/api/appareil", json={"partage": True}).json()["partage"] is True
+    assert set(lan.get("/api/appareil").json()["masques"]) == {"etat_sensible", "historique", "personnel"}
+    assert lan.get("/api/actions").status_code == 403
+    lan.post("/api/appareil", json={"partage": False})
+    assert lan.get("/api/actions").status_code == 200
+    # depuis Internet (via Cloudflare + NPM) : état des appareils sensibles masqué
+    web = client(a, NPM)
+    h = {"CF-Connecting-IP": "93.184.216.34"}       # adresse publique (AILLEURS est une plage de test)
+    web.post("/api/connexion", json={"mot_de_passe": MDP}, headers=h)
+    assert web.get("/api/appareil", headers=h).json()["masques"] == ["etat_sensible"]
+
+
+def test_matrice_invalide_refusee():
+    from assistant.config import RevelationConfig
+    with pytest.raises(ValueError):
+        RevelationConfig(masquer={"distant": ["mot_de_passe"]})

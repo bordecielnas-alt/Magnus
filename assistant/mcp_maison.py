@@ -61,9 +61,9 @@ def appeler(nom: str, args: dict) -> str:
     conv = os.environ.get("ASSISTANT_CONVERSATION", "")
     with _client() as c:
         if nom == "lister_appareils":
-            r = c.get("/interne/maison/appareils", params={"filtre": args.get("filtre", "")})
+            r = c.get("/interne/maison/appareils", params={"filtre": args.get("filtre", ""), "conversation": conv})
         elif nom == "lire_etat":
-            r = c.get(f"/interne/maison/etat/{args['entity_id']}")
+            r = c.get(f"/interne/maison/etat/{args['entity_id']}", params={"conversation": conv})
         elif nom == "agir":
             r = c.post("/interne/maison/agir", json={**args, "conversation": conv})
         elif nom == "annuler":

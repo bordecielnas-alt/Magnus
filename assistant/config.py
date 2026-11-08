@@ -106,6 +106,11 @@ class MaisonConfig(BaseModel):
     fichier_alias: str = ""                           # vide = <config>/alias_appris.json
     assist_en_secours: bool = True                    # agent Assist de HA si l'appareil n'est pas trouvé
     outils_pour_claude: bool = True                   # Claude reçoit les outils maison (serveur MCP local)
+    # Actions sensibles : l'assistant peut lire leur état mais refuse de les piloter (pour l'instant).
+    # Serrures et alarme sont en plus exclues des domaines autorisés.
+    domaines_sensibles: list[str] = Field(default_factory=lambda: ["climate", "water_heater"])
+    classes_sensibles: list[str] = Field(default_factory=lambda: ["gate", "garage", "door"])   # volets « portail »
+    noms_sensibles: str = r"portail|serrure|verrou|alarme|chauffage|chaudi[eè]re|radiateur|thermostat"
 
     @field_validator("domaines_autorises")
     @classmethod
@@ -114,6 +119,31 @@ class MaisonConfig(BaseModel):
         refuses = sorted(set(v) & interdits)
         if refuses:
             raise ValueError(f"domaines sensibles interdits avant la phase 3 : {refuses}")
+        return v
+
+
+CATEGORIES_REVELATION = {"etat_sensible", "historique", "personnel"}
+
+
+class RevelationConfig(BaseModel):
+    """Ce que l'assistant ne révèle pas selon le contexte de la demande.
+
+    Contextes : « distant » (hors du réseau de la maison), « partage » (appareil marqué partagé, ex. tablette
+    de l'entrée), « enfant » (compte enfant). Catégories : « etat_sensible » (état du chauffage, du portail…),
+    « historique » (actions passées, état de tous les appareils), « personnel » (préférences du profil).
+    """
+    masquer: dict[str, list[str]] = Field(default_factory=lambda: {
+        "distant": ["etat_sensible"],
+        "partage": ["etat_sensible", "historique", "personnel"],
+        "enfant": ["etat_sensible", "historique"],
+    })
+
+    @field_validator("masquer")
+    @classmethod
+    def _categories_connues(cls, v: dict[str, list[str]]) -> dict[str, list[str]]:
+        inconnues = {c for liste in v.values() for c in liste} - CATEGORIES_REVELATION
+        if set(v) - {"distant", "partage", "enfant"} or inconnues:
+            raise ValueError(f"contexte ou catégorie inconnu : {sorted(set(v) - {'distant', 'partage', 'enfant'}) or sorted(inconnues)}")
         return v
 
 
@@ -233,6 +263,7 @@ class Config(BaseModel):
     maison: MaisonConfig = Field(default_factory=MaisonConfig)
     voix: VoixConfig = Field(default_factory=VoixConfig)
     securite: SecuriteConfig = Field(default_factory=SecuriteConfig)
+    revelation: RevelationConfig = Field(default_factory=RevelationConfig)
 
     @model_validator(mode="after")
     def _roles_valides(self) -> "Config":
