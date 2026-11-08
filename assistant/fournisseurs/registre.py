@@ -19,7 +19,7 @@ def _openai(ident: str, fc: FournisseurConfig) -> Fournisseur:
 
 
 def _claude_code(ident: str, fc: FournisseurConfig) -> Fournisseur:
-    return FournisseurClaudeCode(ident, fc.modele, fc.commande, fc.timeout, fc.effort)
+    return FournisseurClaudeCode(ident, fc.modele, fc.commande, fc.timeout, fc.effort, fc.recherche_web)
 
 
 # type (dans la config) -> fabrique

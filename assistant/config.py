@@ -71,6 +71,7 @@ class FournisseurConfig(BaseModel):
     # type claude_code
     commande: str = "claude"
     effort: str = ""
+    recherche_web: bool = True     # Claude peut chercher sur le web (actualité, météo…)
 
     @model_validator(mode="after")
     def _url_si_openai(self) -> "FournisseurConfig":

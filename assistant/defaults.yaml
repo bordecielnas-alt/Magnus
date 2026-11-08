@@ -76,3 +76,5 @@ routeur:
   regles_complexes:
     - '\b(pourquoi|explique|expliquer|analyse|compare|comparer|r[ée]sume|r[ée]sumer|r[ée]dige|[ée]cris|diagnostic|diagnostique|conseille|recommande|planifie|organise)\b'
     - '\b(aide-moi [àa]|comment (faire|fonctionne|marche|r[ée]parer)|quelle est la diff[ée]rence|quels sont les avantages|que penses-tu)\b'
+    # informations récentes : Claude cherche sur le web (le modèle local ne les connaît pas)
+    - '\b(m[ée]t[ée]o|pr[ée]visions?|va-t-il pleuvoir|il va pleuvoir|actu|actualit[ée]s?|infos?|nouvelles|aujourd.hui|ce soir|demain|cette semaine|derni[eè]re?s?|r[ée]cents?|r[ée]centes?|prix|co[uû]te|cours de|horaires?|ouvert le|score|r[ée]sultats?|qui a gagn[ée]|[ée]lections?|programme t[ée]l[ée]|sortie du|cherche sur (internet|le web)|recherche)\b'

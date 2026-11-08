@@ -23,6 +23,8 @@ from .config import Config, charger, charger_secrets, chemin_alias, dossier_etat
 from .fournisseurs import FournisseurIndisponible, Message, Registre, Reponse
 from .home_assistant import HomeAssistant
 from .maison import Maison
+from .maison.historique import Historique
+from .maison.historique import demande as demande_en_cours
 from .maison.alias import AliasAppris
 from .routeur import SIMPLE, Decision, Routeur
 from . import reglages as R
@@ -57,6 +59,7 @@ class DemandeChat(BaseModel):
     role: str = ROLE_AUTO   # "auto" = le routeur choisit
     flux: bool = False
     conversation: str = Field(default="", max_length=64)   # identifiant choisi par la page
+    source: Literal["voix", "texte", "page"] = "texte"       # pour l'historique des actions
 
 
 class Action(BaseModel):
@@ -134,8 +137,10 @@ NOTE_OUTILS_MAISON = (
     "(ou la confirmation pour toute la maison) avant d'appeler agir. "
     "Ne dis jamais qu'une action est faite sans avoir appelé agir et lu sa réponse. Réponds en une phrase courte "
     "qui dit ce que tu as fait (« Projo monté à 100 %. »), sans détailler ce que tu n'as pas changé. "
+    "Pour plusieurs appareils, ne les énumère pas (« C'est éteint. ») ; cite seulement ceux qui ont échoué, "
+    "brièvement. "
     "Les réponses précédentes sur les appareils viennent du module maison et sont fiables. "
-    "Tu n'as aucun autre outil : ni fichiers, ni commandes, ni web."
+    "Tu n'as ni fichiers ni commandes."
 )
 
 
@@ -159,7 +164,9 @@ def creer_app(config: Config | None = None, registre: Registre | None = None,
     routeur = Routeur(cfg.routeur, reg)
     ha = ha or HomeAssistant(cfg.home_assistant)
     extracteur = reg.pour_role(cfg.maison.extracteur) if cfg.maison.extracteur in reg.roles else None
-    maison = Maison(cfg.maison, ha, alias or AliasAppris(chemin_alias(cfg)), extracteur)
+    maison = Maison(cfg.maison, ha, alias or AliasAppris(chemin_alias(cfg)), extracteur,
+                    Historique(chemin_alias(cfg).parent))
+    texte_conversation: dict[str, str] = {}                  # conversation -> dernière demande (historique)
     voix = voix or Voix(cfg.voix)
     securite = securite or Securite(cfg.securite, dossier_etat(cfg))
     reveil = Reveil(cfg.voix.fenetre_s, cfg.voix.toujours_a_l_ecoute)
@@ -332,9 +339,27 @@ def creer_app(config: Config | None = None, registre: Registre | None = None,
             raise HTTPException(404, "appareil inconnu ou non autorisé")
         return e
 
+    @app.get("/api/actions")
+    def historique_actions(limite: int = 50) -> dict:
+        h = maison.historique
+        return {"actions": h.liste(max(1, min(limite, 500))) if h else []}
+
+    @app.post("/api/actions/{ident}/annuler")
+    async def annuler_action(ident: str) -> dict:
+        ok, message = await maison.annuler_action(ident)
+        if not ok:
+            raise HTTPException(404 if message == "action inconnue" else 409, message)
+        journal.info("historique : action %s annulée (%s)", ident, message)
+        return {"ok": True, "message": message}
+
+    @app.get("/api/appareils/etat")
+    async def etat_des_appareils() -> dict:
+        return {"appareils": await maison.etats_appareils()}
+
     @app.post("/interne/maison/agir", include_in_schema=False)
     async def interne_agir(a: Action, x_jeton_interne: str | None = Header(None)) -> dict:
         verifier_jeton(x_jeton_interne)
+        demande_en_cours.set(("claude", texte_conversation.get(a.conversation, "")))
         r = await maison.agir_ids(a.entity_ids, a.action, a.valeur, a.couleur, a.conversation)
         journal.info("outil agir %s %s -> %s", a.action, a.entity_ids, r.texte[:120])
         return {"resultat": r.texte or "Rien n'a été fait.", "entites": r.detail.get("entites", [])}
@@ -566,6 +591,8 @@ def creer_app(config: Config | None = None, registre: Registre | None = None,
 
     @app.post("/api/chat")
     async def chat(d: DemandeChat):
+        demande_en_cours.set((d.source, d.message))
+        texte_conversation[d.conversation] = d.message
         decision = None
         if d.role == ROLE_AUTO and ha.configure and (maison.en_attente(d.conversation) or maison.reconnait(d.message, d.conversation)):
             # Commande de maison reconnue (ou réponse à « Lequel ? ») : inutile de consulter le routeur

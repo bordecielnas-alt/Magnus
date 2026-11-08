@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import re
 import time
 from dataclasses import dataclass, field
@@ -10,6 +11,7 @@ from ..config import MaisonConfig
 from ..fournisseurs import Fournisseur
 from ..home_assistant import HomeAssistant
 from .alias import AliasAppris
+from .historique import Historique
 from .commande import Commande, corriger_verbe, par_modele, par_regles
 from .inventaire import Entite, Inventaire
 from .resolution import resoudre
@@ -166,8 +168,9 @@ VERBES_FAIT = {"allumer": "allumé", "eteindre": "éteint", "ouvrir": "ouvert", 
 
 class Maison:
     def __init__(self, cfg: MaisonConfig, ha: HomeAssistant, alias: AliasAppris,
-                 extracteur: Fournisseur | None = None) -> None:
+                 extracteur: Fournisseur | None = None, historique: Historique | None = None) -> None:
         self.cfg = cfg
+        self.historique = historique
         self.ha = ha
         self.alias = alias
         self.extracteur = extracteur
@@ -455,6 +458,7 @@ class Maison:
             (faits if ok else rates).append(e)
         if faits:
             self._contextes[conversation] = _Contexte(cmd, faits, avant, time.monotonic())
+            await self._noter(faits, cmd.action, avant)
         morceaux = []
         if faits:
             verbe = VERBES_FAIT.get(cmd.action, "fait")
@@ -464,10 +468,12 @@ class Maison:
             if cmd.couleur or cmd.kelvin:
                 details.append(_nom_couleur(cmd))
             val = f" ({', '.join(details)})" if details else ""
-            noms = _noms_courts(faits, maxi=4)
-            morceaux.append(f"C'est {verbe} : {_et(noms)}{val}.")   # « c'est » : pas d'accord à faire
+            if len(faits) == 1:
+                morceaux.append(f"C'est {verbe} : {_et(_noms_courts(faits))}{val}.")   # « c'est » : pas d'accord
+            else:
+                morceaux.append(f"C'est {verbe}{val}.")    # plusieurs appareils : réponse sobre, sans la liste
         if rates:
-            morceaux.append(f"Refusé par Home Assistant : {_et(_noms_courts(rates))}.")
+            morceaux.append(f"Sauf {_et(_noms_courts(rates))} : refusé.")
         if impossibles:
             morceaux.append(f"Impossible sur {_et(_noms_courts(impossibles))}.")
         return ReponseMaison(True, " ".join(morceaux), {"entites": ids, "echecs": [e.entity_id for e in rates]})
@@ -484,6 +490,9 @@ class Maison:
                 continue
             ok = await self.ha.appeler_service(*svc)
             (faits if ok else rates).append(noms.get(s["entity_id"], s["entity_id"]))
+            if ok and self.historique:
+                self.historique.noter(s["entity_id"], noms.get(s["entity_id"], s["entity_id"]), "remettre comme avant",
+                                      s, await self.ha.etat_entite(s["entity_id"]), annulable=False)
         if not faits and not rates:
             return ReponseMaison(True, "Je ne sais pas les remettre comme avant.")
         txt = f"C'est remis comme avant : {', '.join(faits)}." if faits else ""
@@ -502,6 +511,7 @@ class Maison:
                 impossibles.append(e)
         if faits:
             self._contextes_maj(ctx, [x for x in avant if x])
+            await self._noter(faits, "plus" if sens > 0 else "moins", [x for x in avant if x])
         mot = "plus" if sens > 0 else "moins"
         txt = f"{_et(_noms_courts(faits))} : un cran {mot}." if faits else ""
         if impossibles:
@@ -511,6 +521,54 @@ class Maison:
     def _contextes_maj(self, ctx: _Contexte, avant: list[dict]) -> None:
         ctx.avant, ctx.depuis = avant, time.monotonic()
 
+
+    # --- historique des actions et état connu des appareils --------------------------------------
+    async def _noter(self, faits: list[Entite], action: str, avant: list[dict]) -> None:
+        if not self.historique:
+            return
+        par_id = {x["entity_id"]: x for x in avant if x}
+        await asyncio.sleep(0.3)        # laisse Home Assistant prendre en compte le changement
+        for e in faits:
+            apres = await self.ha.etat_entite(e.entity_id)
+            av = par_id.get(e.entity_id)
+            self.historique.noter(e.entity_id, e.libelle, action, av, apres,
+                                  annulable=bool(av and _restauration(av)))
+
+    async def annuler_action(self, ident: str) -> tuple[bool, str]:
+        """Remet l'appareil dans l'état lu juste avant cette action. (False, raison) si impossible."""
+        if not self.historique:
+            return False, "pas d'historique"
+        a = self.historique.trouver(ident)
+        if not a:
+            return False, "action inconnue"
+        if a.get("annulee"):
+            return False, "déjà annulée"
+        if not a.get("annulable") or not a.get("avant"):
+            return False, "cette action ne peut pas être annulée"
+        avant = {"entity_id": a["appareil"], "state": a["avant"]["etat"], "attributes": a["avant"].get("attributs", {})}
+        svc = _restauration(avant)
+        if not svc:
+            return False, "je ne sais pas remettre cet appareil comme avant"
+        actuel = await self.ha.etat_entite(a["appareil"])
+        if not await self.ha.appeler_service(*svc):
+            return False, "refusé par Home Assistant"
+        self.historique.marquer_annulee(ident)
+        await asyncio.sleep(0.3)
+        self.historique.noter(a["appareil"], a["nom"], "annulation", actuel, await self.ha.etat_entite(a["appareil"]),
+                              annulable=bool(actuel and _restauration(actuel)))
+        return True, f"{a['nom']} remis comme avant."
+
+    async def etats_appareils(self) -> list[dict]:
+        """État de tous les appareils : celui de Home Assistant s'il répond, sinon le dernier connu."""
+        if not self.historique:
+            return []
+        try:
+            entites = await self.inventaire.obtenir()
+        except Exception:  # noqa: BLE001 - Home Assistant injoignable : on garde la mémoire
+            entites = []
+        if entites:
+            self.historique.memoriser_tout([(e.entity_id, e.libelle, e.etat) for e in entites])
+        return self.historique.appareils()
 
     # --- opérations utilisées par les outils de Claude (serveur MCP « maison ») -------------
 

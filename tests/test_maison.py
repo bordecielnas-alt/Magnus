@@ -391,7 +391,18 @@ def test_plusieurs_cibles(maison):
     m, ha = maison
     r = dire(m, "éteins le plafonnier et la lumière de la cuisine")
     assert {a[2]["entity_id"] for a in ha.appels} == {"light.plafonnier", "light.cuisine"}
-    assert "Plafonnier" in r.texte and "Lumière cuisine" in r.texte and "%" not in r.texte
+    assert r.texte == "C'est éteint."          # plusieurs appareils : réponse sobre, sans la liste
+
+
+def test_plusieurs_cibles_avec_un_echec(maison):
+    m, ha = maison
+
+    async def refuse_cuisine(domaine, service, donnees):
+        ha.appels.append((domaine, service, donnees))
+        return donnees["entity_id"] != "light.cuisine"
+    ha.appeler_service = refuse_cuisine
+    r = dire(m, "éteins le plafonnier, la lampe sur pied et la lumière de la cuisine")
+    assert r.texte == "C'est éteint. Sauf Lumière cuisine : refusé."
 
 
 def test_plusieurs_cibles_dont_une_introuvable(maison):

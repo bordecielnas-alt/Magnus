@@ -68,10 +68,18 @@ def test_arguments_sans_outils_et_consigne(tmp_path):
     f = Faux(tmp_path, "ok")
     lire(f)
     a = f.args_vus
-    assert a[a.index("--tools") + 1] == ""
+    assert a[a.index("--tools") + 1] == "WebSearch,WebFetch"     # recherche web seulement
+    assert a[a.index("--allowedTools") + 1:a.index("--allowedTools") + 3] == ["WebSearch", "WebFetch"]
     assert "--strict-mcp-config" in a and "--no-session-persistence" in a
     consigne = a[a.index("--system-prompt") + 1]
-    assert consigne.startswith("Tu es Akatosh.") and cc.NOTE_SANS_OUTILS in consigne
+    assert consigne.startswith("Tu es Akatosh.") and cc.NOTE_WEB in consigne
+
+
+def test_arguments_sans_recherche_web():
+    f = cc.FournisseurClaudeCode("claude", "sonnet", recherche_web=False)
+    a = f._arguments("claude", "Tu es X.")
+    assert a[a.index("--tools") + 1] == "" and "--allowedTools" not in a
+    assert cc.NOTE_SANS_OUTILS in a[a.index("--system-prompt") + 1]
     assert a[a.index("--model") + 1] == "sonnet"
 
 

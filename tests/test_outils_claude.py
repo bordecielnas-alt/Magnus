@@ -92,10 +92,11 @@ def test_arguments_avec_outils():
     outils = {"mcp": {"mcpServers": {"maison": {"command": sys.executable}}}, "autoriser": ["mcp__maison"],
               "note": "NOTE OUTILS"}
     a = f._arguments("claude", "Tu es X.", outils)
-    assert a[a.index("--tools") + 1] == ""                     # toujours aucun outil intégré
+    assert a[a.index("--tools") + 1] == "WebSearch,WebFetch"   # recherche web, ni fichiers ni commandes
     assert json.loads(a[a.index("--mcp-config") + 1])["mcpServers"]["maison"]
-    assert a[a.index("--allowedTools") + 1] == "mcp__maison"
-    assert a[a.index("--system-prompt") + 1].endswith("NOTE OUTILS")
+    i = a.index("--allowedTools")
+    assert a[i + 1:i + 4] == ["WebSearch", "WebFetch", "mcp__maison"]
+    assert "NOTE OUTILS" in a[a.index("--system-prompt") + 1]
 
 
 def test_annuler_defait_toutes_les_actions_d_une_demande(tmp_path, monkeypatch):

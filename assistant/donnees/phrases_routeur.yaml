@@ -13,10 +13,11 @@ simple:
   - "Merci !"
   - "Bonne nuit"
   - "La porte du garage est fermée ?"
-  - "Est-ce qu'il va pleuvoir cet après-midi ?"
   - "La lumière de la cuisine est allumée ?"
   - "Coupe la musique"
 complexe:
+  # météo, actualité : Claude cherche sur le web
+  - "Est-ce qu'il va pleuvoir cet après-midi ?"
   - "Explique-moi comment fonctionne une pompe à chaleur"
   - "Pourquoi mon conteneur Plex redémarre en boucle ?"
   - "Résume-moi les news tech du jour"

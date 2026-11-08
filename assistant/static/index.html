@@ -43,7 +43,34 @@
   #etatOrbe { font-style:italic; }
   .meta { display:none; margin:0; font-family:var(--f-mono); font-size:.72rem; color:var(--muted); }
   .meta code { color:var(--fg); }
-  .outils { position:absolute; top:0; right:0; display:flex; gap:6px; }
+  .outils { position:absolute; top:0; right:0; display:flex; gap:6px; z-index:2; }
+  /* épuré : ni titre ni statut, sauf en vue technique ; hors ligne, l'orbe disparaît */
+  .tech-seul { display:none !important; }
+  .tech .tech-seul { display:flex !important; }
+  .tech h1.tech-seul { display:block !important; }
+  .hors-ligne .orbe-cadre { visibility:hidden; }
+  .info { align-self:center; color:var(--muted); font-size:.85rem; font-style:italic; text-align:center; }
+  /* menu Options */
+  form#form { position:relative; }
+  .menu { position:absolute; left:0; bottom:calc(100% + 8px); z-index:5; min-width:260px; max-width:calc(100vw - 32px);
+          background:var(--surface); border:1px solid var(--bord); border-radius:14px; padding:10px 12px; display:grid; gap:6px;
+          box-shadow:0 10px 30px rgba(0,0,0,.6); }
+  .menu[hidden] { display:none; }
+  .titre-menu { margin:4px 0 0; font-size:.72rem; color:var(--muted); text-transform:uppercase; letter-spacing:.06em; }
+  .choix { display:flex; gap:4px; flex-wrap:wrap; }
+  .choix button { border:1px solid var(--bord); background:transparent; color:var(--muted); border-radius:999px; padding:5px 11px; font-size:.85rem; cursor:pointer; }
+  .choix button[aria-pressed="true"] { color:var(--accent); border-color:var(--accent); }
+  .ligne-menu { border:0; border-top:1px solid var(--bord); background:transparent; text-align:left; padding:10px 2px 4px; cursor:pointer; color:var(--fg); }
+  .ligne-menu:hover { color:var(--accent); }
+  #btnOptions { border:0; background:transparent; color:var(--muted); }
+  #btnOptions[aria-expanded="true"] { color:var(--accent); }
+  /* historique des actions */
+  .histo { list-style:none; margin:0 0 12px; padding:0; display:grid; gap:8px; }
+  .histo li { border-bottom:1px solid var(--bord); padding:6px 0; display:grid; grid-template-columns:1fr auto; gap:2px 8px; font-size:.88rem; }
+  .histo small { color:var(--muted); grid-column:1; }
+  .histo .annulee { opacity:.5; text-decoration:line-through; }
+  .histo button { grid-row:1 / span 2; grid-column:2; align-self:center; border:1px solid var(--bord); background:transparent; border-radius:8px; padding:4px 10px; cursor:pointer; color:var(--fg); }
+  dialog select { width:100%; background:var(--bg); border:1px solid var(--bord); border-radius:8px; padding:6px; color:var(--fg); }
   .ico { width:20px; height:20px; fill:none; stroke:currentColor; stroke-width:1.7; stroke-linecap:round; stroke-linejoin:round; display:block; margin:auto; }
   .icone { border:0; background:transparent; border-radius:10px; width:38px; height:38px; cursor:pointer; color:var(--muted); padding:0; }
   .icone:hover { color:var(--fg); }
@@ -145,6 +172,7 @@
   .plein h1 { font-size:1.1rem; opacity:.9; }
   .plein .statut { font-size:.78rem; }
   .plein .historique { display:none !important; }
+  .plein .pied { display:none !important; }   /* en mode orbe : ni heure, ni route, ni durée */
   .plein #fil { justify-content:flex-end; pointer-events:none; }
   .plein #fil > * { pointer-events:auto; }
   .plein #fil > .msg:not(.dernier):not(.avant-dernier) { display:none !important; }
@@ -159,16 +187,12 @@
   .nav-tel { display:none; }
   @media (max-width:640px) {
     main { gap:8px; }
-    .outils, .aide { display:none !important; }
+
     h1 { font-size:1.3rem; }
     .orbe-cadre { width:min(120px, 34vw, 18vh); height:min(120px, 34vw, 18vh); }
     .lui { font-size:1rem; }
     .roles button { padding:4px 7px; }
     .barre { gap:2px; } .barre .rond { width:34px; height:34px; }
-    .nav-tel { display:grid; grid-template-columns:repeat(4, 1fr); gap:4px; padding-top:2px; }
-    .nav-tel button { border:0; background:transparent; color:var(--muted); display:grid; justify-items:center; gap:2px; padding:6px 0; cursor:pointer; line-height:1.2; }
-    .nav-tel button span { font-size:.7rem; }
-    .nav-tel button[aria-pressed="true"] { color:var(--accent); }
     .plein .lui { max-height:30vh; }
   }
   @media (max-width:360px) { .roles button { padding:4px 4px; font-size:.74rem; } }
@@ -211,51 +235,54 @@
 <main id="page">
   <header>
     <div class="orbe-cadre"><canvas class="orbe" id="orbe" aria-hidden="true"></canvas></div>
-    <h1 id="nom">…</h1>
-    <p class="statut"><span class="pastille" id="pastille" aria-hidden="true"></span><span id="connexion">Connexion…</span>·<span id="etatOrbe">au repos</span></p>
+    <h1 id="nom" class="tech-seul">…</h1>
+    <p class="statut tech-seul"><span class="pastille" id="pastille" aria-hidden="true"></span><span id="connexion">Connexion…</span>·<span id="etatOrbe">au repos</span></p>
     <p class="veille" id="veille"><span class="oreille" aria-hidden="true"></span><span id="veilleTexte">À l'écoute</span><span class="entendu" id="entendu"></span><button type="button" id="btnEndormir" hidden>Endormir</button></p>
     <p class="meta">Wake word : <code id="wake">…</code> · <span id="version"></span> · <span id="modeles">modèles…</span></p>
     <div class="outils">
-      <button type="button" class="icone" id="btnPlein" title="Orbe plein écran (Échap pour sortir)" aria-label="Orbe plein écran" aria-pressed="false"><svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5"/></svg></button>
-      <button type="button" class="icone" id="btnTech" title="Vue technique : tout le fil, routes, modèles et durées" aria-label="Vue technique" aria-pressed="false"><svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><path d="M8 7l-5 5 5 5M16 7l5 5-5 5"/></svg></button>
-      <button type="button" class="icone" id="reglagesOrbe" title="Réglages (orbe, voix)" aria-label="Réglages"><svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h9M17 7h3M4 17h3M11 17h9"/><circle cx="15" cy="7" r="2"/><circle cx="9" cy="17" r="2"/></svg></button>
+      <button type="button" class="icone" id="btnEcran" title="Plein écran" aria-label="Plein écran"></button>
     </div>
   </header>
 
   <div id="fil" aria-live="polite">
-    <div class="accueil" id="accueil">
-      <p id="salut">Que puis-je faire pour toi ?</p>
-      <div class="suggestions">
-        <button type="button">Quelles lumières sont allumées ?</button>
-        <button type="button">Qu'est-ce que tu sais faire ?</button>
-        <button type="button">Pourquoi la mer est salée ?</button>
-      </div>
-    </div>
   </div>
   <button type="button" class="puce historique" id="btnHisto" hidden>Voir toute la conversation</button>
 
   <form id="form">
     <textarea id="saisie" rows="1" autocomplete="off" placeholder="Écris un message…" aria-label="Message"></textarea>
     <div class="barre">
-      <div class="roles" id="roles" role="group" aria-label="Rôle du modèle" title="Auto : le routeur choisit. Rapide ou Raisonnement : forcé à la main">
-        <button type="button" data-role="auto" aria-pressed="true">Auto</button>
-        <button type="button" data-role="rapide" aria-pressed="false">Rapide</button>
-        <button type="button" data-role="raisonnement" aria-pressed="false">Raisonnement</button>
-      </div>
+      <button type="button" class="rond" id="btnOptions" title="Options : affichage, historique, réglages" aria-label="Options" aria-haspopup="true" aria-expanded="false"><svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><circle cx="5" cy="12" r="1.3"/><circle cx="12" cy="12" r="1.3"/><circle cx="19" cy="12" r="1.3"/></svg></button>
       <span class="espace"></span>
       <button type="button" class="rond" id="btnMuet" title="Couper la voix de l'assistant" aria-label="Couper la voix" aria-pressed="false"></button>
       <button type="button" class="rond" id="micro" title="Parler : je m'arrête tout seul quand tu te tais (re-clic pour arrêter)" aria-label="Parler"><svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3a3 3 0 0 0-3 3v6a3 3 0 0 0 6 0V6a3 3 0 0 0-3-3z"/><path d="M19 11a7 7 0 0 1-14 0"/><path d="M12 18v3"/></svg></button>
       <button class="rond" id="envoyer" title="Envoyer (Entrée)" aria-label="Envoyer"><svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 19V5"/><path d="M6 11l6-6 6 6"/></svg></button>
     </div>
+    <div class="menu" id="menuOptions" role="menu" hidden>
+      <p class="titre-menu">Affichage</p>
+      <div class="choix" id="choixVue">
+        <button type="button" data-vue="orbe" aria-pressed="false">Orbe</button>
+        <button type="button" data-vue="conv" aria-pressed="false">Conversation</button>
+        <button type="button" data-vue="tech" aria-pressed="false">Technique</button>
+      </div>
+      <p class="titre-menu">Modèle pour le prochain message</p>
+      <div class="choix" id="roles" role="group" aria-label="Rôle du modèle" title="Auto : le routeur choisit. Rapide ou Raisonnement : seulement pour le prochain message">
+        <button type="button" data-role="auto" aria-pressed="true">Auto</button>
+        <button type="button" data-role="rapide" aria-pressed="false">Rapide</button>
+        <button type="button" data-role="raisonnement" aria-pressed="false">Raisonnement</button>
+      </div>
+      <button type="button" class="ligne-menu" id="ouvrirHisto">Historique des actions</button>
+      <button type="button" class="ligne-menu" id="reglagesOrbe">Réglages</button>
+    </div>
   </form>
-  <p class="aide"><span class="aide-texte">Entrée pour envoyer · Maj+Entrée pour aller à la ligne</span><span class="astuce-plein">Clique sur l'orbe pour ne garder qu'elle · Échap pour sortir</span></p>
-  <nav class="nav-tel" id="navTel" aria-label="Vues">
-    <button type="button" data-vue="orbe" aria-pressed="false"><svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="8"/><circle cx="12" cy="12" r="3"/></svg><span>Orbe</span></button>
-    <button type="button" data-vue="conv" aria-pressed="false"><svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16M4 12h11M4 17h7"/></svg><span>Conversation</span></button>
-    <button type="button" data-vue="tech" aria-pressed="false"><svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><path d="M8 7l-5 5 5 5M16 7l5 5-5 5"/></svg><span>Technique</span></button>
-    <button type="button" data-vue="reglages" aria-pressed="false"><svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h9M17 7h3M4 17h3M11 17h9"/><circle cx="15" cy="7" r="2"/><circle cx="9" cy="17" r="2"/></svg><span>Réglages</span></button>
-  </nav>
 </main>
+<dialog id="dlgHisto">
+  <form method="dialog">
+    <h2>Historique des actions</h2>
+    <p class="note" id="histoNote">Chargement…</p>
+    <ul class="histo" id="histoListe"></ul>
+    <div class="actions"><button type="button" class="discret" id="histoRafraichir">Actualiser</button><button value="ok">Fermer</button></div>
+  </form>
+</dialog>
 <dialog id="dlgOrbe">
   <form method="dialog">
     <h2>Réglages</h2>
@@ -264,6 +291,12 @@
     <label class="ligne" for="rgTrainees">Traînées (à gauche : particules nettes)<input type="range" id="rgTrainees" min="0" max="12" step="1"></label>
     <label class="ligne" for="rgBrume">Brume<input type="range" id="rgBrume" min="0" max="100"></label>
     <label class="case"><input type="checkbox" id="lireTout"> Lire aussi à voix haute les réponses aux messages écrits</label>
+    <fieldset>
+      <legend>Écran</legend>
+      <label class="ligne" for="rotation">Orientation
+        <select id="rotation"><option value="0">Normale</option><option value="90">Tournée d'un quart (90°)</option><option value="180">À l'envers (180°)</option><option value="270">Tournée de trois quarts (270°)</option></select></label>
+      <label class="case"><input type="checkbox" id="miroir"> Mode miroir (écriture inversée, pour un reflet ou un affichage tête haute)</label>
+    </fieldset>
     <fieldset>
       <legend>Voix</legend>
       <div class="voix" id="listeVoix" role="radiogroup" aria-label="Voix de l'assistant"></div>
@@ -329,41 +362,118 @@ $('rgParticules').oninput = e => { reglagesOrbe.particules = +e.target.value; ap
 $('rgBrume').oninput = e => { reglagesOrbe.brume = +e.target.value; appliquerOrbe(); };
 $('rgTrainees').oninput = e => { reglagesOrbe.trainees = +e.target.value; appliquerOrbe(); };
 $('orbeDefaut').onclick = () => { reglagesOrbe = {...ORBE_DEFAUT}; appliquerOrbe(); };
-$('reglagesOrbe').onclick = () => $('dlgOrbe').showModal();
+$('reglagesOrbe').onclick = () => { fermerMenu(); $('dlgOrbe').showModal(); };
+
+// ----- Historique des actions sur la maison (avec annulation) -----
+async function chargerHisto() {
+  $('histoNote').textContent = 'Chargement…'; $('histoListe').innerHTML = '';
+  try {
+    const r = await fetch('/api/actions?limite=50', {cache: 'no-store'});
+    if (r.status === 404) { $('histoNote').textContent = 'Pas encore disponible : le serveur doit être mis à jour.'; return; }
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    const {actions = []} = await r.json();
+    $('histoNote').textContent = actions.length ? '' : 'Aucune action pour l\'instant.';
+    for (const a of actions) {
+      const li = document.createElement('li');
+      const quand = new Date(a.heure).toLocaleString('fr-FR', {weekday: 'short', hour: '2-digit', minute: '2-digit'});
+      const etat = (x) => x && x.etat != null ? x.etat : '?';
+      li.innerHTML = '<span></span><small></small>';
+      li.firstChild.textContent = (a.nom || a.appareil || 'Action') + ' : ' + etat(a.avant) + ' → ' + etat(a.apres);
+      li.children[1].textContent = quand + (a.texte ? ' · « ' + a.texte + ' »' : '') + (a.annulee ? ' · annulée' : '');
+      if (a.annulee) li.firstChild.classList.add('annulee');
+      if (a.annulable && !a.annulee) {
+        const b = document.createElement('button'); b.type = 'button'; b.textContent = 'Annuler';
+        b.onclick = async () => {
+          b.disabled = true; b.textContent = '…';
+          try {
+            const r2 = await fetch('/api/actions/' + encodeURIComponent(a.id) + '/annuler', {method: 'POST'});
+            const o = await r2.json().catch(() => ({}));
+            diag('historique : annulation ' + a.id + ' → HTTP ' + r2.status);
+            if (!r2.ok) throw new Error(o.detail || 'HTTP ' + r2.status);
+            chargerHisto();
+          } catch (e) { b.disabled = false; b.textContent = 'Annuler'; $('histoNote').textContent = 'Annulation impossible : ' + e.message; }
+        };
+        li.appendChild(b);
+      }
+      $('histoListe').appendChild(li);
+    }
+  } catch (e) { $('histoNote').textContent = 'Historique injoignable (' + e.message + ').'; }
+}
+$('ouvrirHisto').onclick = () => { fermerMenu(); $('dlgHisto').showModal(); chargerHisto(); };
+$('histoRafraichir').onclick = chargerHisto;
+
+// ----- Écran : rotation et miroir (pour un écran posé de côté, à l'envers, ou un reflet) -----
+const affichage = {rot: 0, miroir: false};
+try { Object.assign(affichage, JSON.parse(localStorage.getItem('affichage') || '{}')); } catch (e) {}
+function appliquerAffichage() {
+  const b = document.body.style, r = +affichage.rot || 0, m = affichage.miroir;
+  if (r === 90 || r === 270) {
+    Object.assign(b, {position: 'fixed', top: '0', left: '0', width: '100vh', height: '100vw', transformOrigin: '0 0'});
+    b.transform = (r === 90 ? 'translateX(100vw) rotate(90deg)' : 'translateY(100vh) rotate(-90deg)') + (m ? ' translateX(100vh) scaleX(-1)' : '');
+  } else {
+    Object.assign(b, {position: '', top: '', left: '', width: '', height: '', transformOrigin: '50% 50%'});
+    b.transform = ((r === 180 ? 'rotate(180deg) ' : '') + (m ? 'scaleX(-1)' : '')).trim();
+  }
+  // les fenêtres (réglages, historique) s'affichent au-dessus de la page : même rotation pour elles
+  for (const d of document.querySelectorAll('dialog')) d.style.transform = ((r ? 'rotate(' + r + 'deg) ' : '') + (m ? 'scaleX(-1)' : '')).trim();
+  $('rotation').value = String(r); $('miroir').checked = !!m;
+  redimensionner();
+}
+$('rotation').onchange = () => { affichage.rot = +$('rotation').value; enregistrerAffichage(); };
+$('miroir').onchange = () => { affichage.miroir = $('miroir').checked; enregistrerAffichage(); };
+function enregistrerAffichage() { try { localStorage.setItem('affichage', JSON.stringify(affichage)); } catch (e) {} appliquerAffichage(); }
 appliquerOrbe();
 
 // ----- Vues : conversation, orbe plein écran, technique (gardée dans ce navigateur) -----
 const VUES = ['orbe', 'conv', 'tech'];
-let vue = 'conv', toutVoir = false;
-try { vue = localStorage.getItem('chat.vue') || 'conv'; } catch (e) {}
+// par défaut : l'orbe (clé nouvelle, pour que l'ancien choix « conversation » ne prenne pas le dessus)
+let vue = 'orbe', toutVoir = false;
+try { vue = localStorage.getItem('chat.vue2') || 'orbe'; } catch (e) {}
 function redimensionner() { dispatchEvent(new Event('resize')); setTimeout(() => dispatchEvent(new Event('resize')), 420); }
-function appliquerVue(v, sansPleinEcran) {
-  if (!VUES.includes(v)) v = 'conv';
-  const etaitOrbe = vue === 'orbe';
+function appliquerVue(v) {
+  if (!VUES.includes(v)) v = 'orbe';
   vue = v;
   const p = $('page');
   p.classList.toggle('tech', v === 'tech'); p.classList.toggle('plein', v === 'orbe'); p.classList.remove('zen');
-  $('btnTech').setAttribute('aria-pressed', String(v === 'tech'));
-  $('btnPlein').setAttribute('aria-pressed', String(v === 'orbe'));
-  for (const b of $('navTel').children) b.setAttribute('aria-pressed', String(b.dataset.vue === v));
-  try { localStorage.setItem('chat.vue', v); } catch (e) {}
-  // vrai plein écran du navigateur quand il le permet (sinon l'orbe remplit simplement la page)
-  if (!sansPleinEcran) {
-    try {
-      if (v === 'orbe' && !document.fullscreenElement) document.documentElement.requestFullscreen?.().catch(() => {});
-      else if (etaitOrbe && v !== 'orbe' && document.fullscreenElement) document.exitFullscreen?.().catch(() => {});
-    } catch (e) {}
-  }
+  for (const b of $('choixVue').children) b.setAttribute('aria-pressed', String(b.dataset.vue === v));
+  try { localStorage.setItem('chat.vue2', v); } catch (e) {}
   redimensionner(); defiler();
 }
-$('btnTech').onclick = () => appliquerVue(vue === 'tech' ? 'conv' : 'tech');
-$('btnPlein').onclick = () => appliquerVue(vue === 'orbe' ? 'conv' : 'orbe');
-$('navTel').onclick = ev => {
+$('choixVue').onclick = ev => {
   const b = ev.target.closest('button'); if (!b) return;
-  if (b.dataset.vue === 'reglages') $('dlgOrbe').showModal(); else appliquerVue(b.dataset.vue);
+  appliquerVue(b.dataset.vue); fermerMenu();
 };
+
+// Bouton en haut à droite : plein écran du navigateur, ou revenir. Sans plein écran possible
+// (iPhone), il bascule entre l'orbe et la conversation.
+const ICONE_PLEIN = '<svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5"/></svg>';
+const ICONE_REVENIR = '<svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><path d="M9 4v5H4M15 4v5h5M9 20v-5H4M15 20v-5h5"/></svg>';
+const pleinEcranPossible = !!(document.documentElement.requestFullscreen && document.fullscreenEnabled !== false);
+function majBoutonEcran() {
+  const dedans = pleinEcranPossible ? !!document.fullscreenElement : vue === 'orbe';
+  $('btnEcran').innerHTML = dedans ? ICONE_REVENIR : ICONE_PLEIN;
+  $('btnEcran').title = dedans ? 'Revenir' : 'Plein écran';
+  $('btnEcran').setAttribute('aria-label', $('btnEcran').title);
+}
+$('btnEcran').onclick = () => {
+  if (!pleinEcranPossible) { appliquerVue(vue === 'orbe' ? 'conv' : 'orbe'); majBoutonEcran(); return; }
+  if (document.fullscreenElement) document.exitFullscreen().catch(() => {});
+  else document.documentElement.requestFullscreen().catch(() => {});
+};
+document.addEventListener('fullscreenchange', () => { majBoutonEcran(); redimensionner(); });
+majBoutonEcran();
+
+// Menu Options
+function fermerMenu() { $('menuOptions').hidden = true; $('btnOptions').setAttribute('aria-expanded', 'false'); }
+$('btnOptions').onclick = ev => {
+  ev.stopPropagation();
+  const ouvrir = $('menuOptions').hidden;
+  $('menuOptions').hidden = !ouvrir; $('btnOptions').setAttribute('aria-expanded', String(ouvrir));
+};
+document.addEventListener('click', ev => { if (!$('menuOptions').hidden && !ev.target.closest('#menuOptions, #btnOptions')) fermerMenu(); });
+addEventListener('keydown', ev => { if (ev.key === 'Escape') fermerMenu(); });
 $('orbe').addEventListener('click', () => { if (vue === 'orbe') $('page').classList.toggle('zen'); });
-addEventListener('keydown', ev => { if (ev.key === 'Escape' && vue === 'orbe' && !$('dlgOrbe').open) appliquerVue('conv'); });
+
 $('btnHisto').onclick = () => {
   toutVoir = !toutVoir; $('page').classList.toggle('tout', toutVoir);
   $('btnHisto').textContent = toutVoir ? 'Revenir au dernier échange' : 'Voir toute la conversation';
@@ -381,7 +491,8 @@ $('page').addEventListener('touchend', ev => {
   if (Math.abs(dx) > 60 && Math.abs(dx) > Math.abs(dy) * 1.5)
     appliquerVue(VUES[Math.max(0, Math.min(2, VUES.indexOf(vue) + (dx < 0 ? 1 : -1)))]);
 });
-appliquerVue(vue, true);
+appliquerVue(vue);
+appliquerAffichage();
 
 // ----- Rôle du modèle -----
 // Rapide ou Raisonnement ne valent que pour le message suivant : la page revient sur Auto après chaque envoi.
@@ -410,18 +521,27 @@ $('saisie').addEventListener('keydown', ev => {
   if (ev.key === 'Enter' && !ev.shiftKey && !ev.isComposing) { ev.preventDefault(); $('form').requestSubmit(); }
 });
 
-fetch('/api/info').then(r => r.json()).then(i => {
-  nom = i.nom;
-  document.title = i.nom;
-  $('nom').textContent = i.nom;
-  $('wake').textContent = i.wake_word;
-  $('version').textContent = 'v' + i.version;
-  $('saisie').placeholder = 'Écris à ' + i.nom + '…';
-  $('pastille').className = 'pastille ok'; $('connexion').textContent = 'En ligne';
-}).catch(() => {
-  $('nom').textContent = 'Orchestrateur injoignable';
-  $('pastille').className = 'pastille ko'; $('connexion').textContent = 'Hors ligne';
-});
+// En ligne : l'orbe est là. Hors ligne : elle disparaît (vérifié toutes les 15 s).
+let enLigne = null;
+function verifierEnLigne() {
+  fetch('/api/info', {cache: 'no-store'}).then(r => { if (!r.ok) throw new Error(r.status); return r.json(); }).then(i => {
+    nom = i.nom;
+    document.title = i.nom;
+    $('nom').textContent = i.nom;
+    $('wake').textContent = i.wake_word;
+    $('version').textContent = 'v' + i.version;
+    $('saisie').placeholder = 'Écris à ' + i.nom + '…';
+    $('pastille').className = 'pastille ok'; $('connexion').textContent = 'En ligne';
+    if (enLigne !== true) diag('serveur : en ligne');
+    enLigne = true; $('page').classList.remove('hors-ligne');
+  }).catch(() => {
+    $('nom').textContent = 'Orchestrateur injoignable';
+    $('pastille').className = 'pastille ko'; $('connexion').textContent = 'Hors ligne';
+    if (enLigne !== false) diag('serveur : hors ligne');
+    enLigne = false; $('page').classList.add('hors-ligne');
+  });
+}
+verifierEnLigne(); setInterval(verifierEnLigne, 15000);
 
 fetch('/api/fournisseurs').then(r => r.json()).then(e => {
   $('modeles').textContent = e.fournisseurs
@@ -464,10 +584,6 @@ function miseEnForme(t) {
 }
 function duree(ms) { return ms >= 1000 ? (ms / 1000).toFixed(1).replace('.', ',') + ' s' : Math.round(ms) + ' ms'; }
 
-$('fil').addEventListener('click', ev => {
-  const s = ev.target.closest('.suggestions button');
-  if (s) demander(s.textContent, false);
-});
 
 $('form').addEventListener('submit', ev => {
   ev.preventDefault();
@@ -480,7 +596,36 @@ $('form').addEventListener('submit', ev => {
 // File d'attente : un message envoyé pendant une réponse (clavier ou voix) s'affiche tout de suite
 // « en attente », puis il est traité à son tour, dans l'ordre.
 const file = [];
+// « Tais-toi », « silence », « mute »… coupent la voix ; « parle », « remets le son »… la remettent.
+// Phrase entière seulement (« parle-moi de la mer » reste une vraie question). Rien ne part au serveur.
+function normaliser(t) { return t.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/[^a-z0-9 ]+/g, ' ').replace(/\s+/g, ' ').trim(); }
+const PHRASES_MUET = /^(?:(?:s il te plait|stp) )?(?:tais toi|taisez vous|tais toi s il te plait|silence|chut+|mute|muet|sourdine|coupe (?:le |ton |la )?(?:son|voix)|arrete de parler|stop la voix|mode silencieux|ferme la)(?: s il te plait| stp)?$/;
+const PHRASES_SON = /^(?:(?:s il te plait|stp) )?(?:parle|tu peux parler|tu peux reparler|reparle|unmute|reactive (?:le |ton |la )?(?:son|voix)|remets? (?:le |ton |la )?(?:son|voix)|rallume (?:le |ton |la )?(?:son|voix)|enleve la sourdine|mode vocal)(?: s il te plait| stp)?$/;
+function commandeVoix(message) {
+  let t = normaliser(message);
+  // « <nom>, tais-toi » : on enlève le nom ou le mot de réveil en tête
+  for (const n of [nom, continu.wake, $('wake').textContent]) {
+    const k = n ? normaliser(n) : '';
+    if (k && t.startsWith(k + ' ')) { t = t.slice(k.length + 1); break; }
+  }
+  if (PHRASES_MUET.test(t)) {
+    diag('voix : coupée par la commande « ' + message + ' »');
+    if (!muet) $('btnMuet').click(); else couperLecture();
+    bulle('moi', message); bulle('info', 'Voix coupée. Dis « parle » ou touche le haut-parleur pour la remettre.');
+    return true;
+  }
+  if (PHRASES_SON.test(t)) {
+    diag('voix : remise par la commande « ' + message + ' »');
+    if (muet) $('btnMuet').click();
+    bulle('moi', message); bulle('info', 'Voix remise.');
+    direAVoixHaute('D\'accord.');
+    return true;
+  }
+  return false;
+}
+
 function demander(message, vocal) {
+  if (commandeVoix(message)) return null;
   const r = role;
   if (r !== 'auto') choisirRole('auto');
   if (occupe || file.length) {
@@ -515,7 +660,7 @@ async function traiter(message, vocal, role = 'auto') {
   try {
     const r = await fetch('/api/chat', {
       method: 'POST', headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({message, historique, flux: true, role, conversation}),
+      body: JSON.stringify({message, historique, flux: true, role, conversation, source: vocal ? 'voix' : 'texte'}),
     });
     if (!r.ok) throw new Error((await r.json()).detail || r.statusText);
     const lecteur = r.body.getReader();
@@ -1286,14 +1431,17 @@ function analyserContinu() {
     }
     if (!continu.rec) lancer();
     const son = m > 12;
-    $('veille').classList.toggle('son', son);
+    $('veille').classList.toggle('son', son && (continu.toujours || continu.fin > Date.now()));
     // Réaction immédiate : au moindre son, l'orbe passe en écoute et suit le volume
     if (son) {
       dernierSon = t; finSonVisible = t + 600;
       if (!enMorceau) { enMorceau = true; debut = t; }
-      if (!occupe && orbe.etatCourant !== 'ecoute') orbe.etat('ecoute');
-      sonVisible = true;
-      orbe.impulsion(Math.round(m / 5));
+      // l'orbe ne s'anime en écoute que si elle est réveillée (mot de réveil entendu, ou toujours à l'écoute)
+      if (continu.toujours || continu.fin > Date.now()) {
+        if (!occupe && orbe.etatCourant !== 'ecoute') orbe.etat('ecoute');
+        sonVisible = true;
+        orbe.impulsion(Math.round(m / 5));
+      }
     } else if (sonVisible && t > finSonVisible) {
       sonVisible = false;
       if (!occupe && !(continu.fin > Date.now()) && !continu.toujours) orbe.etat('repos');

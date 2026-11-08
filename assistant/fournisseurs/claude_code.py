@@ -35,6 +35,15 @@ NOTE_SANS_OUTILS = (
     "ni naviguer sur le web. Les informations techniques ajoutées sur ta machine d'exécution "
     "(dossier, système, shell) ne concernent pas l'utilisateur : n'en parle pas."
 )
+# Recherche web : seuls outils intégrés autorisés (ni fichiers ni commandes)
+OUTILS_WEB = ["WebSearch", "WebFetch"]
+NOTE_WEB = (
+    "Tu peux chercher sur le web (WebSearch, WebFetch) : fais-le pour l'actualité, la météo, les horaires, les "
+    "prix, les résultats sportifs ou toute information récente ou que tu ne connais pas avec certitude. "
+    "Sinon réponds directement, sans chercher. Donne le résultat en une ou deux phrases, sans liste de liens. "
+    "Tu ne peux ni exécuter de commande, ni lire ou écrire de fichier. Les informations techniques ajoutées "
+    "sur ta machine d'exécution (dossier, système, shell) ne concernent pas l'utilisateur : n'en parle pas."
+)
 
 
 def resoudre_binaire(commande: str) -> str | None:
@@ -81,8 +90,10 @@ class FournisseurClaudeCode(Fournisseur):
         commande: str = "claude",
         timeout: float = 120,
         effort: str = "",
+        recherche_web: bool = True,
     ) -> None:
         super().__init__(ident, modele)
+        self.recherche_web = recherche_web
         self.commande = commande
         self.timeout = timeout
         self.effort = effort
@@ -93,15 +104,21 @@ class FournisseurClaudeCode(Fournisseur):
         args = [
             binaire, "-p",
             "--output-format", "stream-json", "--verbose", "--include-partial-messages",
-            "--tools", "",                 # aucun outil intégré : pas de fichiers, pas de commandes
+            # outils intégrés : la recherche web au plus, jamais de fichiers ni de commandes
+            "--tools", ",".join(OUTILS_WEB) if self.recherche_web else "",
             "--strict-mcp-config",         # seulement les serveurs MCP passés ici (les outils maison)
             "--setting-sources", "",       # ignore les réglages utilisateur et projet
             "--no-session-persistence",
             "--model", self.modele,
         ]
+        autoriser = (OUTILS_WEB if self.recherche_web else []) + (outils["autoriser"] if outils else [])
         if outils:
-            args += ["--mcp-config", json.dumps(outils["mcp"]), "--allowedTools", *outils["autoriser"]]
-        note = outils["note"] if outils else NOTE_SANS_OUTILS
+            args += ["--mcp-config", json.dumps(outils["mcp"])]
+        if autoriser:
+            args += ["--allowedTools", *autoriser]
+        note = NOTE_WEB if self.recherche_web else NOTE_SANS_OUTILS
+        if outils:
+            note = outils["note"] + "\n\n" + (NOTE_WEB if self.recherche_web else "")
         args += ["--system-prompt", (systeme + "\n\n" + note).strip()]
         if self.effort:
             args += ["--effort", self.effort]
