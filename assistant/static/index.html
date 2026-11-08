@@ -1057,6 +1057,8 @@ function arreter() { if (enregistreur && enregistreur.state === 'recording') enr
 
 // Volume du micro en dBFS (0 = saturation). Une voix normale près du téléphone donne environ
 // -30 à -12 dBFS en crête ; sous -40 c'est trop faible pour une bonne transcription.
+// crête du micro (0 à 128) → force du scintillement de l'orbe (0 à 1), sous le bruit de fond : rien
+function niveauScintille(m) { return Math.max(0, Math.min(1, (m - 5) / 45)); }
 function mesureVolume() {
   const db = x => x > 0 ? 20 * Math.log10(x) : -100;
   let picS = 0, rmsS = 0, picT = 0, sommeParole = 0, nParole = 0, sature = 0;
@@ -1093,6 +1095,7 @@ function suivreVolume(flux, reessai) {
       let m = 0; for (const v of buf) m = Math.max(m, Math.abs(v - 128));
       const t = performance.now();
       if (m > 14) { aParle = true; dernierSon = t; orbe.impulsion(Math.round(m / 6)); }
+      orbe.son?.(niveauScintille(m));
       picDiag = Math.max(picDiag, m);
       if (ctx.state === 'running') { an.getFloatTimeDomainData(fbuf); vol.ajouter(fbuf); }
       if (t - dernierDiag > 1000) { diag('dictée : ' + vol.seconde() + ' (contexte ' + ctx.state + ', piste ' + (flux.getAudioTracks()[0]?.muted ? 'muette' : 'ok') + ')'); picDiag = 0; dernierDiag = t; }
@@ -1498,6 +1501,7 @@ function analyserContinu() {
     an.getByteTimeDomainData(buf);
     let m = 0; for (const v of buf) m = Math.max(m, Math.abs(v - 128));
     picC = Math.max(picC, m);
+    orbe.son?.(niveauScintille(m));
     if (!vivantC && ctx.state === 'running') {
       debutC = debutC || t;
       an.getFloatTimeDomainData(fbufC);

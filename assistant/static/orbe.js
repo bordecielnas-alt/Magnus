@@ -129,7 +129,8 @@ void main(){
 
   let ecole = ECOLES[opts.ecole] ? opts.ecole : "givre", etat = "repos";
   // valeurs lissées
-  const L = { vit: .5, rayon: .78, aspir: 0, eclat: .75, rouge: 0, voix: 0 };
+  const L = { vit: .5, rayon: .78, aspir: 0, eclat: .75, rouge: 0, voix: 0, son: 0 };
+  let sonCible = 0;   // niveau du micro (0 à 1), donné par la page à chaque image
   let cible = Object.assign({}, ETATS.repos);
   let nbPart = opts.particules ?? 80, vapeur = opts.brume ?? .75, activite = 0;
   // longueur des traînées : nombre d'images gardées derrière chaque particule (0 = particules nettes)
@@ -204,9 +205,13 @@ void main(){
     L.rouge += ((etat === "erreur" ? 1 : 0) - L.rouge) * k;
     const v = etat === "parole" ? voix(dt) * (.35 + .65 * Math.min(1, activite)) : 0;
     L.voix += (v - L.voix) * Math.min(1, dt * 20);
+    // scintillement léger quand le micro capte du son (sans lancer l'animation d'écoute)
+    sonCible = Math.max(0, sonCible - dt * 3);
+    L.son += ((etat === "parole" ? 0 : sonCible) - L.son) * Math.min(1, dt * 14);
 
     const C = couleurs(), E = ECOLES[ecole], cx = W / 2, cy = W / 2, R = W * .3;
     let vacille = etat === "erreur" ? (Math.random() < .08 ? .35 : 1) : 1;
+    if (L.son > .01) vacille *= 1 + L.son * (.1 + .22 * Math.random());
     const souffle = 1 + Math.sin(temps * (etat === "reflexion" ? 5 : 1.6)) * .05 + L.voix * .22;
     const jit = etat === "erreur" ? (Math.random() - .5) * W * .006 : 0;
 
@@ -447,6 +452,7 @@ void main(){
       etat = e; cible = Object.assign({}, ETATS[e]);
     },
     get etatCourant() { return etat; },
+    son(n = 0) { sonCible = Math.max(sonCible, Math.max(0, Math.min(1, +n || 0))); },
     impulsion(n = 1) { activite = Math.min(1.5, activite + .25 + Math.min(n, 40) / 40); },
     reglages(r = {}) {
       if (r.ecole && ECOLES[r.ecole]) { ecole = r.ecole; for (const p of parts) p.dy = 0; }

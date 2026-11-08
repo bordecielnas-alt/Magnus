@@ -115,12 +115,18 @@ class UnraidDocker(Docker):
     dans l'API : le diagnostic se limite à l'état, au statut et au démarrage automatique.
     """
 
-    REQUETE = "query { dockerContainers { id names state status autoStart image } }"
-    REQUETE_MINIMALE = "query { dockerContainers { id names state status autoStart } }"
+    # Le schéma a changé selon les versions d'Unraid : on essaie dans l'ordre, la première qui passe est gardée.
+    REQUETES = [
+        ("docker.containers", "query { docker { containers { id names state status autoStart image } } }"),
+        ("docker.containers", "query { docker { containers { id names state status autoStart } } }"),
+        ("dockerContainers", "query { dockerContainers { id names state status autoStart image } }"),
+        ("dockerContainers", "query { dockerContainers { id names state status autoStart } }"),
+    ]
 
     def __init__(self, url: str, cle: str, timeout: float = 8, transport: httpx.AsyncBaseTransport | None = None) -> None:
         super().__init__(url, timeout, transport)
         self.cle = cle
+        self._requete: tuple[str, str] | None = None
 
     @property
     def configure(self) -> bool:
@@ -143,19 +149,39 @@ class UnraidDocker(Docker):
                              headers={"x-api-key": self.cle, "Content-Type": "application/json"})
         if r.status_code in (401, 403):
             raise PermissionError("API Unraid : clé refusée ou droits insuffisants")
+        try:
+            d = r.json()
+        except ValueError:
+            r.raise_for_status()
+            raise RuntimeError(f"réponse illisible ({r.status_code})") from None
+        if d.get("errors"):                 # GraphQL : requête refusée (souvent 400), avec la raison
+            message = d["errors"][0].get("message", "erreur GraphQL")
+            if re.search(r"forbidden|unauthori[sz]ed|permission|not allowed", message, re.I):
+                raise PermissionError(f"API Unraid : droits insuffisants pour cette clé ({message})")
+            raise RuntimeError(message)
         r.raise_for_status()
-        d = r.json()
-        if d.get("errors"):
-            raise RuntimeError(d["errors"][0].get("message", "erreur GraphQL"))
         return d.get("data") or {}
 
     async def conteneurs(self) -> list[dict]:
-        try:
-            data = await self._graphql(self.REQUETE)
-        except RuntimeError:            # champ « image » absent de cette version : requête documentée
-            data = await self._graphql(self.REQUETE_MINIMALE)
+        erreurs, liste = [], None
+        for chemin, requete in ([self._requete] if self._requete else self.REQUETES):
+            try:
+                data = await self._graphql(requete)
+            except RuntimeError as e:
+                erreurs.append(str(e))
+                continue
+            liste = data
+            for cle in chemin.split("."):
+                liste = (liste or {}).get(cle)
+            if liste is None:
+                erreurs.append(f"pas de {chemin} dans la réponse")
+                continue
+            self._requete = (chemin, requete)      # retenue pour les fois suivantes
+            break
+        if liste is None:
+            raise RuntimeError("schéma de l'API Unraid non reconnu : " + " | ".join(erreurs[-2:]))
         sortie = []
-        for x in data.get("dockerContainers") or []:
+        for x in liste or []:
             nom = ((x.get("names") or ["?"])[0] or "?").lstrip("/")
             statut = x.get("status") or ""
             sante = "unhealthy" if "(unhealthy)" in statut else "healthy" if "(healthy)" in statut else ""

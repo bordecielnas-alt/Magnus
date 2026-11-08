@@ -121,3 +121,32 @@ def test_certificat_auto_signe_accepte_seulement_en_local():
     from assistant.docker_diag import UnraidDocker
     assert UnraidDocker("https://192.168.1.50:4436/graphql", "k")._verifier_certificat() is False
     assert UnraidDocker("https://tour.exemple.fr/graphql", "k")._verifier_certificat() is True
+
+
+def test_api_unraid_schema_recent_et_erreur_400():
+    """Unraid 7.3 : « docker { containers } » ; l'ancienne requête renvoie 400 avec la raison en JSON."""
+    from assistant.docker_diag import UnraidDocker
+    vues = []
+
+    def repondre(req: httpx.Request) -> httpx.Response:
+        import json
+        q = json.loads(req.content)["query"]
+        vues.append(q)
+        if "docker {" in q and "image" not in q:
+            return httpx.Response(200, json={"data": {"docker": {"containers": [
+                {"id": "1", "names": ["/plex"], "state": "RUNNING", "status": "Up 3 hours", "autoStart": True}]}}})
+        return httpx.Response(400, json={"errors": [{"message": "Cannot query field on type"}]})
+    d = UnraidDocker("https://192.168.1.50:4436/graphql", "k", transport=httpx.MockTransport(repondre))
+    assert [c["nom"] for c in asyncio.run(d.conteneurs())] == ["plex"]
+    n = len(vues)
+    asyncio.run(d.conteneurs())
+    assert len(vues) == n + 1                       # la bonne requête est retenue
+
+    rien = UnraidDocker("http://x/graphql", "k", transport=httpx.MockTransport(
+        lambda r: httpx.Response(400, json={"errors": [{"message": "Cannot query field dockerContainers"}]})))
+    with pytest.raises(RuntimeError, match="schéma"):
+        asyncio.run(rien.conteneurs())
+    droits = UnraidDocker("http://x/graphql", "k", transport=httpx.MockTransport(
+        lambda r: httpx.Response(200, json={"errors": [{"message": "Forbidden resource"}]})))
+    with pytest.raises(PermissionError):
+        asyncio.run(droits.conteneurs())
