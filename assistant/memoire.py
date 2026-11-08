@@ -52,6 +52,10 @@ class Memoire:
                 INSERT INTO recherche(recherche, rowid, texte) VALUES ('delete', old.id, old.texte);
                 INSERT INTO recherche(rowid, texte) VALUES (new.id, new.texte); END;
         """)
+        colonnes = {r[1] for r in self._db.execute("PRAGMA table_info(souvenirs)")}
+        if "remplace" not in colonnes:      # mise à jour d'un souvenir existant (proposée, puis validée)
+            self._db.execute("ALTER TABLE souvenirs ADD COLUMN remplace INTEGER")
+            self._db.commit()
 
     # --- écriture -------------------------------------------------------------------------------------
     def _noter(self, souvenir: int, compte: str, action: str, avant: str | None, apres: str | None) -> None:
@@ -59,7 +63,7 @@ class Memoire:
                          (souvenir, maintenant(), compte, action, avant, apres))
 
     def ajouter(self, texte: str, portee: str, compte: str, statut: str = "propose", source: str = "",
-                conversation: str = "", par: str = "") -> dict:
+                conversation: str = "", par: str = "", remplace: int | None = None) -> dict:
         texte = re.sub(r"\s+", " ", texte).strip()
         if not texte or len(texte) > 500:
             raise ValueError("souvenir vide ou trop long (500 caractères maximum)")
@@ -73,9 +77,8 @@ class Memoire:
                 return self.lire(existant["id"])
             t = maintenant()
             cur = self._db.execute(
-                "INSERT INTO souvenirs(texte, portee, compte, statut, source, cree, maj, conversation) "
-                "VALUES (?,?,?,?,?,?,?,?)", (texte, portee, compte if portee == "prive" else compte, statut,
-                                              source, t, t, conversation))
+                "INSERT INTO souvenirs(texte, portee, compte, statut, source, cree, maj, conversation, remplace) "
+                "VALUES (?,?,?,?,?,?,?,?,?)", (texte, portee, compte, statut, source, t, t, conversation, remplace))
             self._noter(cur.lastrowid, par or compte, "proposé" if statut == "propose" else "ajouté", None, texte)
         return self.lire(cur.lastrowid)
 
@@ -87,6 +90,12 @@ class Memoire:
             if not s:
                 raise KeyError(ident)
             self._db.execute("UPDATE souvenirs SET statut=?, maj=? WHERE id=?", (statut, maintenant(), ident))
+            if statut == "valide" and s["remplace"]:
+                # la mise à jour validée remplace l'ancien souvenir
+                ancien = self._db.execute("SELECT texte FROM souvenirs WHERE id=?", (s["remplace"],)).fetchone()
+                self._db.execute("UPDATE souvenirs SET statut='supprime', maj=? WHERE id=?", (maintenant(), s["remplace"]))
+                if ancien:
+                    self._noter(s["remplace"], par, "remplacé", ancien["texte"], s["texte"])
             self._noter(ident, par, {"valide": "validé", "refuse": "refusé", "supprime": "supprimé",
                                      "propose": "reproposé"}[statut], s["statut"], statut)
         return self.lire(ident)
@@ -145,6 +154,16 @@ class Memoire:
         except sqlite3.OperationalError:
             return []
         return [dict(r) for r in rows]
+
+    def renommer_compte(self, compte: str, ancien: str, nouveau: str) -> int:
+        """Les souvenirs « Ancien nom : … » de ce compte prennent le nouveau nom."""
+        with self._verrou, self._db:
+            lignes = self._db.execute("SELECT id, texte FROM souvenirs WHERE compte=? AND texte LIKE ?",
+                                      (compte, f"{ancien} : %")).fetchall()
+            for r in lignes:
+                self._db.execute("UPDATE souvenirs SET texte=?, maj=? WHERE id=?",
+                                 (nouveau + r["texte"][len(ancien):], maintenant(), r["id"]))
+        return len(lignes)
 
     def fermer(self) -> None:
         self._db.close()

@@ -122,10 +122,22 @@ ETATS_FR_COURTS = {"on": "allumé", "off": "éteint", "open": "ouvert", "closed"
 RE_BRIEFING = re.compile(r"^\s*(fais[- ]moi |donne[- ]moi |lance |le )?(le |mon )?(briefing|r[ée]sum[ée] du (jour|matin))\b", re.I)
 RE_OUI = re.compile(r"^\s*(oui|ouais|d.accord|ok|vas-y|retiens(-le)?|c.est (bon|ça)|exact)\b[\s!.]*\w{0,10}[\s!.]*$", re.I)
 RE_NON = re.compile(r"^\s*(non|nan|oublie(-le)?|pas la peine|laisse tomber)\b[\s!.]*\w{0,10}[\s!.]*$", re.I)
-RE_RETIENS = re.compile(r"^\s*(?:\w+,\s*)?(?:retiens|souviens-toi|rappelle-toi|n.oublie pas|note|m[ée]morise)"
+RE_RETIENS = re.compile(r"^\s*(?:\w+,\s*)?(?:retien[st]?|retenir|souviens-toi|souviens toi|rappelle-toi|n.oublie pas|"
+                        r"note|m[ée]morise|garde en m[ée]moire|enregistre)"
                         r"(?: bien)?(?: que| qu.| de| :)?\s+(?P<fait>.{3,400})$", re.I)
 RE_CORRECTION = re.compile(r"^\s*non\s*[,!.]?\s*(?:en fait|plut[ôo]t|je pr[ée]f[èe]re|je voulais dire|"
                            r"ce n.est pas [çc]a|la prochaine fois|d[ée]sormais|[àa] l.avenir)\s*[,:]?\s*(?P<fait>.{3,300})$", re.I)
+RE_CREER_ROUTINE = re.compile(r"\b(cr[ée]+[ers]?|fais|faire|ajoute[rz]?|enregistre[rz]?|programme[rz]?|"
+                              r"modifie[rz]?|change[rz]?)\b.{0,20}\broutines?\b", re.I)
+RE_SUJET_MEMOIRE = re.compile(r"\b(retien[st]?|retenir|souviens|rappelle-toi|oublie|m[ée]moire|souvenir|corrige|"
+                              r"en fait|plus que|n.est plus|maintenant j|j.ai (vendu|achet[ée]|perdu|chang[ée])|"
+                              r"je n.ai plus|d[ée]sormais)\b", re.I)
+NOTE_MEMOIRE = (
+    "Mémoire : tu ne retiens rien toi-même et ne dis jamais « noté » ou « je m'en souviendrai ». Les souvenirs "
+    "validés sont ci-dessus. Si on te donne une information à garder, ou une correction d'un souvenir (ex. « j'en ai "
+    "vendu deux »), utilise proposer_souvenir si tu l'as (avec remplace pour une mise à jour) et demande « Je retiens "
+    "« … » ? » ; sinon, dis qu'il suffit de dire « retiens que … »."
+)
 RE_PRIVE = re.compile(r"\b(pour moi( seulement| seul)?|c.est priv[ée]|entre nous|perso(nnel)?)\b", re.I)
 RE_PERSO = re.compile(r"\b(je|j.|mon|ma|mes|moi)\b", re.I)
 RE_FAIT_PERSO = re.compile(r"\b(je m.appelle|ma (femme|fille|m[èe]re|s[œo]eur|compagne|copine)|mon (mari|fils|p[èe]re|fr[èe]re|"
@@ -146,6 +158,17 @@ NOTE_OUTILS_DOCKER = (
     "personne appliquera elle-même (ex. « redémarre le conteneur Plex depuis l'onglet Docker »). Tu ne peux "
     "rien redémarrer ni modifier : ne prétends jamais l'avoir fait."
 )
+
+
+class SouvenirPropose(BaseModel):
+    texte: str = Field(min_length=2, max_length=500)
+    portee: Literal["foyer", "prive"] = "prive"
+    remplace: int | None = None
+    conversation: str = Field(default="", max_length=64)
+
+
+class NouveauNom(BaseModel):
+    nom: str = Field(min_length=1, max_length=40)
 
 
 class EtapeRoutine(BaseModel):
@@ -852,6 +875,16 @@ def creer_app(config: Config | None = None, registre: Registre | None = None,
         auditer(requete, "voix_oubliée")
         return {"ok": True}
 
+    @app.post("/api/compte/nom")
+    def changer_mon_nom(n: NouveauNom, requete: Request) -> dict:
+        compte = compte_personnel(requete)
+        ancien = securite.comptes[compte].get("nom", compte)
+        securite.renommer(compte, n.nom)
+        retouches = memoire.renommer_compte(compte, ancien, n.nom.strip())
+        auditer(requete, "compte_renommé", avant=ancien, apres=n.nom.strip())
+        return {"ok": True, "nom": n.nom.strip(), "souvenirs_mis_a_jour": retouches,
+                "identifiant": compte}
+
     @app.get("/api/compte/profil")
     def lire_profil(requete: Request) -> dict:
         compte = compte_de(requete)
@@ -1098,6 +1131,28 @@ def creer_app(config: Config | None = None, registre: Registre | None = None,
         return {"historique": memoire.historique(ident)}
 
     # --- habitudes et routines ------------------------------------------------------------------------
+    @app.post("/interne/memoire", include_in_schema=False)
+    def interne_souvenir(s_: SouvenirPropose, x_jeton_interne: str | None = Header(None)) -> dict:
+        verifier_jeton(x_jeton_interne)
+        compte, _ = compte_conversation.get(s_.conversation, ("", ""))
+        voix_de = locuteur_conversation.get(s_.conversation)
+        if voix_de and time.monotonic() - voix_de[1] < 120:
+            compte = voix_de[0]
+        if not compte:
+            raise HTTPException(409, "personne d'identifié pour ce souvenir")
+        if s_.remplace is not None:
+            try:
+                ancien = memoire.lire(s_.remplace)
+            except KeyError as e:
+                raise HTTPException(404, "souvenir à remplacer inconnu") from e
+            if not memoire.visible(ancien, compte):
+                raise HTTPException(404, "souvenir à remplacer inconnu")
+        try:
+            sv = memoire.ajouter(s_.texte, s_.portee, compte, "propose", "claude", s_.conversation, remplace=s_.remplace)
+        except ValueError as e:
+            raise HTTPException(422, str(e)) from e
+        return {"ok": True, "en_attente": "la personne doit répondre oui ou non", "souvenir": sv["texte"]}
+
     @app.get("/interne/routines", include_in_schema=False)
     def interne_routines(x_jeton_interne: str | None = Header(None)) -> list[dict]:
         verifier_jeton(x_jeton_interne)
@@ -1498,10 +1553,13 @@ def creer_app(config: Config | None = None, registre: Registre | None = None,
             except ValueError:
                 pass
         if qui:
-            utiles = memoire.chercher(d.message, qui, prive="personnel" not in ctx_revel)
+            prive_ok = "personnel" not in ctx_revel
+            tous = [x for x in memoire.liste(qui, ("valide",)) if prive_ok or x["portee"] == "foyer"]
+            utiles = tous if len(tous) <= 40 else memoire.chercher(d.message, qui, prive=prive_ok, n=12)
             if utiles:
                 consigne_profil = (consigne_profil + "\n\nCe que tu sais (souvenirs validés par la famille) :\n"
-                                   + "\n".join(f"- {x['texte']}" for x in utiles)).strip()
+                                   + "\n".join(f"- [{x['id']}] {x['texte']}" for x in utiles)).strip()
+            consigne_profil = (consigne_profil + "\n\n" + NOTE_MEMOIRE).strip()
         routine = routines.trouver(d.message) if ha.configure and routines.liste and len(d.message) < 80 else None
         if routine:
             texte_r = await lancer_routine(routine, d.conversation)
@@ -1510,7 +1568,11 @@ def creer_app(config: Config | None = None, registre: Registre | None = None,
         decision = None
         compte_conversation[d.conversation] = (compte_de(requete) or "", ip_de(requete)[1])
         texte_conversation[d.conversation] = d.message
-        if d.role == ROLE_AUTO and ha.configure and (maison.en_attente(d.conversation) or maison.reconnait(d.message, d.conversation)):
+        creer_routine = bool(RE_CREER_ROUTINE.search(d.message))
+        if creer_routine:
+            d = d.model_copy(update={"role": cfg.routeur.role_complexe})
+        if (d.role == ROLE_AUTO and ha.configure and not creer_routine
+                and (maison.en_attente(d.conversation) or maison.reconnait(d.message, d.conversation))):
             # Commande de maison reconnue (ou réponse à « Lequel ? ») : inutile de consulter le routeur
             decision = Decision(SIMPLE, cfg.routeur.role_simple, "commande maison", 0.0)
             role = decision.role
@@ -1528,7 +1590,7 @@ def creer_app(config: Config | None = None, registre: Registre | None = None,
         # Maison : réponse à une question « lequel ? » en cours, ou demande simple
         echec_ha = ""
         simple = decision is not None and decision.categorie == SIMPLE
-        if decision is None and ha.configure and maison.reconnait(d.message, d.conversation):
+        if decision is None and ha.configure and not creer_routine and maison.reconnait(d.message, d.conversation):
             simple = True    # rôle choisi à la main : une commande de maison reste une commande de maison
         if ha.configure and cfg.home_assistant.pour_simples and (simple or maison.en_attente(d.conversation)):
             rm = await maison.traiter(d.message, d.conversation)
@@ -1573,7 +1635,15 @@ def creer_app(config: Config | None = None, registre: Registre | None = None,
         outils = None
         claude_outille = (cfg.routeur.role_complexe in reg.roles
                           and getattr(reg.pour_role(cfg.routeur.role_complexe), "accepte_outils", False))
-        if agenda.configure and claude_outille and RE_AGENDA.search(d.message) and "historique" not in ctx_revel:
+        if claude_outille and ha.configure and creer_routine:
+            route["outils"] = "Claude crée une routine"
+            outils = outils_maison(d.conversation)
+        elif claude_outille and qui and RE_SUJET_MEMOIRE.search(d.message) and "personnel" not in ctx_revel:
+            # information à retenir ou à corriger : Claude peut proposer un souvenir (validé par oui / non)
+            role = cfg.routeur.role_complexe
+            route["outils"] = "Claude avec la mémoire"
+            outils = outils_maison(d.conversation)
+        elif agenda.configure and claude_outille and RE_AGENDA.search(d.message) and "historique" not in ctx_revel:
             role = cfg.routeur.role_complexe
             route["outils"] = "Claude avec l'agenda"
             outils = outils_maison(d.conversation)

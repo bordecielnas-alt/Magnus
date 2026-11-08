@@ -53,6 +53,8 @@
     <div id="bandeauRedemarrage" hidden><span>Certains changements s'appliqueront au redémarrage.</span>
       <button type="button" class="bouton principal" id="cfgRedemarrer">Redémarrer</button></div>
     <details id="cfgMonCompte"><summary>Mon compte <span class="etat" id="eMonCompte"></span></summary>
+      <div class="rangee"><input id="cMonNom" maxlength="40" placeholder="Mon prénom" style="flex:1;min-width:0;background:var(--bg);color:var(--fg);border:1px solid var(--bord);border-radius:8px;padding:7px 9px;font:inherit;font-size:.85rem">
+        <button type="button" class="bouton" id="cMonNomBtn">Renommer</button><span class="aide" data-msg="nom"></span></div>
       <label class="champ">Ton des réponses<select id="cTon"><option value="concis">Concis</option><option value="normal">Normal</option><option value="chaleureux">Chaleureux</option></select></label>
       <label class="champ">Ma pièce (par défaut quand je n'en précise pas)<input id="cPiece" maxlength="40" placeholder="ex. Salon"></label>
       <label class="champ">Mes préférences (consigne pour l'assistant)<input id="cConsigne" maxlength="500" placeholder="ex. tutoie-moi, températures en °C"></label>
@@ -253,7 +255,7 @@
     compte_réinitialisé: 'compte réinitialisé', invitation_acceptée: 'invitation acceptée', totp_activé: 'code téléphone activé',
     mot_de_passe_changé: 'mot de passe changé', codes_secours_regénérés: 'codes de secours', alias_oublié: 'alias oublié',
     modèle_téléchargé: 'modèle téléchargé', profil_modifié: 'profil modifié', appareil_partagé: 'appareil marqué partagé', appareil_personnel: 'appareil marqué personnel', voix_enregistrée: 'voix enregistrée', souvenir_ajouté: 'souvenir ajouté', souvenir_validé: 'souvenir validé',
-    souvenir_refusé: 'souvenir refusé', souvenir_modifié: 'souvenir modifié', souvenir_supprimé: 'souvenir oublié',
+    souvenir_refusé: 'souvenir refusé', souvenir_modifié: 'souvenir modifié', souvenir_supprimé: 'souvenir oublié', compte_renommé: 'compte renommé',
     automatisation_créée: 'automatisation créée', routine_créée: 'routine créée', routine_supprimée: 'routine supprimée', voix_oubliée: 'voix oubliée', totp_activation: 'code téléphone', invitation: 'invitation'};
 
   // --- mémoire --------------------------------------------------------------------------------------
@@ -353,6 +355,7 @@
     $('cfgMonCompte').hidden = machine || !s.compte;
     if (!machine && s.compte) {
       etat('eMonCompte', s.compte_nom + (s.admin ? ' · admin' : '') + (s.totp ? ' · code téléphone' : ''), s.totp ? 'ok' : '');
+      if (document.activeElement !== $('cMonNom')) $('cMonNom').value = s.compte_nom || '';
       try {
         const {profil} = await api('/api/compte/profil');
         $('cTon').value = profil.ton; $('cPiece').value = profil.piece || ''; $('cConsigne').value = profil.consigne || '';
@@ -498,6 +501,16 @@
       msg('voix', 'Voix oubliée.', true);
     } catch (e) { msg('voix', e.message, false); }
     afficherVoix();
+  };
+
+  $('cMonNomBtn').onclick = async () => {
+    const nom = $('cMonNom').value.trim();
+    if (!nom) return;
+    try {
+      const o = await api('/api/compte/nom', {nom});
+      msg('nom', `C'est ${o.nom}` + (o.souvenirs_mis_a_jour ? ` (${o.souvenirs_mis_a_jour} souvenir(s) mis à jour)` : '') + `. Identifiant de connexion inchangé : ${o.identifiant}.`, true);
+      chargerComptes(); chargerMemoire();
+    } catch (e) { msg('nom', e.message, false); }
   };
 
   $('cProfilBtn').onclick = async () => {

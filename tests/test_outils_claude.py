@@ -23,7 +23,7 @@ def test_mcp_initialize_et_liste():
                             "params": {"protocolVersion": "2025-06-18"}})
     assert r["result"]["protocolVersion"] == "2025-06-18" and "tools" in r["result"]["capabilities"]
     noms = {o["name"] for o in mcp_maison.traiter({"jsonrpc": "2.0", "id": 2, "method": "tools/list"})["result"]["tools"]}
-    assert noms == {"lister_appareils", "lire_etat", "agir", "annuler", "creer_routine", "lister_routines"}
+    assert noms == {"lister_appareils", "lire_etat", "agir", "annuler", "creer_routine", "lister_routines", "proposer_souvenir"}
     assert mcp_maison.traiter({"jsonrpc": "2.0", "method": "notifications/initialized"}) is None
 
 

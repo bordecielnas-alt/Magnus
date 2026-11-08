@@ -315,3 +315,14 @@ def test_scripts_avec_version_dans_l_adresse(tmp_path):
     a, _ = app(tmp_path)
     page = client(a, "127.0.0.1").get("/").text
     assert f'src="/static/reglages.js?v={__version__}"' in page and f'src="/static/orbe.js?v={__version__}"' in page
+
+
+def test_se_renommer(tmp_path):
+    a, sec = app(tmp_path, totp_obligatoire=False)
+    sec.creer_premier(MDP)
+    c = client(a, LAN)
+    c.post("/api/connexion", json={"mot_de_passe": MDP})
+    r = c.post("/api/compte/nom", json={"nom": "Benjamin"}).json()
+    assert r["nom"] == "Benjamin" and r["identifiant"] == "principal"
+    assert c.get("/api/securite").json()["compte_nom"] == "Benjamin"
+    assert c.post("/api/connexion", json={"identifiant": "Benjamin", "mot_de_passe": MDP}).status_code == 200

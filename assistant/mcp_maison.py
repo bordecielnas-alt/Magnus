@@ -105,8 +105,22 @@ OUTILS_ROUTINES = [
 ]
 
 
+OUTILS_MEMOIRE = [
+    {
+        "name": "proposer_souvenir",
+        "description": "Propose de retenir une information (ou de mettre à jour un souvenir existant : remplace = son id, "
+                       "donné entre crochets dans « Ce que tu sais »). Rien n'est gardé tant que la personne n'a pas dit "
+                       "oui : termine ta réponse par la question « Je retiens « … » ? ». portee : foyer (toute la maison) "
+                       "ou prive (seulement la personne).",
+        "inputSchema": {"type": "object", "properties": {
+            "texte": {"type": "string"}, "portee": {"type": "string", "enum": ["foyer", "prive"]},
+            "remplace": {"type": "integer"}}, "required": ["texte"]},
+    },
+]
+
+
 def outils() -> list[dict]:
-    return (OUTILS + OUTILS_ROUTINES + (OUTILS_DOCKER if os.environ.get("ASSISTANT_DOCKER") == "1" else [])
+    return (OUTILS + OUTILS_ROUTINES + OUTILS_MEMOIRE + (OUTILS_DOCKER if os.environ.get("ASSISTANT_DOCKER") == "1" else [])
             + (OUTILS_AGENDA if os.environ.get("ASSISTANT_AGENDA") == "1" else []))
 
 
@@ -139,6 +153,8 @@ def appeler(nom: str, args: dict) -> str:
             r = c.post("/interne/routines", json=args)
         elif nom == "lister_routines":
             r = c.get("/interne/routines")
+        elif nom == "proposer_souvenir":
+            r = c.post("/interne/memoire", json={**args, "conversation": conv})
         elif nom == "annuler":
             r = c.post("/interne/maison/annuler", json={"conversation": conv})
         else:
