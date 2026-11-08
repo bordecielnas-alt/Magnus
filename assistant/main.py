@@ -30,6 +30,7 @@ from .routeur import SIMPLE, Decision, Routeur
 from . import reglages as R
 from .reveil import Reveil
 from .audit import Audit
+from .locuteur import Locuteurs
 from .diagnostic import Diagnostic, GestionnaireJournal
 from .securite import COMPTE_MACHINE, NOM_COOKIE, AccesRefuse, Securite, est_locale
 from .voix import Voix, sans_emoji
@@ -239,6 +240,27 @@ def creer_app(config: Config | None = None, registre: Registre | None = None,
     securite = securite or Securite(cfg.securite, dossier_etat(cfg))
     audit = Audit(securite.fichier.parent)
     diag = Diagnostic(securite.fichier.parent)
+    locuteurs = Locuteurs(cfg.voix.chemin_locuteur(), securite.fichier.parent, cfg.voix.seuil_locuteur)
+    locuteur_conversation: dict[str, tuple[str, float]] = {}   # conversation -> (compte reconnu, instant)
+
+    async def reconnaitre(audio: bytes, conversation: str) -> dict | None:
+        """Qui a parlé ? Seulement si la voix d'au moins un compte est enregistrée."""
+        if not (cfg.voix.identification and locuteurs.voix and locuteurs.disponible):
+            return None
+        import asyncio as aio
+
+        from .voix import decoder_audio
+        try:
+            r = await aio.to_thread(lambda: locuteurs.identifier(decoder_audio(audio),
+                                                                 [c for c in locuteurs.voix if c in securite.comptes]))
+        except Exception as e:  # noqa: BLE001 - jamais bloquant pour la conversation
+            journal.info("empreinte vocale impossible : %s", e.__class__.__name__)
+            return None
+        if r:
+            r["nom"] = securite.comptes.get(r["compte"], {}).get("nom", r["compte"])
+            if conversation:
+                locuteur_conversation[conversation] = (r["compte"], time.monotonic())
+        return r
     for h in [h for h in journal.handlers if isinstance(h, GestionnaireJournal)]:
         journal.removeHandler(h)        # une seule copie du journal, même si l'appli est recréée
     journal.addHandler(GestionnaireJournal(diag))
@@ -566,6 +588,7 @@ def creer_app(config: Config | None = None, registre: Registre | None = None,
             securite.supprimer(ident)
         except AccesRefuse as e:
             raise HTTPException(409, str(e)) from e
+        locuteurs.oublier(ident)
         audit.noter("compte_supprimé", admin, ip_de(requete)[1], cible=ident)
         return {"ok": True}
 
@@ -591,6 +614,44 @@ def creer_app(config: Config | None = None, registre: Registre | None = None,
             reponse.delete_cookie(COOKIE_APPAREIL, path="/")
         auditer(requete, "appareil_partagé" if a.partage else "appareil_personnel")
         return {"ok": True, "partage": a.partage}
+
+    def compte_personnel(requete: Request) -> str:
+        compte = compte_de(requete)
+        if not compte or compte == COMPTE_MACHINE:
+            raise HTTPException(409, "à faire depuis ton compte (connexion depuis un autre appareil)")
+        return compte
+
+    @app.get("/api/compte/voix")
+    def ma_voix(requete: Request) -> dict:
+        compte = compte_personnel(requete)
+        return {"echantillons": locuteurs.nombre(compte), "conseille": 3, "disponible": locuteurs.disponible,
+                "active": cfg.voix.identification}
+
+    @app.post("/api/compte/voix")
+    async def enregistrer_ma_voix(requete: Request) -> dict:
+        """Une phrase de quelques secondes (même format que /api/voix/transcrire)."""
+        compte = compte_personnel(requete)
+        if not locuteurs.disponible:
+            raise HTTPException(503, "modèle d'empreinte vocale absent (téléchargé au démarrage du conteneur)")
+        audio = await requete.body()
+        if not audio or len(audio) > cfg.voix.max_audio_mo * 1e6:
+            raise HTTPException(400, "audio vide ou trop long")
+        import asyncio as aio
+
+        from .voix import decoder_audio
+        try:
+            n = await aio.to_thread(lambda: locuteurs.enregistrer(compte, decoder_audio(audio)))
+        except ValueError as e:
+            raise HTTPException(422, str(e)) from e
+        auditer(requete, "voix_enregistrée", echantillons=n)
+        return {"echantillons": n}
+
+    @app.delete("/api/compte/voix")
+    def oublier_ma_voix(requete: Request) -> dict:
+        compte = compte_personnel(requete)
+        locuteurs.oublier(compte)
+        auditer(requete, "voix_oubliée")
+        return {"ok": True}
 
     @app.get("/api/compte/profil")
     def lire_profil(requete: Request) -> dict:
@@ -729,7 +790,7 @@ def creer_app(config: Config | None = None, registre: Registre | None = None,
                 "voix": cfg.voix.voix_actuelle(), "voix_disponibles": voix.disponibles()}
 
     @app.post("/api/voix/transcrire")
-    async def transcrire(requete: Request, partiel: bool = False) -> dict:
+    async def transcrire(requete: Request, partiel: bool = False, conversation: str = "") -> dict:
         if not cfg.voix.active:
             raise HTTPException(503, "voix désactivée (voix.active)")
         if not cfg.voix.whisper_present():
@@ -749,9 +810,12 @@ def creer_app(config: Config | None = None, registre: Registre | None = None,
                 t = await voix.transcrire(audio, ", ".join(noms))
         except Exception as e:  # noqa: BLE001 - audio illisible, modèle en erreur
             raise HTTPException(422, f"transcription impossible ({e.__class__.__name__})") from e
+        qui = None
         if not partiel:   # les transcriptions partielles (mots en direct) ne sont pas tracées
-            journal.info("voix : « %s » (%.1f s d'audio, %d ms)", t.texte[:120], t.duree_audio_s, t.duree_ms)
-        return {"texte": t.texte, "duree_audio_s": t.duree_audio_s, "duree_ms": t.duree_ms}
+            qui = await reconnaitre(audio, conversation) if t.texte else None
+            journal.info("voix : « %s » (%.1f s d'audio, %d ms)%s", t.texte[:120], t.duree_audio_s, t.duree_ms,
+                         f" — {qui['nom']} ({qui['score']})" if qui else "")
+        return {"texte": t.texte, "duree_audio_s": t.duree_audio_s, "duree_ms": t.duree_ms, "locuteur": qui}
 
     @app.post("/api/voix/ecoute")
     async def ecoute(requete: Request, conversation: str = "") -> dict:
@@ -766,10 +830,13 @@ def creer_app(config: Config | None = None, registre: Registre | None = None,
         async with verrou_transcription:
             t = await voix.transcrire(audio, ", ".join(noms))
         r = reveil.analyser(t.texte, cfg.identite.wake_word_effectif, conversation)
+        qui = None
         if r["action"] != "ignorer":
-            journal.info("écoute : « %s » -> %s (%d ms)", t.texte[:120], r["action"], t.duree_ms)
+            qui = await reconnaitre(audio, conversation)
+            journal.info("écoute : « %s » -> %s (%d ms)%s", t.texte[:120], r["action"], t.duree_ms,
+                         f" — {qui['nom']} ({qui['score']})" if qui else "")
         return {"texte": t.texte, "duree_ms": t.duree_ms, "wake_word": cfg.identite.wake_word_effectif,
-                "toujours": reveil.toujours, **r}
+                "toujours": reveil.toujours, "locuteur": qui, **r}
 
     @app.post("/api/voix/reglages")
     def regler_voix(r: ReglagesVoix) -> dict:
@@ -955,10 +1022,18 @@ def creer_app(config: Config | None = None, registre: Registre | None = None,
         masques.set(ctx_revel)
         masques_conversation[d.conversation] = ctx_revel
         profil = securite.profil(compte) if compte and compte != COMPTE_MACHINE else {}
+        nom_profil = securite.comptes.get(compte or "", {}).get("nom", "")
+        voix_de = locuteur_conversation.get(d.conversation)
+        if d.source == "voix" and voix_de and time.monotonic() - voix_de[1] < 60 and voix_de[0] in securite.comptes:
+            # reconnu à la voix : son ton, sa pièce, ses préférences (pas ses droits)
+            profil, nom_profil = securite.profil(voix_de[0]), securite.comptes[voix_de[0]].get("nom", voix_de[0])
+            route_locuteur = nom_profil
+        else:
+            route_locuteur = ""
         if "personnel" in ctx_revel:
             profil = {k: v for k, v in profil.items() if k in ("type", "ton")}   # ni pièce ni préférences
         piece_preferee.set(profil.get("piece", ""))
-        consigne_profil = note_profil(securite.comptes.get(compte or "", {}).get("nom", ""), profil) if profil else ""
+        consigne_profil = note_profil(nom_profil, profil) if profil else ""
         decision = None
         compte_conversation[d.conversation] = (compte_de(requete) or "", ip_de(requete)[1])
         texte_conversation[d.conversation] = d.message
@@ -974,6 +1049,8 @@ def creer_app(config: Config | None = None, registre: Registre | None = None,
         else:
             raise HTTPException(400, f"rôle inconnu : {d.role}")
         route = decision.en_dict() if decision else {"role": role, "raison": "choisi à la main"}
+        if route_locuteur:
+            route["locuteur"] = route_locuteur
 
         # Maison : réponse à une question « lequel ? » en cours, ou demande simple
         echec_ha = ""

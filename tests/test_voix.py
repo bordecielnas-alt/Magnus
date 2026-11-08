@@ -72,7 +72,7 @@ def _client(tmp_path, monkeypatch):
 def test_api_transcrire(tmp_path, monkeypatch):
     c, v, cfg = _client(tmp_path, monkeypatch)
     rep = c.post("/api/voix/transcrire", content=b"x" * 3000, headers={"Content-Type": "audio/webm"}).json()
-    assert rep == {"texte": "allume le globe", "duree_audio_s": 1.2, "duree_ms": 345}
+    assert rep == {"texte": "allume le globe", "duree_audio_s": 1.2, "duree_ms": 345, "locuteur": None}
     assert cfg.identite.nom in v.indices      # le nom de l'assistant aide la reconnaissance
     assert c.post("/api/voix/transcrire", content=b"").status_code == 400
 

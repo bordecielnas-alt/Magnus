@@ -48,6 +48,8 @@
   .tech-seul { display:none !important; }
   .tech .tech-seul { display:flex !important; }
   .tech h1.tech-seul { display:block !important; }
+  .msg .locuteur { display:block; font-size:.7em; opacity:.55; margin-top:.25em; text-align:right; }
+  .tech .msg .locuteur { display:block !important; }
   .hors-ligne .orbe-cadre { visibility:hidden; }
   .info { align-self:center; color:var(--muted); font-size:.85rem; font-style:italic; text-align:center; }
   /* menu Options */
@@ -1075,7 +1077,7 @@ async function transcriptionPartielle() {
   const ab = partielAbandon = new AbortController(), t0 = performance.now();
   try {
     const blob = new Blob(morceaux, {type: enregistreur.mimeType || 'audio/webm'});
-    const r = await fetch('/api/voix/transcrire?partiel=1', {method: 'POST', headers: {'Content-Type': blob.type}, body: blob, signal: ab.signal});
+    const r = await fetch('/api/voix/transcrire?partiel=1&conversation=' + encodeURIComponent(conversation), {method: 'POST', headers: {'Content-Type': blob.type}, body: blob, signal: ab.signal});
     const o = r.ok ? await r.json() : {};
     diag('dictée en direct : ' + Math.round(performance.now() - t0) + ' ms' + (o.saute ? ' (sauté)' : '') + (o.texte ? ' · « ' + o.texte + ' »' : ''));
     // réponse arrivée trop tard (dictée finie) : on l'ignore, la transcription finale fait foi
@@ -1105,15 +1107,16 @@ async function transcrireEtEnvoyer() {
   if (!occupe) orbe.etat('reflexion');
   try {
     const t0 = performance.now();
-    const r = await fetch('/api/voix/transcrire', {method: 'POST', headers: {'Content-Type': blob.type}, body: blob});
+    const r = await fetch('/api/voix/transcrire?conversation=' + encodeURIComponent(conversation), {method: 'POST', headers: {'Content-Type': blob.type}, body: blob});
     const o = await r.json();
     diag('transcription : HTTP ' + r.status + ' en ' + Math.round(performance.now() - t0) + ' ms' + (o.duree_audio_s ? ' (' + o.duree_audio_s + ' s d\'audio)' : '') +
-         ' · ' + (o.texte ? '« ' + o.texte + ' »' : 'rien entendu') + (o.detail ? ' · ' + o.detail : ''));
+         ' · ' + (o.texte ? '« ' + o.texte + ' »' : 'rien entendu') + (o.detail ? ' · ' + o.detail : '') + texteLocuteur(o.locuteur));
     finirBulle();
     if (!r.ok) throw new Error(o.detail || r.statusText);
     if (!o.texte) { if (!occupe) orbe.etat('repos'); bulle('erreur', 'Je n\'ai rien entendu.'); return; }
     const derniere = demander(o.texte, true);
     if (derniere) derniere.title = 'Transcrit en ' + o.duree_ms + ' ms (' + o.duree_audio_s + ' s d\'audio)';
+    marquerLocuteur(derniere, o.locuteur);
   } catch (e) {
     finirBulle();
     bulle('erreur', 'Voix : ' + e.message);
@@ -1513,6 +1516,19 @@ function lancerCommandeVocale(texte, o) {
   $('page').classList.remove('zen');
   const b = demander(texte, true);
   if (b && o && o.duree_ms) b.title = 'Entendu en écoute continue · transcrit en ' + o.duree_ms + ' ms';
+  if (o) marquerLocuteur(b, o.locuteur);
+}
+// reconnaissance du locuteur : {compte, nom, score} ou null, renvoyé par la transcription
+function texteLocuteur(l) {
+  return l && l.nom ? ' · locuteur ' + l.nom + (typeof l.score === 'number' ? ' (' + l.score.toFixed(2) + ')' : '') : '';
+}
+function marquerLocuteur(b, l) {
+  if (!b || !l || !l.nom) return;
+  const e = document.createElement('span');
+  e.className = 'locuteur tech-seul';
+  e.textContent = l.nom;
+  if (typeof l.score === 'number') e.title = 'Voix reconnue · score ' + l.score.toFixed(2);
+  b.appendChild(e);
 }
 function lacherSuspens(pourquoi) {
   const s = continu.suspens; if (!s) return;
@@ -1548,7 +1564,7 @@ function envoyerMorceau(rec) {
       if (!r.ok) { recu(); diag('écoute continue : HTTP ' + r.status + ' en ' + Math.round(performance.now() - t0) + ' ms'); return; }
       const o = await r.json();
       recu();
-      diag('écoute continue : ' + o.action + ' en ' + Math.round(performance.now() - t0) + ' ms' + (o.texte ? ' · entendu « ' + o.texte + ' »' : '') + (o.commande && o.commande !== o.texte ? ' · commande « ' + o.commande + ' »' : ''));
+      diag('écoute continue : ' + o.action + ' en ' + Math.round(performance.now() - t0) + ' ms' + (o.texte ? ' · entendu « ' + o.texte + ' »' : '') + (o.commande && o.commande !== o.texte ? ' · commande « ' + o.commande + ' »' : '') + texteLocuteur(o.locuteur));
       if (o.wake_word) continu.wake = o.wake_word;
       if (typeof o.toujours === 'boolean') continu.toujours = o.toujours;
       // une phrase coupée en deux par une pause : ce morceau est la suite de la commande en attente

@@ -89,6 +89,10 @@
       <label class="champ">Ma pièce (par défaut quand je n'en précise pas)<input id="cPiece" maxlength="40" placeholder="ex. Salon"></label>
       <label class="champ">Mes préférences (consigne pour l'assistant)<input id="cConsigne" maxlength="500" placeholder="ex. tutoie-moi, températures en °C"></label>
       <div class="rangee"><button type="button" class="bouton principal" id="cProfilBtn">Enregistrer mon profil</button><span class="aide" data-msg="profil"></span></div>
+      <p class="aide" style="margin-top:12px">Ma voix : <span id="cVoixEtat">…</span></p>
+      <p class="aide" id="cVoixPhrase" hidden></p>
+      <div class="rangee"><button type="button" class="bouton" id="cVoixBtn">Enregistrer une phrase (5 s)</button>
+        <button type="button" class="bouton" id="cVoixOublier">Oublier ma voix</button><span class="aide" data-msg="voix"></span></div>
       <label class="aide" style="display:flex;gap:8px;align-items:center;margin-top:12px"><input type="checkbox" id="cPartage"> Cet appareil est partagé (tablette commune) : l'assistant en dit moins</label>
       <p class="aide" id="cContexte"></p>
       <label class="champ">Mot de passe actuel<input id="cMdpActuel" type="password" autocomplete="current-password"></label>
@@ -200,7 +204,7 @@
     secret_modifié: 'secret modifié', 'redémarrage': 'redémarrage', compte_créé: 'compte créé', compte_supprimé: 'compte supprimé',
     compte_réinitialisé: 'compte réinitialisé', invitation_acceptée: 'invitation acceptée', totp_activé: 'code téléphone activé',
     mot_de_passe_changé: 'mot de passe changé', codes_secours_regénérés: 'codes de secours', alias_oublié: 'alias oublié',
-    modèle_téléchargé: 'modèle téléchargé', profil_modifié: 'profil modifié', appareil_partagé: 'appareil marqué partagé', appareil_personnel: 'appareil marqué personnel', totp_activation: 'code téléphone', invitation: 'invitation'};
+    modèle_téléchargé: 'modèle téléchargé', profil_modifié: 'profil modifié', appareil_partagé: 'appareil marqué partagé', appareil_personnel: 'appareil marqué personnel', voix_enregistrée: 'voix enregistrée', voix_oubliée: 'voix oubliée', totp_activation: 'code téléphone', invitation: 'invitation'};
 
   async function chargerComptes() {
     let s;
@@ -214,6 +218,7 @@
         $('cTon').value = profil.ton; $('cPiece').value = profil.piece || ''; $('cConsigne').value = profil.consigne || '';
       } catch (e) {}
       afficherContexte();
+      afficherVoix();
     }
     $('cfgComptes').hidden = $('cfgJournal').hidden = !s.admin;
     if (!s.admin) return;
@@ -303,6 +308,56 @@
   $('cPartage').onchange = async () => {
     try { await api('/api/appareil', {partage: $('cPartage').checked}); afficherContexte(); }
     catch (e) { $('cContexte').textContent = e.message; }
+  };
+
+  // --- empreinte vocale : quelques phrases lues à voix haute -----------------------------------------
+  const PHRASES = ['Le soleil se lève sur la maison et la journée commence doucement.',
+    'Allume la lumière du salon et baisse un peu les volets de la chambre.',
+    'Quel temps fera-t-il demain matin, et faut-il prendre un parapluie ?',
+    'Je rentre dans une heure, pense à mettre un peu de musique.',
+    'Les enfants dorment déjà, parle doucement s\'il te plaît.'];
+  async function afficherVoix() {
+    try {
+      const v = await api('/api/compte/voix');
+      $('cVoixEtat').textContent = !v.disponible ? 'modèle absent (il se télécharge au démarrage du conteneur)'
+        : v.echantillons ? `${v.echantillons} phrase(s) enregistrée(s)` + (v.echantillons < v.conseille ? ` — ${v.conseille} conseillées` : ' — reconnue')
+        : 'pas encore enregistrée';
+      $('cVoixBtn').disabled = !v.disponible;
+    } catch (e) { $('cVoixEtat').textContent = e.message; }
+  }
+  $('cVoixBtn').onclick = async () => {
+    let flux;
+    try { flux = await navigator.mediaDevices.getUserMedia({audio: true}); }
+    catch (e) { msg('voix', 'Micro refusé ou indisponible.', false); return; }
+    const phrase = PHRASES[Math.floor(Math.random() * PHRASES.length)];
+    $('cVoixPhrase').hidden = false;
+    $('cVoixPhrase').textContent = 'Lis à voix haute : « ' + phrase + ' »';
+    const morceaux = [], rec = new MediaRecorder(flux);
+    rec.ondataavailable = e => { if (e.data.size) morceaux.push(e.data); };
+    rec.onstop = async () => {
+      flux.getTracks().forEach(t => t.stop());
+      $('cVoixPhrase').hidden = true; $('cVoixBtn').disabled = false;
+      try {
+        const r = await fetch('/api/compte/voix', {method: 'POST', body: new Blob(morceaux, {type: rec.mimeType})});
+        const o = await r.json().catch(() => ({}));
+        if (!r.ok) throw new Error(o.detail || 'erreur ' + r.status);
+        msg('voix', 'Phrase enregistrée.', true);
+      } catch (e) { msg('voix', e.message, false); }
+      afficherVoix();
+    };
+    $('cVoixBtn').disabled = true;
+    msg('voix', 'Enregistrement…', true);
+    rec.start();
+    setTimeout(() => rec.state !== 'inactive' && rec.stop(), 5000);
+  };
+  $('cVoixOublier').onclick = async () => {
+    if (!confirm('Oublier ta voix ? Il faudra la réenregistrer pour être reconnu.')) return;
+    try {
+      const r = await fetch('/api/compte/voix', {method: 'DELETE'});
+      if (!r.ok) throw new Error('erreur ' + r.status);
+      msg('voix', 'Voix oubliée.', true);
+    } catch (e) { msg('voix', e.message, false); }
+    afficherVoix();
   };
 
   $('cProfilBtn').onclick = async () => {
