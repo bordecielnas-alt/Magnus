@@ -36,7 +36,7 @@ jobs:
 
       - name: Vérification de l'image (imports, claude, démarrage)
         run: |
-          docker run --rm --entrypoint python magnus:verif -c "import assistant.main, assistant.preparer, assistant.voix, assistant.securite, assistant.mcp_maison, httpx, faster_whisper, kokoro_onnx, piper, av; print('imports ok')"
+          docker run --rm --entrypoint python magnus:verif -c "import assistant.main, assistant.preparer, assistant.voix, assistant.securite, assistant.totp, assistant.mcp_maison, httpx, segno, faster_whisper, kokoro_onnx, piper, av; print('imports ok')"
           docker run --rm --entrypoint claude magnus:verif --version
           docker run --rm --entrypoint ollama magnus:verif --version
           mkdir -p /tmp/cfg /tmp/mod && sudo chown -R 99:100 /tmp/cfg /tmp/mod

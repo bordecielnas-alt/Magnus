@@ -29,7 +29,9 @@ from .maison.alias import AliasAppris
 from .routeur import SIMPLE, Decision, Routeur
 from . import reglages as R
 from .reveil import Reveil
-from .securite import NOM_COOKIE, Securite, est_locale
+from .audit import Audit
+from .diagnostic import Diagnostic, GestionnaireJournal
+from .securite import COMPTE_MACHINE, NOM_COOKIE, AccesRefuse, Securite, est_locale
 from .voix import Voix, sans_emoji
 
 STATIC = Path(__file__).resolve().parent / "static"
@@ -83,7 +85,18 @@ class ReglagesVoix(BaseModel):
 
 
 class Connexion(BaseModel):
+    identifiant: str = Field(default="", max_length=60)
     mot_de_passe: str = Field(min_length=1, max_length=200)
+
+
+class Etape(BaseModel):
+    jeton: str = Field(min_length=10, max_length=400)
+    code: str = Field(default="", max_length=20)
+
+
+class Invitation(BaseModel):
+    invitation: str = Field(min_length=10, max_length=200)
+    mot_de_passe: str = Field(min_length=10, max_length=200)
 
 
 class NouveauMotDePasse(BaseModel):
@@ -91,9 +104,29 @@ class NouveauMotDePasse(BaseModel):
     actuel: str | None = Field(default=None, max_length=200)
 
 
+class NouveauCompte(BaseModel):
+    nom: str = Field(min_length=1, max_length=40)
+    admin: bool = False
+
+
+PAGE_DIAGNOSTIC = """<!doctype html><html lang="fr"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1"><title>Diagnostic</title>
+<style>:root{color-scheme:light dark}body{margin:0;padding:16px;font:13px/1.45 ui-monospace,monospace;background:Canvas;color:CanvasText}
+nav{position:sticky;top:0;background:Canvas;padding:8px 0;display:flex;gap:16px;align-items:center;flex-wrap:wrap}
+a{color:#0f7c86;font:600 15px system-ui,sans-serif}pre{white-space:pre-wrap;word-break:break-word;margin:0}</style></head>
+<body><nav><a href="#" id="copier">Tout copier</a><a href="?brut=1">Texte brut</a><a href="?jours=7">7 jours</a><span id="etat"></span></nav>
+<pre id="t">{texte}</pre>
+<script>document.getElementById('copier').onclick=async e=>{e.preventDefault();const t=document.getElementById('t').textContent,
+s=document.getElementById('etat');try{await navigator.clipboard.writeText(t);s.textContent='Copié ('+t.length+' caractères)'}
+catch(x){const r=document.createRange();r.selectNodeContents(document.getElementById('t'));getSelection().removeAllRanges();
+getSelection().addRange(r);s.textContent='Sélectionné : fais Copier'}};</script></body></html>"""
+
 # Accessibles sans être connecté (le reste demande une session hors de la machine elle-même)
-CHEMINS_PUBLICS = {"/health", "/connexion", "/api/connexion", "/api/securite", "/api/securite/mot-de-passe",
-                   "/favicon.ico"}
+CHEMINS_PUBLICS = {"/health", "/connexion", "/api/connexion", "/api/connexion/code", "/api/connexion/totp/preparer",
+                   "/api/connexion/totp/activer", "/api/invitation", "/api/securite", "/api/securite/mot-de-passe",
+                   "/favicon.ico", "/manifest.webmanifest", "/apple-touch-icon.png"}
+# Icônes : visibles avant la connexion (onglet, écran d'accueil du téléphone)
+PREFIXES_PUBLICS = ("/static/icones/",)
 
 
 class Secret(BaseModel):
@@ -166,9 +199,13 @@ def creer_app(config: Config | None = None, registre: Registre | None = None,
     extracteur = reg.pour_role(cfg.maison.extracteur) if cfg.maison.extracteur in reg.roles else None
     maison = Maison(cfg.maison, ha, alias or AliasAppris(chemin_alias(cfg)), extracteur,
                     Historique(chemin_alias(cfg).parent))
-    texte_conversation: dict[str, str] = {}                  # conversation -> dernière demande (historique)
     voix = voix or Voix(cfg.voix)
     securite = securite or Securite(cfg.securite, dossier_etat(cfg))
+    audit = Audit(securite.fichier.parent)
+    diag = Diagnostic(securite.fichier.parent)
+    for h in [h for h in journal.handlers if isinstance(h, GestionnaireJournal)]:
+        journal.removeHandler(h)        # une seule copie du journal, même si l'appli est recréée
+    journal.addHandler(GestionnaireJournal(diag))
     reveil = Reveil(cfg.voix.fenetre_s, cfg.voix.toujours_a_l_ecoute)
     import asyncio as _asyncio
     verrou_transcription = _asyncio.Lock()   # une transcription à la fois (sinon CPU/GPU saturé)
@@ -204,6 +241,7 @@ def creer_app(config: Config | None = None, registre: Registre | None = None,
     app.state.maison = maison
     app.state.voix = voix
     app.state.securite = securite
+    app.state.audit = audit
 
     def ip_de(requete: Request) -> tuple[str, str]:
         """(IP directe, IP réelle du client). « testclient » = client de test de Starlette, traité comme local."""
@@ -217,10 +255,21 @@ def creer_app(config: Config | None = None, registre: Registre | None = None,
             return requete.headers.get("x-forwarded-proto", "") == "https"
         return requete.url.scheme == "https"
 
+    def compte_de(requete: Request) -> str | None:
+        """Compte de la requête : « machine » sur la machine elle-même, sinon celui de la session."""
+        return getattr(requete.state, "compte", None)
+
+    def auditer(requete: Request, type_: str, **detail) -> None:
+        audit.noter(type_, compte_de(requete) or "", ip_de(requete)[1], **detail)
+
+    compte_conversation: dict[str, tuple[str, str]] = {}    # conversation -> (compte, ip)
+    texte_conversation: dict[str, str] = {}                  # conversation -> dernière demande (historique)
+
     @app.middleware("http")
     async def controle_acces(requete: Request, suite):
         chemin = requete.url.path
         directe, ip = ip_de(requete)
+        requete.state.compte = None
         # API interne (serveur MCP lancé par l'assistant) : uniquement depuis la machine, jamais via le proxy
         if chemin.startswith("/interne/"):
             if not est_locale(directe) or requete.headers.get("x-forwarded-for"):
@@ -229,13 +278,68 @@ def creer_app(config: Config | None = None, registre: Registre | None = None,
         if not securite.reseau_autorise(ip):
             journal.info("accès refusé (réseau non autorisé) : %s %s", ip, chemin)
             return JSONResponse({"detail": "réseau non autorisé"}, 403)
-        if chemin in CHEMINS_PUBLICS or not securite.exige_connexion(ip):
+        if not securite.exige_connexion(ip):
+            requete.state.compte = COMPTE_MACHINE
             return await suite(requete)
-        if securite.session_valide(requete.cookies.get(NOM_COOKIE)):
+        requete.state.compte = securite.session(requete.cookies.get(NOM_COOKIE))
+        if chemin in CHEMINS_PUBLICS or chemin.startswith(PREFIXES_PUBLICS) or requete.state.compte:
             return await suite(requete)
         if requete.method == "GET" and not chemin.startswith("/api/"):
             return RedirectResponse(f"/connexion?suite={chemin}", 303)
         return JSONResponse({"detail": "connexion requise"}, 401)
+
+    def exiger_admin(requete: Request) -> str:
+        compte = compte_de(requete)
+        if not securite.est_admin(compte):
+            raise HTTPException(403, "réservé aux administrateurs")
+        return compte
+
+    @app.middleware("http")
+    async def tracer_voix_et_chat(requete: Request, suite):
+        """Pour le diagnostic : chaque appel de la voix et du chat, sa durée, et l'erreur complète s'il plante."""
+        chemin = requete.url.path
+        if not (chemin.startswith("/api/voix/") or chemin == "/api/chat"):
+            return await suite(requete)
+        debut = time.perf_counter()
+        try:
+            rep_ = await suite(requete)
+        except Exception:
+            journal.exception("%s %s a planté après %d ms", requete.method, chemin, (time.perf_counter() - debut) * 1000)
+            raise
+        diag.serveur(f"{requete.method} {chemin}{'?' + requete.url.query if requete.url.query else ''} -> "
+                     f"{rep_.status_code} en {round((time.perf_counter() - debut) * 1000)} ms "
+                     f"({getattr(requete.state, 'compte', None) or '?'} depuis {ip_de(requete)[1]})")
+        return rep_
+
+    @app.post("/api/diagnostic/evenements", include_in_schema=False)
+    async def recevoir_evenements(requete: Request) -> dict:
+        """Événements de la page (envoyés toutes les 3 s et par sendBeacon à la fermeture)."""
+        corps = await requete.body()
+        if len(corps) > 64 * 1024:
+            raise HTTPException(413, "trop gros (64 Ko maximum)")
+        try:
+            d = json.loads(corps or b"{}")
+            lignes = d.get("lignes") or []
+            if not isinstance(lignes, list) or not all(isinstance(l, dict) for l in lignes):
+                raise ValueError
+            diag.evenements(str(d.get("appareil", "")), str(d.get("page", "")), lignes,
+                            str(d["contexte"]) if d.get("contexte") else None,
+                            compte_de(requete) or "", ip_de(requete)[1])
+        except (ValueError, AttributeError) as e:
+            raise HTTPException(422, "format attendu : {appareil, page, contexte?, lignes:[{ms, heure, texte}]}") from e
+        return {"ok": True}
+
+    @app.get("/diagnostic", include_in_schema=False)
+    def page_diagnostic(requete: Request, brut: bool = False, jours: float = 2) -> Response:
+        """Tout le diagnostic (pages + serveur) des derniers jours, secrets masqués. ?brut=1 : texte seul."""
+        exiger_admin(requete)
+        entete = (f"Diagnostic {cfg.identite.nom} v{__version__} · {time.strftime('%Y-%m-%d %H:%M:%S %z')} · "
+                  f"{'conteneur' if os.name != 'nt' and Path('/config').is_dir() else 'PC'} · voix {cfg.voix.moteur_effectif()}")
+        texte = diag.rapport(max(0.1, min(jours, 7)), entete)
+        if brut:
+            return Response(texte, media_type="text/plain; charset=utf-8")
+        import html
+        return Response(PAGE_DIAGNOSTIC.replace("{texte}", html.escape(texte)), media_type="text/html; charset=utf-8")
 
     @app.get("/connexion", include_in_schema=False)
     def page_connexion() -> FileResponse:
@@ -244,47 +348,182 @@ def creer_app(config: Config | None = None, registre: Registre | None = None,
     @app.get("/api/securite")
     def etat_securite(requete: Request) -> dict:
         directe, ip = ip_de(requete)
+        compte = compte_de(requete)
+        info = securite.comptes.get(compte or "", {})
         return {"nom": cfg.identite.nom, "mot_de_passe_defini": securite.mot_de_passe_defini,
                 "locale": est_locale(ip), "ip": ip, "session_jours": cfg.securite.session_jours,
-                "connecte": (not securite.exige_connexion(ip)) or securite.session_valide(requete.cookies.get(NOM_COOKIE))}
+                "connecte": compte is not None, "compte": compte, "compte_nom": info.get("nom", compte),
+                "admin": securite.est_admin(compte), "totp": bool(info.get("totp")),
+                "totp_obligatoire": cfg.securite.totp_obligatoire}
 
-    def poser_session(rep: Response, requete: Request, directe: str) -> None:
-        rep.set_cookie(NOM_COOKIE, securite.creer_session(), max_age=int(cfg.securite.session_jours * 86400),
+    def poser_session(rep: Response, requete: Request, directe: str, compte: str) -> None:
+        rep.set_cookie(NOM_COOKIE, securite.creer_session(compte), max_age=int(cfg.securite.session_jours * 86400),
                        httponly=True, samesite="lax", secure=en_https(requete, directe), path="/")
+
+    def refus(requete: Request, type_: str, e: AccesRefuse, **detail):
+        message = str(e)
+        audit.noter(type_, detail.pop("compte", "") or "", ip_de(requete)[1], resultat="refusé", raison=message, **detail)
+        journal.info("%s refusé : %s (%s)", type_, ip_de(requete)[1], message)
+        return HTTPException(429 if message.startswith("Trop") else 401, message)
 
     @app.post("/api/connexion")
     def se_connecter(c: Connexion, requete: Request, reponse: Response) -> dict:
+        """Étape 1 : mot de passe. Ensuite : code TOTP, ou configuration du TOTP à la première connexion."""
         directe, ip = ip_de(requete)
         if not securite.mot_de_passe_defini:
-            raise HTTPException(409, "aucun mot de passe défini : choisis-le depuis la machine de l'assistant")
-        ok, message = securite.connexion(ip, c.mot_de_passe)
-        if not ok:
-            journal.info("connexion refusée : %s (%s)", ip, message)
-            raise HTTPException(429 if "Trop" in message else 401, message)
-        poser_session(reponse, requete, directe)
-        journal.info("connexion : %s", ip)
-        return {"ok": True}
+            raise HTTPException(409, "aucun compte : crée le premier depuis la machine de l'assistant")
+        try:
+            etape, compte = securite.connexion(ip, c.identifiant, c.mot_de_passe)
+        except AccesRefuse as e:
+            raise refus(requete, "connexion", e, identifiant=c.identifiant) from e
+        if etape == "session":
+            poser_session(reponse, requete, directe, compte)
+            audit.noter("connexion", compte, ip, resultat="ok", facteur="mot de passe")
+            return {"etape": "fini"}
+        return {"etape": etape, "jeton": securite.jeton_etape(compte, etape),
+                "nom": securite.comptes[compte].get("nom", compte)}
+
+    @app.post("/api/connexion/code")
+    def code_totp(e: Etape, requete: Request, reponse: Response) -> dict:
+        directe, ip = ip_de(requete)
+        try:
+            compte = securite.lire_etape(e.jeton, "totp")
+            facteur = securite.verifier_code(ip, compte, e.code)
+        except AccesRefuse as x:
+            raise refus(requete, "connexion", x) from x
+        poser_session(reponse, requete, directe, compte)
+        audit.noter("connexion", compte, ip, resultat="ok", facteur=facteur)
+        return {"etape": "fini", "secours_restants": len(securite.comptes[compte].get("secours", []))}
+
+    @app.post("/api/connexion/totp/preparer")
+    def preparer_totp(e: Etape) -> dict:
+        try:
+            compte = securite.lire_etape(e.jeton, "configurer_totp")
+        except AccesRefuse as x:
+            raise HTTPException(401, str(x)) from x
+        return securite.preparer_totp(compte, cfg.identite.nom)
+
+    @app.post("/api/connexion/totp/activer")
+    def activer_totp(e: Etape, requete: Request, reponse: Response) -> dict:
+        directe, ip = ip_de(requete)
+        try:
+            compte = securite.lire_etape(e.jeton, "configurer_totp")
+            codes = securite.activer_totp(ip, compte, e.code)
+        except AccesRefuse as x:
+            raise refus(requete, "totp_activation", x) from x
+        poser_session(reponse, requete, directe, compte)
+        audit.noter("totp_activé", compte, ip)
+        audit.noter("connexion", compte, ip, resultat="ok", facteur="totp")
+        return {"etape": "fini", "codes_de_secours": codes}
+
+    @app.post("/api/invitation")
+    def accepter_invitation(i: Invitation, requete: Request) -> dict:
+        """Lien d'invitation : la personne choisit son mot de passe, puis configure son code TOTP."""
+        ip = ip_de(requete)[1]
+        try:
+            securite._verifier_bloque(ip)
+            compte = securite.utiliser_invitation(i.invitation, i.mot_de_passe)
+        except AccesRefuse as e:
+            securite.echec(ip)
+            raise refus(requete, "invitation", e) from e
+        audit.noter("invitation_acceptée", compte, ip)
+        etape = "configurer_totp" if cfg.securite.totp_obligatoire else "totp"
+        return {"etape": etape, "jeton": securite.jeton_etape(compte, etape),
+                "nom": securite.comptes[compte].get("nom", compte)}
 
     @app.post("/api/deconnexion")
-    def se_deconnecter(reponse: Response) -> dict:
+    def se_deconnecter(requete: Request, reponse: Response) -> dict:
+        auditer(requete, "déconnexion")
         reponse.delete_cookie(NOM_COOKIE, path="/")
         return {"ok": True}
 
     @app.post("/api/securite/mot-de-passe")
     def changer_mot_de_passe(m: NouveauMotDePasse, requete: Request, reponse: Response) -> dict:
-        """Premier mot de passe : seulement depuis la machine elle-même. Changement : depuis la machine,
-        ou en donnant l'actuel."""
+        """Premier compte : seulement depuis la machine. Ensuite : son propre mot de passe, en donnant l'actuel
+        (la machine elle-même peut réinitialiser le premier administrateur sans l'actuel)."""
         directe, ip = ip_de(requete)
-        if not est_locale(ip):
-            if not securite.mot_de_passe_defini:
-                raise HTTPException(403, "le premier mot de passe se choisit sur la machine de l'assistant")
-            ok, message = securite.connexion(ip, m.actuel or "")
-            if not ok:
-                raise HTTPException(403, message)
-        securite.definir_mot_de_passe(m.nouveau)
-        poser_session(reponse, requete, directe)
-        journal.info("mot de passe défini depuis %s (toutes les sessions précédentes sont fermées)", ip)
+        compte = compte_de(requete)
+        if not securite.mot_de_passe_defini:
+            if not est_locale(ip):
+                raise HTTPException(403, "le premier compte se crée sur la machine de l'assistant")
+            cree = securite.creer_premier(m.nouveau)
+            audit.noter("compte_créé", COMPTE_MACHINE, ip, cible=cree, admin=True)
+            return {"ok": True, "compte": cree}
+        if compte == COMPTE_MACHINE:
+            cible = next(i for i, c in securite.comptes.items() if c.get("admin"))
+        elif compte:
+            cible = compte
+            if not verifier_mdp(cible, m.actuel or ""):
+                raise refus(requete, "mot_de_passe", AccesRefuse("Mot de passe actuel incorrect."), compte=cible)
+        else:
+            raise HTTPException(401, "connexion requise")
+        securite.definir_mot_de_passe(cible, m.nouveau)
+        if compte != COMPTE_MACHINE:
+            poser_session(reponse, requete, directe, cible)
+        audit.noter("mot_de_passe_changé", compte or "", ip, cible=cible)
+        journal.info("mot de passe de %s changé (ses autres sessions sont fermées)", cible)
         return {"ok": True}
+
+    def verifier_mdp(compte: str, mdp: str) -> bool:
+        from .securite import verifier as v
+        return v(mdp, securite.comptes.get(compte, {}).get("mdp") or "")
+
+    # --- comptes (administrateurs) et journal ----------------------------------------------------
+    def lien_invitation(requete: Request, jeton: str) -> str:
+        hote = requete.headers.get("x-forwarded-host") or requete.headers.get("host") or ""
+        proto = "https" if en_https(requete, ip_de(requete)[0]) else "http"
+        return f"{proto}://{hote}/connexion?invitation={jeton}"
+
+    @app.get("/api/comptes")
+    def lister_comptes(requete: Request) -> dict:
+        exiger_admin(requete)
+        return {"comptes": securite.liste(), "moi": compte_de(requete)}
+
+    @app.post("/api/comptes")
+    def creer_compte(n: NouveauCompte, requete: Request) -> dict:
+        admin = exiger_admin(requete)
+        try:
+            ident, jeton = securite.creer_compte(n.nom, n.admin)
+        except AccesRefuse as e:
+            raise HTTPException(409, str(e)) from e
+        audit.noter("compte_créé", admin, ip_de(requete)[1], cible=ident, admin=n.admin)
+        return {"id": ident, "lien": lien_invitation(requete, jeton), "expire_jours": 7}
+
+    @app.post("/api/comptes/{ident}/invitation")
+    def reinviter(ident: str, requete: Request) -> dict:
+        """Nouveau lien : la personne choisira un nouveau mot de passe et refera son TOTP."""
+        admin = exiger_admin(requete)
+        if ident not in securite.comptes:
+            raise HTTPException(404, "compte inconnu")
+        securite.reinitialiser_totp(ident)
+        jeton = securite.nouvelle_invitation(ident)
+        audit.noter("compte_réinitialisé", admin, ip_de(requete)[1], cible=ident)
+        return {"lien": lien_invitation(requete, jeton), "expire_jours": 7}
+
+    @app.delete("/api/comptes/{ident}")
+    def supprimer_compte(ident: str, requete: Request) -> dict:
+        admin = exiger_admin(requete)
+        if ident == admin:
+            raise HTTPException(409, "impossible de supprimer ton propre compte")
+        try:
+            securite.supprimer(ident)
+        except AccesRefuse as e:
+            raise HTTPException(409, str(e)) from e
+        audit.noter("compte_supprimé", admin, ip_de(requete)[1], cible=ident)
+        return {"ok": True}
+
+    @app.post("/api/compte/secours")
+    def regenerer_secours(requete: Request) -> dict:
+        compte = compte_de(requete)
+        if not compte or compte == COMPTE_MACHINE:
+            raise HTTPException(409, "à faire depuis ton compte (connexion depuis un autre appareil)")
+        audit.noter("codes_secours_regénérés", compte, ip_de(requete)[1])
+        return {"codes_de_secours": securite.nouveaux_codes_secours(compte)}
+
+    @app.get("/api/audit")
+    def lire_audit(requete: Request, n: int = 200, type: str = "") -> dict:
+        exiger_admin(requete)
+        return {"evenements": audit.derniers(max(1, min(n, 1000)), type)}
 
     @app.get("/health")
     def health() -> dict:
@@ -320,9 +559,10 @@ def creer_app(config: Config | None = None, registre: Registre | None = None,
         return maison.inventaire.resume()
 
     @app.delete("/api/maison/alias/{phrase}")
-    def oublier_alias(phrase: str) -> dict:
+    def oublier_alias(phrase: str, requete: Request) -> dict:
         if not maison.alias.oublier(phrase):
             raise HTTPException(404, "alias inconnu")
+        auditer(requete, "alias_oublié", phrase=phrase)
         return {"ok": True}
 
     # --- API interne : seulement pour le serveur MCP « maison » (jeton requis) -----------
@@ -345,11 +585,11 @@ def creer_app(config: Config | None = None, registre: Registre | None = None,
         return {"actions": h.liste(max(1, min(limite, 500))) if h else []}
 
     @app.post("/api/actions/{ident}/annuler")
-    async def annuler_action(ident: str) -> dict:
+    async def annuler_action(ident: str, requete: Request) -> dict:
         ok, message = await maison.annuler_action(ident)
         if not ok:
             raise HTTPException(404 if message == "action inconnue" else 409, message)
-        journal.info("historique : action %s annulée (%s)", ident, message)
+        auditer(requete, "action_maison", par="historique", action="annuler", cible=ident, resultat=message)
         return {"ok": True, "message": message}
 
     @app.get("/api/appareils/etat")
@@ -362,6 +602,9 @@ def creer_app(config: Config | None = None, registre: Registre | None = None,
         demande_en_cours.set(("claude", texte_conversation.get(a.conversation, "")))
         r = await maison.agir_ids(a.entity_ids, a.action, a.valeur, a.couleur, a.conversation)
         journal.info("outil agir %s %s -> %s", a.action, a.entity_ids, r.texte[:120])
+        compte, ip = compte_conversation.get(a.conversation, ("", ""))
+        audit.noter("action_maison", compte, ip, par="claude", action=a.action, entites=a.entity_ids,
+                    valeur=a.valeur, resultat=r.texte[:200])
         return {"resultat": r.texte or "Rien n'a été fait.", "entites": r.detail.get("entites", [])}
 
     @app.post("/interne/maison/annuler", include_in_schema=False)
@@ -369,6 +612,8 @@ def creer_app(config: Config | None = None, registre: Registre | None = None,
         verifier_jeton(x_jeton_interne)
         r = await maison.annuler(c.conversation)
         journal.info("outil annuler -> %s", r.texte[:120])
+        compte, ip = compte_conversation.get(c.conversation, ("", ""))
+        audit.noter("action_maison", compte, ip, par="claude", action="annuler", resultat=r.texte[:200])
         return {"resultat": r.texte}
 
     # --- Voix ------------------------------------------------------------------------------
@@ -490,7 +735,9 @@ def creer_app(config: Config | None = None, registre: Registre | None = None,
         }
 
     @app.post("/api/reglages")
-    async def ecrire_reglages(changements: dict) -> dict:
+    async def ecrire_reglages(changements: dict, requete: Request) -> dict:
+        exiger_admin(requete)
+        auditer(requete, "réglages", sections=sorted(changements))
         try:
             _, fichier = R.appliquer(changements, defauts_bruts())
         except R.ReglageInvalide as e:
@@ -512,7 +759,9 @@ def creer_app(config: Config | None = None, registre: Registre | None = None,
         return {"ok": True, "fichier": fichier.name, "redemarrage_necessaire": etat_appli["redemarrage_necessaire"]}
 
     @app.post("/api/reglages/secret")
-    def ecrire_secret(s_: Secret) -> dict:
+    def ecrire_secret(s_: Secret, requete: Request) -> dict:
+        exiger_admin(requete)
+        auditer(requete, "secret_modifié", nom=s_.nom)      # le nom seulement, jamais la valeur
         try:
             R.ecrire_secret(s_.nom, s_.valeur.strip())
         except R.ReglageInvalide as e:
@@ -522,9 +771,11 @@ def creer_app(config: Config | None = None, registre: Registre | None = None,
         return {"ok": True, "redemarrage_necessaire": True}
 
     @app.post("/api/reglages/ollama/telecharger")
-    async def telecharger_ollama(t: TelechargementOllama) -> dict:
+    async def telecharger_ollama(t: TelechargementOllama, requete: Request) -> dict:
         """Télécharge un modèle dans Ollama (en arrière-plan) ; l'avancement est dans GET /api/reglages."""
         import asyncio as aio
+        exiger_admin(requete)
+        auditer(requete, "modèle_téléchargé", modele=t.modele)
         etat_o = await etat_ollama()
         if not etat_o.get("joignable"):
             raise HTTPException(503, "Ollama injoignable")
@@ -556,12 +807,14 @@ def creer_app(config: Config | None = None, registre: Registre | None = None,
         return {"ok": True}
 
     @app.post("/api/redemarrer")
-    async def redemarrer() -> dict:
+    async def redemarrer(requete: Request) -> dict:
         """Dans le conteneur : l'assistant s'arrête et Docker le relance (--restart=unless-stopped).
         Sur le PC : on le relance depuis l'onglet Outils du tableau de suivi."""
         if not (os.name != "nt" and Path("/config").is_dir()):
             raise HTTPException(409, "sur le PC, redémarre l'assistant depuis l'onglet Outils du tableau de suivi")
         import asyncio as aio
+        exiger_admin(requete)
+        auditer(requete, "redémarrage")
         journal.info("redémarrage demandé depuis la page de configuration")
         aio.get_running_loop().call_later(0.5, os._exit, 0)
         return {"ok": True}
@@ -590,10 +843,11 @@ def creer_app(config: Config | None = None, registre: Registre | None = None,
         return await routeur.decider(d.message, precedent)
 
     @app.post("/api/chat")
-    async def chat(d: DemandeChat):
+    async def chat(d: DemandeChat, requete: Request):
         demande_en_cours.set((d.source, d.message))
-        texte_conversation[d.conversation] = d.message
         decision = None
+        compte_conversation[d.conversation] = (compte_de(requete) or "", ip_de(requete)[1])
+        texte_conversation[d.conversation] = d.message
         if d.role == ROLE_AUTO and ha.configure and (maison.en_attente(d.conversation) or maison.reconnait(d.message, d.conversation)):
             # Commande de maison reconnue (ou réponse à « Lequel ? ») : inutile de consulter le routeur
             decision = Decision(SIMPLE, cfg.routeur.role_simple, "commande maison", 0.0)
@@ -616,6 +870,9 @@ def creer_app(config: Config | None = None, registre: Registre | None = None,
             rm = await maison.traiter(d.message, d.conversation)
             route["maison"] = {"traite": rm.traite, **{k: v for k, v in rm.detail.items() if k != "commande"}}
             if rm.traite:
+                if rm.detail.get("entites") or "ordres" in str(rm.detail.get("resolution", "")):
+                    auditer(requete, "action_maison", par="règles", demande=d.message[:200],
+                            entites=rm.detail.get("entites"), resultat=rm.texte[:200])
                 _tracer(route, d.message)
                 return _reponse_ha(d.flux, rm.texte, route, "maison", "inventaire", rm.detail.get("duree_ms", 0))
             if "commande" in rm.detail and cfg.maison.assist_en_secours:
@@ -626,6 +883,8 @@ def creer_app(config: Config | None = None, registre: Registre | None = None,
                 route["home_assistant"] = {"compris": rha.compris, "type": rha.type, "code": rha.code,
                                            "duree_ms": duree, "entites": rha.entites}
                 if rha.compris:
+                    auditer(requete, "action_maison", par="assist", demande=d.message[:200], entites=rha.entites,
+                            resultat=(rha.texte or "")[:200])
                     appris = await maison.apprendre_d_assist(d.message, rha.entites, d.conversation)
                     if appris:
                         route["home_assistant"]["alias_appris"] = appris
@@ -753,6 +1012,24 @@ def creer_app(config: Config | None = None, registre: Registre | None = None,
                 yield _ndjson({"erreur": f"aucun modèle disponible ({e})"})
 
         return StreamingResponse(lignes(), media_type="application/x-ndjson")
+
+    @app.get("/favicon.ico", include_in_schema=False)
+    def favicon() -> FileResponse:
+        return FileResponse(STATIC / "icones" / "favicon.ico", media_type="image/x-icon")
+
+    @app.get("/apple-touch-icon.png", include_in_schema=False)
+    def icone_apple() -> FileResponse:
+        return FileResponse(STATIC / "icones" / "apple-touch-icon.png", media_type="image/png")
+
+    @app.get("/manifest.webmanifest", include_in_schema=False)
+    def manifeste() -> JSONResponse:
+        """Pour « Ajouter à l'écran d'accueil » : le nom suit la configuration."""
+        nom = cfg.identite.nom
+        icones = [{"src": f"/static/icones/icone-{t}.png", "sizes": f"{t}x{t}", "type": "image/png",
+                   "purpose": "any maskable"} for t in (192, 512)]
+        return JSONResponse({"name": nom, "short_name": nom, "start_url": "/", "display": "standalone",
+                             "background_color": "#000000", "theme_color": "#000000", "icons": icones},
+                            media_type="application/manifest+json")
 
     @app.get("/", include_in_schema=False)
     def index() -> FileResponse:

@@ -197,6 +197,7 @@ class SecuriteConfig(BaseModel):
     # Proxys dont on croit X-Forwarded-For (Nginx Proxy Manager…). Vide = on ignore ces en-têtes.
     proxies_de_confiance: list[str] = Field(default_factory=list)
     machine_sans_mot_de_passe: bool = True     # sur la machine elle-même (127.0.0.1), pas de connexion
+    totp_obligatoire: bool = True              # code TOTP à chaque nouvelle connexion (configuré au 1er accès)
     session_jours: float = Field(default=30, gt=0, le=365)
     essais_max: int = Field(default=5, ge=1)
     blocage_s: float = Field(default=300, gt=0)

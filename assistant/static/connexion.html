@@ -4,23 +4,36 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Connexion</title>
+<link rel="icon" href="/favicon.ico" sizes="any">
+<link rel="icon" type="image/png" sizes="32x32" href="/static/icones/favicon-32.png">
+<link rel="apple-touch-icon" href="/apple-touch-icon.png">
+<link rel="manifest" href="/manifest.webmanifest">
 <style>
   :root { --bg:#0a1018; --fg:#e8ecef; --muted:#8a96a0; --accent:#3cc6c8; --bord:#26323b; --err:#ef7a73; }
   @media (prefers-color-scheme: light) { :root { --bg:#f4f6f7; --fg:#14181c; --muted:#5b6670; --accent:#0f7c86; --bord:#d3dade; --err:#c0392b; } }
   * { box-sizing:border-box; }
-  html,body { height:100%; margin:0; }
-  body { background:var(--bg); color:var(--fg); font-family:system-ui,sans-serif; display:flex; align-items:center; justify-content:center; padding:16px; }
-  main { width:min(360px, 100%); display:flex; flex-direction:column; gap:14px; text-align:center; }
+  html,body { min-height:100%; margin:0; }
+  body { background:var(--bg); color:var(--fg); font-family:system-ui,sans-serif; display:flex; align-items:center; justify-content:center; padding:16px; min-height:100vh; }
+  main { width:min(380px, 100%); display:flex; flex-direction:column; gap:14px; text-align:center; }
   .halo { width:72px; height:72px; margin:0 auto 4px; border-radius:50%;
           background:radial-gradient(circle at 40% 35%, var(--accent), transparent 70%); filter:blur(4px); }
   h1 { margin:0; font-size:1.6rem; font-weight:600; }
   p { margin:0; color:var(--muted); font-size:.9rem; line-height:1.45; }
   form { display:flex; flex-direction:column; gap:10px; margin-top:6px; }
   input { padding:12px 14px; border-radius:12px; border:1px solid var(--bord); background:transparent; color:var(--fg); font-size:1rem; }
+  input.code { text-align:center; letter-spacing:.3em; font-size:1.3rem; font-variant-numeric:tabular-nums; }
   input:focus { outline:2px solid var(--accent); outline-offset:1px; }
   button { padding:12px; border:0; border-radius:12px; background:var(--accent); color:#fff; font-size:1rem; font-weight:600; cursor:pointer; }
   button:disabled { opacity:.5; cursor:default; }
+  button.lien { background:none; color:var(--muted); font-weight:400; font-size:.85rem; padding:4px; text-decoration:underline; }
   .erreur { color:var(--err); min-height:1.2em; font-size:.9rem; }
+  .qr { background:#fff; border-radius:12px; padding:8px; width:200px; margin:0 auto; line-height:0; }
+  .qr svg { width:100%; height:auto; }
+  .secret { font-family:ui-monospace,monospace; font-size:.8rem; word-break:break-all; user-select:all; color:var(--fg); }
+  .codes { display:grid; grid-template-columns:1fr 1fr; gap:6px 12px; font-family:ui-monospace,monospace; font-size:1rem;
+           border:1px solid var(--bord); border-radius:12px; padding:12px; user-select:all; }
+  label.case { display:flex; gap:8px; align-items:center; justify-content:center; font-size:.9rem; color:var(--muted); }
+  details { text-align:left; font-size:.85rem; color:var(--muted); }
   [hidden] { display:none !important; }
 </style>
 </head>
@@ -29,38 +42,140 @@
   <div class="halo" aria-hidden="true"></div>
   <h1 id="titre">…</h1>
   <p id="info">Chargement…</p>
+
   <form id="fConnexion" hidden>
+    <input id="ident" autocomplete="username" placeholder="Identifiant (ton prénom)" autocapitalize="none">
     <input type="password" id="mdp" autocomplete="current-password" placeholder="Mot de passe" required>
-    <button id="bConnexion">Se connecter</button>
+    <button id="bConnexion">Continuer</button>
   </form>
+
+  <form id="fCode" hidden>
+    <input id="code" class="code" autocomplete="one-time-code" inputmode="numeric" placeholder="123456" maxlength="9" required>
+    <button id="bCode">Se connecter</button>
+    <button type="button" class="lien" id="bSecours">J'ai perdu mon téléphone : code de secours</button>
+  </form>
+
+  <form id="fConfigurer" hidden>
+    <div class="qr" id="qr"></div>
+    <details><summary>Impossible de scanner ?</summary><p>Saisis cette clé dans l'application :</p><p class="secret" id="secret"></p></details>
+    <input id="codeConf" class="code" autocomplete="one-time-code" inputmode="numeric" placeholder="123456" maxlength="6" required>
+    <button id="bConfigurer">Activer</button>
+  </form>
+
+  <form id="fCodesSecours" hidden>
+    <div class="codes" id="listeCodes"></div>
+    <label class="case"><input type="checkbox" id="notes" required> Je les ai notés en lieu sûr</label>
+    <button id="bFini">Continuer</button>
+  </form>
+
+  <form id="fInvitation" hidden>
+    <input type="password" id="mdpInv" autocomplete="new-password" placeholder="Choisis un mot de passe (10 caractères minimum)" minlength="10" required>
+    <input type="password" id="mdpInv2" autocomplete="new-password" placeholder="Confirme le mot de passe" minlength="10" required>
+    <button id="bInvitation">Continuer</button>
+  </form>
+
   <form id="fDefinir" hidden>
     <input type="password" id="nouveau" autocomplete="new-password" placeholder="Nouveau mot de passe (10 caractères minimum)" minlength="10" required>
     <input type="password" id="confirme" autocomplete="new-password" placeholder="Confirme le mot de passe" minlength="10" required>
     <button id="bDefinir">Définir le mot de passe</button>
   </form>
+
   <p class="erreur" id="erreur" role="alert"></p>
 </main>
 <script>
 const $ = id => document.getElementById(id);
-const suite = new URLSearchParams(location.search).get('suite') || '/';
+const params = new URLSearchParams(location.search);
+const suite = params.get('suite') || '/';
 const destination = suite.startsWith('/') && !suite.startsWith('//') ? suite : '/';
+const invitation = params.get('invitation');
+let jeton = '';
 
 async function poster(url, corps) {
   const r = await fetch(url, {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(corps)});
   let o = {}; try { o = await r.json(); } catch (e) {}
-  if (!r.ok) throw new Error(o.detail || ('Erreur ' + r.status));
+  if (!r.ok) throw new Error(typeof o.detail === 'string' ? o.detail : ('Erreur ' + r.status));
   return o;
 }
+
+function montrer(id, info) {
+  for (const f of document.querySelectorAll('form')) f.hidden = f.id !== id;
+  $('erreur').textContent = '';
+  if (info !== undefined) $('info').textContent = info;
+  const champ = $(id).querySelector('input:not([type=checkbox])');
+  if (champ) setTimeout(() => champ.focus(), 30);
+}
+
+// Gère la réponse d'une étape : code à saisir, TOTP à configurer, ou connexion terminée
+async function etape(o) {
+  if (o.etape === 'fini') { location.replace(destination); return; }
+  jeton = o.jeton;
+  if (o.etape === 'totp') {
+    montrer('fCode', 'Code à 6 chiffres de ton application d\'authentification.');
+  } else if (o.etape === 'configurer_totp') {
+    const p = await poster('/api/connexion/totp/preparer', {jeton});
+    $('qr').innerHTML = p.qr_svg;      // SVG produit par le serveur (segno), pas de contenu utilisateur
+    $('secret').textContent = p.secret;
+    montrer('fConfigurer', (o.nom ? o.nom + ', d' : 'D') + 'ernière étape : scanne ce QR code avec une application d\'authentification (Google Authenticator, Aegis, 2FAS, Bitwarden…), puis saisis le code affiché.');
+  }
+}
+
+function soumettre(formId, bouton, action) {
+  $(formId).onsubmit = async ev => {
+    ev.preventDefault(); $('erreur').textContent = ''; $(bouton).disabled = true;
+    try { await action(); } catch (e) { $('erreur').textContent = e.message; }
+    finally { $(bouton).disabled = false; }
+  };
+}
+
+soumettre('fConnexion', 'bConnexion', async () => {
+  try { await etape(await poster('/api/connexion', {identifiant: $('ident').value, mot_de_passe: $('mdp').value})); }
+  catch (e) { $('mdp').select(); throw e; }
+});
+
+soumettre('fCode', 'bCode', async () => {
+  try { await etape(await poster('/api/connexion/code', {jeton, code: $('code').value})); }
+  catch (e) {
+    $('code').select();
+    if (/recommence/.test(e.message)) montrer('fConnexion', 'Le délai est passé : reconnecte-toi.');
+    throw e;
+  }
+});
+
+$('bSecours').onclick = () => {
+  $('code').inputMode = 'text'; $('code').placeholder = 'xxxx-xxxx'; $('code').classList.remove('code');
+  $('info').textContent = 'Saisis un de tes codes de secours (chacun ne sert qu\'une fois).'; $('code').focus();
+};
+
+soumettre('fConfigurer', 'bConfigurer', async () => {
+  const o = await poster('/api/connexion/totp/activer', {jeton, code: $('codeConf').value});
+  $('listeCodes').replaceChildren(...o.codes_de_secours.map(c => Object.assign(document.createElement('span'), {textContent: c})));
+  montrer('fCodesSecours', 'C\'est activé. Voici tes codes de secours : chacun remplace une fois le code du téléphone si tu le perds. Ils ne seront plus affichés.');
+});
+
+soumettre('fCodesSecours', 'bFini', async () => { location.replace(destination); });
+
+soumettre('fInvitation', 'bInvitation', async () => {
+  if ($('mdpInv').value !== $('mdpInv2').value) throw new Error('Les deux mots de passe sont différents.');
+  await etape(await poster('/api/invitation', {invitation, mot_de_passe: $('mdpInv').value}));
+});
+
+soumettre('fDefinir', 'bDefinir', async () => {
+  if ($('nouveau').value !== $('confirme').value) throw new Error('Les deux mots de passe sont différents.');
+  await poster('/api/securite/mot-de-passe', {nouveau: $('nouveau').value});
+  location.replace(destination);
+});
 
 fetch('/api/securite').then(r => r.json()).then(s => {
   $('titre').textContent = s.nom || 'Assistant';
   document.title = 'Connexion · ' + (s.nom || 'Assistant');
-  if (!s.mot_de_passe_defini) {
+  if (invitation) {
+    history.replaceState(null, '', location.pathname);      // le lien ne reste pas dans l'historique
+    montrer('fInvitation', 'Bienvenue ! Choisis ton mot de passe, puis on configurera le code du téléphone.');
+  } else if (!s.mot_de_passe_defini) {
     if (s.locale) {
-      $('info').textContent = 'Aucun mot de passe pour l\'instant. Choisis-en un : il sera demandé sur les autres appareils (tablette, téléphone).';
-      $('fDefinir').hidden = false; $('nouveau').focus();
+      montrer('fDefinir', 'Aucun compte pour l\'instant. Choisis le mot de passe administrateur : il sera demandé sur les autres appareils (tablette, téléphone), avec un code du téléphone.');
     } else {
-      $('info').textContent = 'Aucun mot de passe n\'est encore défini. Il se choisit sur la machine de l\'assistant : sur le PC, ouvre http://127.0.0.1:8080/connexion ; dans Docker (Unraid), ouvre la console du conteneur et lance :';
+      $('info').textContent = 'Aucun compte n\'est encore créé. Il se crée sur la machine de l\'assistant : sur le PC, ouvre http://127.0.0.1:8080/connexion ; dans Docker (Unraid), ouvre la console du conteneur et lance :';
       const cmd = document.createElement('pre');
       cmd.textContent = 'python -c "import json,getpass,urllib.request;r=urllib.request.Request(\'http://127.0.0.1:8080/api/securite/mot-de-passe\',data=json.dumps({\'nouveau\':getpass.getpass(\'Mot de passe : \')}).encode(),headers={\'Content-Type\':\'application/json\'});print(urllib.request.urlopen(r).read().decode())"';
       cmd.style.cssText = 'text-align:left;white-space:pre-wrap;word-break:break-all;font-size:.75rem;padding:10px;border:1px solid var(--bord);border-radius:10px;user-select:all;margin:0';
@@ -69,26 +184,10 @@ fetch('/api/securite').then(r => r.json()).then(s => {
   } else if (s.connecte) {
     location.replace(destination);
   } else {
-    $('info').textContent = 'Connexion à cet appareil (gardée ' + s.session_jours + ' jours).';
-    $('fConnexion').hidden = false; $('mdp').focus();
+    montrer('fConnexion', 'Connexion à cet appareil (gardée ' + s.session_jours + ' jours).');
+    $('ident').focus();
   }
 }).catch(() => { $('info').textContent = 'Assistant injoignable.'; });
-
-$('fConnexion').onsubmit = async ev => {
-  ev.preventDefault(); $('erreur').textContent = ''; $('bConnexion').disabled = true;
-  try { await poster('/api/connexion', {mot_de_passe: $('mdp').value}); location.replace(destination); }
-  catch (e) { $('erreur').textContent = e.message; $('mdp').select(); }
-  finally { $('bConnexion').disabled = false; }
-};
-
-$('fDefinir').onsubmit = async ev => {
-  ev.preventDefault(); $('erreur').textContent = '';
-  if ($('nouveau').value !== $('confirme').value) { $('erreur').textContent = 'Les deux mots de passe sont différents.'; return; }
-  $('bDefinir').disabled = true;
-  try { await poster('/api/securite/mot-de-passe', {nouveau: $('nouveau').value}); location.replace(destination); }
-  catch (e) { $('erreur').textContent = e.message; }
-  finally { $('bDefinir').disabled = false; }
-};
 </script>
 </body>
 </html>

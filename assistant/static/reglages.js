@@ -1,6 +1,7 @@
 /* Configuration de l'assistant, dans le panneau Réglages (⚙) du chat.
    Lit GET /api/reglages, écrit POST /api/reglages (config.yaml), /api/reglages/secret (jeton HA),
-   /api/reglages/ollama/telecharger, /api/securite/mot-de-passe et /api/redemarrer.
+   /api/reglages/ollama/telecharger, /api/securite/mot-de-passe et /api/redemarrer ;
+   comptes : /api/securite, /api/comptes, /api/compte/secours, /api/audit (administrateurs). 
    Aucun secret n'est jamais renvoyé par le serveur : le champ du jeton reste vide. */
 (function () {
   const $ = id => document.getElementById(id);
@@ -33,6 +34,15 @@
     #bandeauRedemarrage { margin:0 0 12px; padding:8px 10px; border:1px solid var(--accent); border-radius:10px;
                           font-size:.82rem; display:flex; gap:8px; align-items:center; justify-content:space-between; }
     #bandeauRedemarrage[hidden] { display:none; }
+    #config .compte { display:flex; gap:8px; align-items:center; justify-content:space-between; padding:8px 0;
+                      border-bottom:1px dashed var(--bord); font-size:.85rem; flex-wrap:wrap; }
+    #config .compte small { color:var(--muted); display:block; font-size:.75rem; }
+    #config .codes { display:grid; grid-template-columns:1fr 1fr; gap:4px 10px; font-family:var(--f-mono, monospace);
+                     font-size:.85rem; user-select:all; margin-top:8px; }
+    #config .journal { max-height:240px; overflow:auto; margin-top:8px; font-size:.75rem; color:var(--muted); }
+    #config .journal div { padding:3px 0; border-bottom:1px dashed var(--bord); }
+    #config .journal b { color:var(--fg); font-weight:500; }
+    #config .lienInv { word-break:break-all; user-select:all; }
   `;
   document.head.appendChild(css);
 
@@ -72,10 +82,26 @@
       <label class="champ">Réseaux autorisés, séparés par des virgules<input id="cReseaux"></label>
       <label class="champ">Durée d'une connexion (jours)<input id="cSession" type="number" min="1" max="365"></label>
       <div class="rangee"><button type="button" class="bouton principal" data-enr="acces">Enregistrer</button><span class="aide" data-msg="acces"></span></div>
+    </details>
+    <details id="cfgMonCompte"><summary>Mon compte <span class="etat" id="eMonCompte"></span></summary>
       <label class="champ">Mot de passe actuel<input id="cMdpActuel" type="password" autocomplete="current-password"></label>
       <label class="champ">Nouveau mot de passe (10 caractères min.)<input id="cMdpNouveau" type="password" autocomplete="new-password" minlength="10"></label>
       <div class="rangee"><button type="button" class="bouton" id="cMdpBtn">Changer le mot de passe</button><span class="aide" data-msg="mdp"></span></div>
-      <p class="aide">Changer le mot de passe déconnecte tous les autres appareils.</p>
+      <p class="aide">Changer le mot de passe déconnecte tous tes autres appareils.</p>
+      <div class="rangee"><button type="button" class="bouton" id="cSecoursBtn">Nouveaux codes de secours</button>
+        <button type="button" class="bouton" id="cDeconnexion">Se déconnecter</button><span class="aide" data-msg="compte"></span></div>
+      <div class="codes" id="cCodes" hidden></div>
+    </details>
+    <details id="cfgComptes" hidden><summary>Comptes <span class="etat" id="eComptes"></span></summary>
+      <div id="cListeComptes"></div>
+      <div class="rangee"><input id="cNouveauNom" placeholder="prénom du nouveau compte" maxlength="40" style="flex:1;min-width:0;background:var(--bg);color:var(--fg);border:1px solid var(--bord);border-radius:8px;padding:7px 9px;font:inherit;font-size:.85rem">
+        <label class="aide" style="margin:0"><input type="checkbox" id="cNouveauAdmin"> admin</label>
+        <button type="button" class="bouton principal" id="cCreerCompte">Inviter</button></div>
+      <p class="aide" data-msg="comptes"></p>
+      <p class="aide">L'invitation est un lien à usage unique, valable 7 jours : la personne y choisit son mot de passe puis configure le code de son téléphone.</p>
+    </details>
+    <details id="cfgJournal" hidden><summary>Journal <span class="etat" id="eJournal"></span></summary>
+      <div class="journal" id="cJournal"></div>
     </details>
     <details id="cfgSysteme"><summary>Système <span class="etat" id="eSysteme"></span></summary>
       <p class="aide" id="cSystemeInfo"></p>
@@ -147,7 +173,7 @@
     $('cProxies').value = (r.securite.proxies_de_confiance || []).join(', ');
     $('cReseaux').value = (r.securite.reseaux_autorises || []).join(', ');
     $('cSession').value = r.securite.session_jours;
-    etat('eAcces', e.securite.mot_de_passe_defini ? 'mot de passe défini' : 'sans mot de passe', e.securite.mot_de_passe_defini ? 'ok' : 'ko');
+    etat('eAcces', e.securite.mot_de_passe_defini ? 'protégé' : 'sans compte', e.securite.mot_de_passe_defini ? 'ok' : 'ko');
 
     const v = e.voix || {};
     $('cSystemeInfo').textContent = `Version ${e.version} · ${e.conteneur ? 'conteneur Docker' : 'PC'} · transcription sur ${v.appareil || '?'} · voix ${v.moteur || '?'}`;
@@ -156,7 +182,105 @@
 
   async function charger() {
     try { afficher(await api('/api/reglages')); } catch (e) { etat('eSysteme', 'réglages indisponibles : ' + e.message, 'ko'); }
+    chargerComptes();
   }
+
+  // --- comptes ---------------------------------------------------------------------------------
+  const texte = (balise, contenu) => Object.assign(document.createElement(balise), {textContent: contenu});
+  const quand = d => d ? new Date(d).toLocaleString('fr-FR', {dateStyle: 'short', timeStyle: 'short'}) : 'jamais';
+  const LIBELLES = {connexion: 'connexion', 'déconnexion': 'déconnexion', action_maison: 'maison', 'réglages': 'réglages',
+    secret_modifié: 'secret modifié', 'redémarrage': 'redémarrage', compte_créé: 'compte créé', compte_supprimé: 'compte supprimé',
+    compte_réinitialisé: 'compte réinitialisé', invitation_acceptée: 'invitation acceptée', totp_activé: 'code téléphone activé',
+    mot_de_passe_changé: 'mot de passe changé', codes_secours_regénérés: 'codes de secours', alias_oublié: 'alias oublié',
+    modèle_téléchargé: 'modèle téléchargé', totp_activation: 'code téléphone', invitation: 'invitation'};
+
+  async function chargerComptes() {
+    let s;
+    try { s = await api('/api/securite'); } catch (e) { return; }
+    const machine = s.compte === 'machine';
+    $('cfgMonCompte').hidden = machine || !s.compte;
+    if (!machine && s.compte) etat('eMonCompte', s.compte_nom + (s.admin ? ' · admin' : '') + (s.totp ? ' · code téléphone' : ''), s.totp ? 'ok' : '');
+    $('cfgComptes').hidden = $('cfgJournal').hidden = !s.admin;
+    if (!s.admin) return;
+    try {
+      const {comptes, moi} = await api('/api/comptes');
+      etat('eComptes', comptes.length + ' compte' + (comptes.length > 1 ? 's' : ''));
+      const liste = $('cListeComptes');
+      liste.replaceChildren();
+      for (const c of comptes) {
+        const ligne = document.createElement('div'); ligne.className = 'compte';
+        const nom = texte('div', c.nom + (c.admin ? ' · admin' : ''));
+        nom.appendChild(texte('small', !c.actif ? 'invitation en attente' : (c.totp ? 'code téléphone actif' : 'code téléphone à configurer') +
+          ' · dernière connexion : ' + quand(c.derniere_connexion) + (c.totp ? ' · ' + c.secours_restants + ' codes de secours' : '')));
+        const boutons = document.createElement('div'); boutons.className = 'rangee'; boutons.style.marginTop = '0';
+        const reinv = texte('button', c.actif ? 'Réinitialiser' : 'Nouveau lien'); reinv.type = 'button'; reinv.className = 'bouton';
+        reinv.title = 'Nouveau lien d\'invitation : nouveau mot de passe et nouveau code téléphone ; ses appareils sont déconnectés';
+        reinv.onclick = async () => {
+          if (c.actif && !confirm(`Réinitialiser ${c.nom} ? Ses appareils seront déconnectés et il faudra lui envoyer le nouveau lien.`)) return;
+          try { montrerLien(c.nom, (await api(`/api/comptes/${encodeURIComponent(c.id)}/invitation`, {})).lien); chargerComptes(); }
+          catch (e) { msg('comptes', e.message, false); }
+        };
+        boutons.appendChild(reinv);
+        if (c.id !== moi) {
+          const suppr = texte('button', 'Supprimer'); suppr.type = 'button'; suppr.className = 'bouton';
+          suppr.onclick = async () => {
+            if (!confirm(`Supprimer le compte ${c.nom} ? Ses appareils seront déconnectés.`)) return;
+            try {
+              const r = await fetch(`/api/comptes/${encodeURIComponent(c.id)}`, {method: 'DELETE'});
+              if (!r.ok) throw new Error((await r.json()).detail || 'erreur ' + r.status);
+              msg('comptes', c.nom + ' supprimé.', true); chargerComptes();
+            } catch (e) { msg('comptes', e.message, false); }
+          };
+          boutons.appendChild(suppr);
+        }
+        ligne.append(nom, boutons);
+        liste.appendChild(ligne);
+      }
+      const {evenements} = await api('/api/audit?n=60');
+      etat('eJournal', evenements.length ? 'dernier : ' + quand(evenements[0].date) : 'vide');
+      $('cJournal').replaceChildren(...evenements.map(ev => {
+        const d = document.createElement('div');
+        d.appendChild(texte('b', LIBELLES[ev.type] || ev.type));
+        const precision = ev.resultat === 'refusé' ? ' refusée (' + (ev.raison || '') + ')'
+          : ev.type === 'action_maison' ? ' : ' + (ev.demande || ev.action || '') + (ev.resultat ? ' → ' + ev.resultat : '')
+          : ev.cible ? ' : ' + ev.cible : ev.sections ? ' : ' + ev.sections.join(', ') : ev.nom ? ' : ' + ev.nom : '';
+        d.append(precision + ' · ' + (ev.compte || ev.identifiant || '?') + ' · ' + (ev.ip || '') + ' · ' + quand(ev.date));
+        return d;
+      }));
+    } catch (e) { msg('comptes', e.message, false); }
+  }
+
+  function montrerLien(nom, lien) {
+    const p = zone.querySelector('[data-msg="comptes"]');
+    p.className = 'aide msg-ok';
+    p.replaceChildren(`Lien d'invitation pour ${nom} (à lui envoyer, usage unique) : `, Object.assign(texte('span', lien), {className: 'lienInv'}));
+    if (navigator.clipboard) navigator.clipboard.writeText(lien).then(() => p.append(' · copié'), () => {});
+  }
+
+  $('cCreerCompte').onclick = async () => {
+    const nom = $('cNouveauNom').value.trim();
+    if (!nom) { msg('comptes', 'Indique un prénom.', false); return; }
+    try {
+      const o = await api('/api/comptes', {nom, admin: $('cNouveauAdmin').checked});
+      $('cNouveauNom').value = ''; $('cNouveauAdmin').checked = false;
+      montrerLien(nom, o.lien); chargerComptes();
+    } catch (e) { msg('comptes', e.message, false); }
+  };
+
+  $('cSecoursBtn').onclick = async () => {
+    if (!confirm('Créer 10 nouveaux codes de secours ? Les anciens ne marcheront plus.')) return;
+    try {
+      const o = await api('/api/compte/secours', {});
+      $('cCodes').replaceChildren(...o.codes_de_secours.map(c => texte('span', c)));
+      $('cCodes').hidden = false;
+      msg('compte', 'Note-les en lieu sûr : ils ne seront plus affichés.', true);
+    } catch (e) { msg('compte', e.message, false); }
+  };
+
+  $('cDeconnexion').onclick = async () => {
+    try { await api('/api/deconnexion', {}); } catch (e) {}
+    location.href = '/connexion';
+  };
 
   async function enregistrer(cle, changements, apres) {
     try {

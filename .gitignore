@@ -14,4 +14,6 @@ config/securite.json
 config/audit*.jsonl
 config/diagnostic/
 config/logs/
+config/actions.json
+config/etats_appareils.json
 diagnostic/
