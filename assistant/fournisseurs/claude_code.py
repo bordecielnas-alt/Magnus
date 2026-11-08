@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
 import os
 import shutil
 import subprocess
@@ -40,10 +41,59 @@ OUTILS_WEB = ["WebSearch", "WebFetch"]
 NOTE_WEB = (
     "Tu peux chercher sur le web (WebSearch, WebFetch) : fais-le pour l'actualité, la météo, les horaires, les "
     "prix, les résultats sportifs ou toute information récente ou que tu ne connais pas avec certitude. "
-    "Sinon réponds directement, sans chercher. Donne le résultat en une ou deux phrases, sans liste de liens. "
+    "Sinon réponds directement, sans chercher. Donne le résultat en une ou deux phrases. Ta réponse est lue à "
+    "voix haute : ne cite jamais de sources, de sites ni de liens, même si l'outil de recherche te le demande, "
+    "et n'en parle pas. "
     "Tu ne peux ni exécuter de commande, ni lire ou écrire de fichier. Les informations techniques ajoutées "
     "sur ta machine d'exécution (dossier, système, shell) ne concernent pas l'utilisateur : n'en parle pas."
 )
+
+
+# La recherche web demande au modèle de lister ses sources : la réponse est lue à voix haute, on les retire.
+RE_SOURCES = re.compile(r"(?:^|\n)[ \t]*[*_#>-]*[ \t]*(?:sources?|r[ée]f[ée]rences?|liens?)[ \t]*[*_]*[ \t]*:", re.I)
+RE_LIEN = re.compile(r"\[([^\]\n]+)\]\((?:https?://)[^)\s]+\)")
+RE_URL = re.compile(r"\s*\(?<?https?://[^\s)>]+>?\)?")
+RE_SOURCE_ENTRE_PARENTHESES = re.compile(r"\s*\((?:sources?|d'après|selon)\s*:?[^)]*\)", re.I)
+
+
+def nettoyer_sources(texte: str) -> str:
+    return RE_SOURCE_ENTRE_PARENTHESES.sub("", RE_URL.sub("", RE_LIEN.sub(r"\1", texte)))
+
+
+async def sans_sources(flux: AsyncIterator[str]) -> AsyncIterator[str]:
+    """Laisse passer le texte au fil de l'eau, mais s'arrête à « Sources : » et retire liens et adresses.
+    Retient seulement ce qui pourrait être le début d'un marqueur (fin de ligne) ou d'un lien inachevé."""
+    tampon, coupe = "", False
+    async for x in flux:
+        if coupe:
+            continue                     # on vide le flux sans rien envoyer
+        tampon += x
+        m = RE_SOURCES.search(tampon)
+        if m:
+            reste = nettoyer_sources(tampon[:m.start()]).rstrip()
+            if reste:
+                yield reste
+            tampon, coupe = "", True
+            continue
+        sur = len(tampon)
+        nl = tampon.rfind("\n")
+        if nl >= 0 and len(tampon) - nl < 40:
+            sur = len(tampon[:nl].rstrip())   # blancs compris : « \nSources : » peut encore arriver
+        cr = tampon.rfind("[")
+        if cr >= 0 and ")" not in tampon[cr:] and len(tampon) - cr < 300:
+            sur = min(sur, cr)           # lien markdown pas encore fermé
+        ht = tampon.rfind("http")
+        if ht >= 0 and not re.search(r"\s", tampon[ht:]):
+            sur = min(sur, ht)           # adresse peut-être pas finie
+        if sur > 0:
+            sortie = nettoyer_sources(tampon[:sur])
+            tampon = tampon[sur:]
+            if sortie:
+                yield sortie
+    if tampon and not coupe:
+        fin = nettoyer_sources(tampon)
+        if fin.strip():
+            yield fin.rstrip()
 
 
 def resoudre_binaire(commande: str) -> str | None:
@@ -134,6 +184,10 @@ class FournisseurClaudeCode(Fournisseur):
         )
 
     async def flux(self, messages: list[Message], outils: dict | None = None) -> AsyncIterator[str]:
+        async for x in sans_sources(self._flux_brut(messages, outils)):
+            yield x
+
+    async def _flux_brut(self, messages: list[Message], outils: dict | None = None) -> AsyncIterator[str]:
         binaire = resoudre_binaire(self.commande)
         if not binaire:
             raise FournisseurIndisponible(f"{self.ident} : commande « {self.commande} » introuvable")

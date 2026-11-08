@@ -98,7 +98,11 @@ class Voix:
             decoder_audio(audio), language=self.cfg.langue, beam_size=1, vad_filter=True,
             initial_prompt=indices or None, condition_on_previous_text=False,
         )
-        texte = " ".join(s.text.strip() for s in segments).strip()
+        # Segments que Whisper juge lui-même peu probables d'être de la parole (toux, claquement, souffle) :
+        # écartés, comme le fait l'outil officiel (pas de parole probable ET texte peu sûr).
+        texte = " ".join(s.text.strip() for s in segments
+                         if not (s.no_speech_prob > 0.6 and s.avg_logprob < -0.8)
+                         and s.avg_logprob > -1.5).strip()
         return Transcription(texte, info.language, round(info.duration, 2),
                              round((time.perf_counter() - debut) * 1000))
 

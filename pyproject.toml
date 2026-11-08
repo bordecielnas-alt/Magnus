@@ -29,7 +29,7 @@ build-backend = "setuptools.build_meta"
 include = ["assistant*"]
 
 [tool.setuptools.package-data]
-assistant = ["static/*", "defaults.yaml", "donnees/*.yaml"]
+assistant = ["static/*", "static/icones/*", "defaults.yaml", "donnees/*.yaml"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

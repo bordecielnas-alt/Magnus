@@ -60,7 +60,10 @@ roles:
 routeur:
   role_simple: rapide
   role_complexe: raisonnement
-  classeur: rapide
+  # Pas de classeur : le modèle local ne sert qu'aux salutations et à la maison (règles ci-dessous),
+  # tout le reste va à Claude (il se trompait sur la culture générale et l'actualité).
+  # Remettre « classeur: rapide » pour qu'il trie lui-même.
+  classeur: ""
   delai_classeur_ms: 4000    # laisse le temps au modèle de se charger s'il dormait
   defaut: complexe
   longueur_complexe: 220      # un message plus long que ça part en complexe
@@ -77,4 +80,4 @@ routeur:
     - '\b(pourquoi|explique|expliquer|analyse|compare|comparer|r[ée]sume|r[ée]sumer|r[ée]dige|[ée]cris|diagnostic|diagnostique|conseille|recommande|planifie|organise)\b'
     - '\b(aide-moi [àa]|comment (faire|fonctionne|marche|r[ée]parer)|quelle est la diff[ée]rence|quels sont les avantages|que penses-tu)\b'
     # informations récentes : Claude cherche sur le web (le modèle local ne les connaît pas)
-    - '\b(m[ée]t[ée]o|pr[ée]visions?|va-t-il pleuvoir|il va pleuvoir|actu|actualit[ée]s?|infos?|nouvelles|aujourd.hui|ce soir|demain|cette semaine|derni[eè]re?s?|r[ée]cents?|r[ée]centes?|prix|co[uû]te|cours de|horaires?|ouvert le|score|r[ée]sultats?|qui a gagn[ée]|[ée]lections?|programme t[ée]l[ée]|sortie du|cherche sur (internet|le web)|recherche)\b'
+    - '\b(m[ée]t[ée]o|pr[ée]visions?|va-t-il pleuvoir|il va pleuvoir|actu|actualit[ée]s?|infos?|nouvelles|aujourd.hui|ce soir|demain|cette semaine|derni[eè]re?s?|r[ée]cents?|r[ée]centes?|prix|co[uû]te|cours de|horaires?|ouvert le|score|r[ée]sultats?|qui a gagn[ée]|[ée]lections?|programme t[ée]l[ée]|sortie du|cherche sur (internet|le web)|recherche|quel temps|temps (fait|fera)|actuel|actuelle|actuellement|en ce moment|pr[ée]sident|premier ministre)\b'

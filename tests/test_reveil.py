@@ -98,3 +98,8 @@ def test_enregistrer_reglages_garde_le_reste(tmp_path):
 def test_nom_repete_sur_du_bruit():
     assert detecter("Magnus Magnus Magnus Magnus Magnus Magnus", "Magnus").commande == ""
     assert detecter("Magnus, Magnus, allume le globe", "Magnus").commande == "allume le globe"
+
+
+def test_mot_repete_sur_un_bruit():
+    assert est_hallucination("Cough, Cough, Cough, Cough")
+    assert not est_hallucination("allume allume le globe")

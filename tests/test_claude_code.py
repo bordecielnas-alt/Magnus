@@ -136,3 +136,21 @@ def test_config_openai_sans_url_refusee(tmp_path):
     f.write_text("fournisseurs:\n  x:\n    type: openai\n    modele: m\n", encoding="utf-8")
     with pytest.raises(ValueError):
         charger(env={}, fichier=f)
+
+
+def test_sources_retirees_de_la_reponse():
+    import asyncio
+
+    async def gen(parts):
+        for x in parts:
+            yield x
+
+    async def lire_tout(parts):
+        return "".join([x async for x in cc.sans_sources(gen(parts))])
+    r = lambda parts: asyncio.run(lire_tout(parts))  # noqa: E731
+    assert r(["Il fait nuageux à Douai, 8 °C.", "  \n\nSour", "ces:\n- [Franceinfo](https://x.fr/a)"]) == \
+        "Il fait nuageux à Douai, 8 °C."
+    assert r(["Selon [Météo-France](https://meteo", "france.com/x), il pleut."]) == "Selon Météo-France, il pleut."
+    assert r(["Paris est la capitale (source : wiki) de la France."]) == "Paris est la capitale de la France."
+    assert r(["Je cherche.", "\n\n", "Il fera 10 °C."]) == "Je cherche.\n\nIl fera 10 °C."
+    assert r(["Ligne 1\nLigne 2"]) == "Ligne 1\nLigne 2"

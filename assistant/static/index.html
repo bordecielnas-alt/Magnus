@@ -120,7 +120,7 @@
 
   /* Écoute continue (mot de réveil) */
   .veille { display:none; margin:0; font-size:.78rem; color:var(--muted); align-items:center; justify-content:center; gap:6px; flex-wrap:wrap; }
-  .veille.on { display:flex; }
+  .veille.on { display:none; }   /* « À l'écoute » retiré : l'orbe suffit à montrer qu'elle écoute */
   .veille .oreille { width:8px; height:8px; border-radius:50%; background:var(--accent); opacity:.5; }
   .veille.son .oreille { opacity:1; box-shadow:0 0 0 3px rgba(76,195,224,.25); }
   .veille.eveille { color:var(--accent); }
@@ -140,6 +140,9 @@
   .roles button[aria-pressed="true"] { color:var(--accent); }
   .espace { flex:1; }
   .rond { border-radius:50%; width:38px; height:38px; padding:0; cursor:pointer; font-size:1.05rem; flex:none; }
+  /* boutons principaux plus grands : haut-parleur, micro, envoyer */
+  #btnMuet, #micro, #envoyer { width:52px; height:52px; }
+  #btnMuet .ico, #micro .ico, #envoyer .ico { width:28px; height:28px; stroke-width:1.6; }
   #micro, #btnMuet { border:0; background:transparent; color:var(--muted); }
   #btnMuet[aria-pressed="true"] { color:var(--rouge); }
   #micro:hover { color:var(--fg); }
@@ -172,7 +175,9 @@
   .plein h1 { font-size:1.1rem; opacity:.9; }
   .plein .statut { font-size:.78rem; }
   .plein .historique { display:none !important; }
-  .plein .pied { display:none !important; }   /* en mode orbe : ni heure, ni route, ni durée */
+  .plein .pied { display:none !important; }
+  /* en mode orbe, le texte s'efface doucement en une minute après la réponse */
+  .plein #fil > .efface { opacity:0; transition:opacity 60s linear; }   /* en mode orbe : ni heure, ni route, ni durée */
   .plein #fil { justify-content:flex-end; pointer-events:none; }
   .plein #fil > * { pointer-events:auto; }
   .plein #fil > .msg:not(.dernier):not(.avant-dernier) { display:none !important; }
@@ -193,6 +198,7 @@
     .lui { font-size:1rem; }
     .roles button { padding:4px 7px; }
     .barre { gap:2px; } .barre .rond { width:34px; height:34px; }
+    .barre #btnMuet, .barre #micro, .barre #envoyer { width:50px; height:50px; }
     .plein .lui { max-height:30vh; }
   }
   @media (max-width:360px) { .roles button { padding:4px 4px; font-size:.74rem; } }
@@ -308,6 +314,7 @@
       <label class="case" for="fenetre">Après le mot de réveil, écouter encore <input type="number" id="fenetre" min="0" max="3600" step="5"> s</label>
       <p class="note">0 = dire le mot de réveil avant chaque phrase.</p>
       <label class="case"><input type="checkbox" id="toujours"> Toujours à l'écoute, sans mot de réveil</label>
+      <label class="case"><input type="checkbox" id="prechauffe"> Préparer le micro dès le premier toucher (premier enregistrement plus fiable ; l'icône micro du téléphone reste allumée)</label>
       <p class="note" id="noteEcoute"></p>
     </fieldset>
     <details class="diag" id="diagAudio">
@@ -557,6 +564,12 @@ function marquerDerniers() {
   if (m.at(-2)) m.at(-2).classList.add('avant-dernier');
   $('btnHisto').hidden = m.length <= 2;
 }
+// Après la réponse (voix comprise), le texte affiché s'efface en une minute (mode orbe seulement, voir CSS).
+function estomper() {
+  if (occupe || file.length) return;
+  const els = [...$('fil').children];
+  requestAnimationFrame(() => requestAnimationFrame(() => { for (const e of els) e.classList.add('efface'); }));
+}
 function bulle(classe, texte) {
   $('accueil')?.remove();
   const d = document.createElement('div');
@@ -707,6 +720,7 @@ async function traiter(message, vocal, role = 'auto') {
     if (orbe.etatCourant !== 'erreur' && !enregistreur) orbe.etat('repos');
     marquerDerniers(); defiler();
     if (!matchMedia('(pointer: coarse)').matches) $('saisie').focus();
+    estomper();
     suivantDansLaFile();
   }
 }
@@ -905,7 +919,7 @@ function reveillerAudio() {
 for (const ev of ['pointerdown', 'keydown']) document.addEventListener(ev, reveillerAudio, true);
 // on libère le micro en quittant la page : au rechargement, il n'est plus « déjà pris »
 addEventListener('pagehide', () => {
-  for (const f of [fluxMicro, continu.flux]) if (f) f.getTracks().forEach(t => t.stop());
+  for (const f of [fluxMicro, continu.flux, fluxChaud]) if (f) f.getTracks().forEach(t => t.stop());
   if (continu.ctx) continu.ctx.close().catch(() => {});
 });
 
@@ -928,10 +942,34 @@ $('micro').onclick = async () => {
   demarrerDictee(false);
 };
 
+// Micro préparé d'avance : au premier toucher de la page (geste requis par Firefox), on ouvre le micro
+// une fois et on le garde. Le premier enregistrement ne perd plus son début pendant que le micro
+// démarre (le premier essai du matin sortait vide). Désactivable dans Réglages.
+let fluxChaud = null, prechauffe = true;
+try { prechauffe = localStorage.getItem('micro.prechauffe') !== '0'; } catch (e) {}
+function microChaudPret() { const p = fluxChaud && fluxChaud.getAudioTracks()[0]; return !!(p && p.readyState === 'live' && !p.muted); }
+function lacherMicroChaud() { if (fluxChaud) { fluxChaud.getTracks().forEach(t => t.stop()); fluxChaud = null; diag('micro préparé : libéré'); } }
+async function prechaufferMicro() {
+  if (!prechauffe || microChaudPret() || enregistreur || continu.actif) return;
+  try { fluxChaud = await ouvrirMicro('micro préparé'); }
+  catch (e) { fluxChaud = null; }
+}
+const auPremierToucher = ev => {
+  if (ev.target.closest && ev.target.closest('#micro')) return;   // l'appui sur le micro ouvre déjà le micro
+  document.removeEventListener('pointerdown', auPremierToucher, true);
+  prechaufferMicro();
+};
+document.addEventListener('pointerdown', auPremierToucher, true);
+// page cachée : on rend le micro, et on le reprépare au prochain toucher
+document.addEventListener('visibilitychange', () => {
+  if (document.hidden) { lacherMicroChaud(); document.addEventListener('pointerdown', auPremierToucher, true); }
+});
+
 let dicteeAnnulee = false, apresAnnulation = null;
 async function demarrerDictee(reessai) {
   try {
-    fluxMicro = await ouvrirMicro('dictée');
+    fluxMicro = microChaudPret() ? fluxChaud : await ouvrirMicro('dictée');
+    if (fluxMicro === fluxChaud) diag('dictée : micro déjà prêt, réutilisé');
   } catch (e) {
     erreurMicro(e);
     return;
@@ -956,6 +994,7 @@ async function demarrerDictee(reessai) {
 }
 function micMortDictee(reessai) {
   diag('dictée : le micro ne donne que des zéros depuis 2 s (micro mort)');
+  lacherMicroChaud();
   dicteeAnnulee = true;
   apresAnnulation = reessai ? () => bulle('erreur', MESSAGE_MICRO_MORT)
                             : () => { micSansTraitement = true; setTimeout(() => demarrerDictee(true), 300); };
@@ -1051,7 +1090,7 @@ async function transcrireEtEnvoyer() {
   clearInterval(minuteurPartiel);
   if (partielAbandon) partielAbandon.abort();   // la transcription finale passe en premier
   $('micro').classList.remove('actif'); $('micro').innerHTML = ICONE_MICRO;
-  if (fluxMicro) fluxMicro.getTracks().forEach(t => t.stop());
+  if (fluxMicro && fluxMicro !== fluxChaud) fluxMicro.getTracks().forEach(t => t.stop());
   const blob = new Blob(morceaux, {type: enregistreur.mimeType || 'audio/webm'});
   diag('dictée : fin, ' + morceaux.length + ' morceaux, ' + blob.size + ' octets');
   enregistreur = null;
@@ -1305,6 +1344,12 @@ async function ecrireReglagesVoix() {
 $('fenetre').onchange = ecrireReglagesVoix;
 $('toujours').onchange = ecrireReglagesVoix;
 $('continu').onchange = () => basculerContinu($('continu').checked);
+$('prechauffe').checked = prechauffe;
+$('prechauffe').onchange = () => {
+  prechauffe = $('prechauffe').checked;
+  try { localStorage.setItem('micro.prechauffe', prechauffe ? '1' : '0'); } catch (e) {}
+  if (prechauffe) prechaufferMicro(); else lacherMicroChaud();
+};
 
 function majVeille(texte) {
   const v = $('veille');
@@ -1353,6 +1398,7 @@ async function basculerContinu(on) {
     ouvrirFenetre(0);
   } else {
     try {
+      lacherMicroChaud();   // un seul micro ouvert à la fois (Android)
       continu.flux = await ouvrirMicro('écoute continue');
     } catch (e) {
       erreurMicro(e);

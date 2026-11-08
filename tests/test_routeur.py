@@ -75,6 +75,7 @@ def test_message_long_complexe():
 
 def test_classeur_quand_aucune_regle():
     r, classeur = routeur(reponse="COMPLEXE\n")
+    r.cfg = r.cfg.model_copy(update={"classeur": "rapide"})     # désactivé par défaut, réactivable
     d = decider(r, "Qu'offrir à un ami randonneur ?", precedent="avant")
     assert (d.categorie, d.raison) == ("complexe", "classeur")
     msgs, options = classeur.appels[0]
@@ -123,3 +124,10 @@ def test_api_auto_route_et_flux():
     assert lignes[0]["route"]["categorie"] == "complexe"
     assert lignes[-1]["fournisseur"] == "claude"
     assert c.post("/api/route", json={"message": "Allume le salon"}).json()["role"] == "rapide"
+
+
+def test_sans_classeur_par_defaut_tout_va_a_claude():
+    r, local = routeur(reponse="SIMPLE\n")
+    d = decider(r, "Quelle est la capitale de l'Afrique ?")
+    assert d.categorie == "complexe" and not local.appels
+    assert decider(r, "Bonjour").categorie == "simple"                 # salutations : modèle local

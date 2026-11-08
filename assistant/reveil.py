@@ -71,7 +71,11 @@ def detecter(texte: str, wake_word: str) -> Detection:
 
 def est_hallucination(texte: str) -> bool:
     t = texte.lower().strip()
-    return not t or any(h in t for h in HALLUCINATIONS) or len(normaliser(t)) < 2
+    if not t or any(h in t for h in HALLUCINATIONS) or len(normaliser(t)) < 2:
+        return True
+    # « Cough, Cough, Cough, Cough » : un même mot répété sur un bruit (toux, claquement)
+    m = normaliser(t).split()
+    return len(m) >= 3 and len(set(m)) == 1
 
 
 class Reveil:
