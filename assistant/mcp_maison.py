@@ -83,8 +83,30 @@ OUTILS_AGENDA = [
 ]
 
 
+OUTILS_ROUTINES = [
+    {
+        "name": "creer_routine",
+        "description": "Enregistre une routine nommée (ex. « mode cinéma ») : une suite d'étapes {entity_ids, action, "
+                       "valeur?, couleur?} avec les mêmes actions que agir. Elle se lance ensuite en disant son nom. "
+                       "Cherche d'abord les appareils avec lister_appareils ; récapitule la routine en une phrase.",
+        "inputSchema": {"type": "object", "properties": {
+            "nom": {"type": "string"},
+            "etapes": {"type": "array", "items": {"type": "object", "properties": {
+                "entity_ids": {"type": "array", "items": {"type": "string"}},
+                "action": {"type": "string", "enum": ["allumer", "eteindre", "ouvrir", "fermer", "regler"]},
+                "valeur": {"type": "number"}, "couleur": {"type": "string"}}, "required": ["entity_ids", "action"]}}},
+            "required": ["nom", "etapes"]},
+    },
+    {
+        "name": "lister_routines",
+        "description": "Routines enregistrées (nom et étapes).",
+        "inputSchema": {"type": "object", "properties": {}},
+    },
+]
+
+
 def outils() -> list[dict]:
-    return (OUTILS + (OUTILS_DOCKER if os.environ.get("ASSISTANT_DOCKER") == "1" else [])
+    return (OUTILS + OUTILS_ROUTINES + (OUTILS_DOCKER if os.environ.get("ASSISTANT_DOCKER") == "1" else [])
             + (OUTILS_AGENDA if os.environ.get("ASSISTANT_AGENDA") == "1" else []))
 
 
@@ -113,6 +135,10 @@ def appeler(nom: str, args: dict) -> str:
             r = c.get("/interne/agenda", params={"jours": args.get("jours", 7)})
         elif nom == "ajouter_evenement":
             r = c.post("/interne/agenda", json=args)
+        elif nom == "creer_routine":
+            r = c.post("/interne/routines", json=args)
+        elif nom == "lister_routines":
+            r = c.get("/interne/routines")
         elif nom == "annuler":
             r = c.post("/interne/maison/annuler", json={"conversation": conv})
         else:

@@ -126,8 +126,19 @@ class UnraidDocker(Docker):
     def configure(self) -> bool:
         return bool(self.url and self.cle)
 
+    def _verifier_certificat(self) -> bool:
+        """Unraid en HTTPS sur le réseau local a souvent un certificat auto-signé : accepté seulement pour
+        une adresse IP privée (le trafic ne sort pas de la maison)."""
+        import ipaddress
+        from urllib.parse import urlparse
+        try:
+            return not ipaddress.ip_address(urlparse(self.url).hostname or "").is_private
+        except ValueError:
+            return True
+
     async def _graphql(self, requete: str) -> dict:
-        async with httpx.AsyncClient(timeout=self.timeout, transport=self._transport) as c:
+        async with httpx.AsyncClient(timeout=self.timeout, transport=self._transport,
+                                     verify=self._verifier_certificat()) as c:
             r = await c.post(self.url, json={"query": requete},
                              headers={"x-api-key": self.cle, "Content-Type": "application/json"})
         if r.status_code in (401, 403):

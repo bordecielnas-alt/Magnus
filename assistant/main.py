@@ -31,6 +31,8 @@ from . import reglages as R
 from .reveil import Reveil
 from .agenda import JOURS, Agenda, decrire
 from .audit import Audit
+from .habitudes import Routines, automatisation, detecter
+from .memoire import Memoire
 from .proactif import Annonces
 from .docker_diag import Docker, UnraidDocker
 from .locuteur import Locuteurs
@@ -118,6 +120,17 @@ class AppareilPartage(BaseModel):
 ETATS_FR_COURTS = {"on": "allumé", "off": "éteint", "open": "ouvert", "closed": "fermé",
                    "unavailable": "injoignable", "home": "à la maison", "not_home": "absent"}
 RE_BRIEFING = re.compile(r"^\s*(fais[- ]moi |donne[- ]moi |lance |le )?(le |mon )?(briefing|r[ée]sum[ée] du (jour|matin))\b", re.I)
+RE_OUI = re.compile(r"^\s*(oui|ouais|d.accord|ok|vas-y|retiens(-le)?|c.est (bon|ça)|exact)\b[\s!.]*\w{0,10}[\s!.]*$", re.I)
+RE_NON = re.compile(r"^\s*(non|nan|oublie(-le)?|pas la peine|laisse tomber)\b[\s!.]*\w{0,10}[\s!.]*$", re.I)
+RE_RETIENS = re.compile(r"^\s*(?:\w+,\s*)?(?:retiens|souviens-toi|rappelle-toi|n.oublie pas|note|m[ée]morise)"
+                        r"(?: bien)?(?: que| qu.| de| :)?\s+(?P<fait>.{3,400})$", re.I)
+RE_CORRECTION = re.compile(r"^\s*non\s*[,!.]?\s*(?:en fait|plut[ôo]t|je pr[ée]f[èe]re|je voulais dire|"
+                           r"ce n.est pas [çc]a|la prochaine fois|d[ée]sormais|[àa] l.avenir)\s*[,:]?\s*(?P<fait>.{3,300})$", re.I)
+RE_PRIVE = re.compile(r"\b(pour moi( seulement| seul)?|c.est priv[ée]|entre nous|perso(nnel)?)\b", re.I)
+RE_PERSO = re.compile(r"\b(je|j.|mon|ma|mes|moi)\b", re.I)
+RE_FAIT_PERSO = re.compile(r"\b(je m.appelle|ma (femme|fille|m[èe]re|s[œo]eur|compagne|copine)|mon (mari|fils|p[èe]re|fr[èe]re|"
+                           r"compagnon|copain|chien|chat)|je (suis allergique|d[ée]teste|pr[ée]f[èe]re|n.aime pas|"
+                           r"travaille|bosse)|j.(adore|aime pas|aime bien|habite)|mon anniversaire)\b", re.I)
 RE_AGENDA = re.compile(r"\b(agenda|calendrier|rendez-vous|rdv|r[ée]union|rappelle-moi|rappel|"
                        r"qu.est-ce que j.ai|ai-je quelque chose|programme de (la journ[ée]e|demain|la semaine)|"
                        r"note (dans|sur) l.agenda|anniversaire)\b", re.I)
@@ -133,6 +146,32 @@ NOTE_OUTILS_DOCKER = (
     "personne appliquera elle-même (ex. « redémarre le conteneur Plex depuis l'onglet Docker »). Tu ne peux "
     "rien redémarrer ni modifier : ne prétends jamais l'avoir fait."
 )
+
+
+class EtapeRoutine(BaseModel):
+    entity_ids: list[str] = Field(min_length=1, max_length=30)
+    action: Literal["allumer", "eteindre", "ouvrir", "fermer", "regler"]
+    valeur: float | None = None
+    couleur: str | None = Field(default=None, max_length=30)
+
+
+class NouvelleRoutine(BaseModel):
+    nom: str = Field(min_length=2, max_length=60)
+    etapes: list[EtapeRoutine] = Field(min_length=1, max_length=20)
+
+
+class ChoixHabitude(BaseModel):
+    id: str = Field(min_length=3, max_length=200)
+
+
+class NouveauSouvenir(BaseModel):
+    texte: str = Field(min_length=2, max_length=500)
+    portee: Literal["foyer", "prive"] = "foyer"
+
+
+class ModifSouvenir(BaseModel):
+    texte: str | None = Field(default=None, min_length=2, max_length=500)
+    portee: Literal["foyer", "prive"] | None = None
 
 
 class NouvelEvenement(BaseModel):
@@ -240,6 +279,7 @@ NOTE_OUTILS_MAISON = (
     "brièvement. "
     "Le chauffage, les portails, portes, serrures et l'alarme sont des actions sensibles : agir les refusera, "
     "ne cherche pas à contourner ; dis simplement que c'est à faire depuis Home Assistant. "
+    "Tu peux aussi créer des routines nommées (creer_routine) quand on te le demande. "
     "Les réponses précédentes sur les appareils viennent du module maison et sont fiables. "
     "Tu n'as ni fichiers ni commandes."
 )
@@ -274,6 +314,23 @@ def creer_app(config: Config | None = None, registre: Registre | None = None,
     docker = (UnraidDocker(cfg.docker.unraid_url, cfg.docker.cle_unraid(), cfg.docker.timeout) if cfg.docker.unraid_url
               else Docker(cfg.docker.url, cfg.docker.timeout))
     annonces = Annonces(securite.fichier.parent, cfg.proactif.heures_calmes)
+    memoire = Memoire(securite.fichier.parent)
+    routines = Routines(securite.fichier.parent)
+    fichier_ignorees = securite.fichier.parent / "habitudes_ignorees.json"
+
+    def habitudes_ignorees() -> set[str]:
+        try:
+            return set(json.loads(fichier_ignorees.read_text(encoding="utf-8")))
+        except (OSError, ValueError):
+            return set()
+
+    async def lancer_routine(r: dict, conversation: str) -> str:
+        echecs = []
+        for e in r["etapes"]:
+            res = await maison.agir_ids(e["entity_ids"], e["action"], e.get("valeur"), e.get("couleur"), conversation)
+            if not res.texte.startswith("C'est") or "Refusé" in res.texte or "Pas " in res.texte:
+                echecs.append(res.texte)
+        return f"{r['nom'][:1].upper()}{r['nom'][1:]} : c'est lancé." + (" " + " ".join(echecs) if echecs else "")
     agenda = Agenda(cfg.agenda.url, cfg.agenda.utilisateur, cfg.agenda.mot_de_passe())
 
     def consigne_briefing() -> str:
@@ -921,8 +978,12 @@ def creer_app(config: Config | None = None, registre: Registre | None = None,
             return await appel
         except ValueError as e:
             raise HTTPException(404, str(e)) from e
-        except Exception as e:  # noqa: BLE001 - proxy injoignable, refus…
-            raise HTTPException(502, f"Docker injoignable : {e.__class__.__name__}") from e
+        except PermissionError as e:
+            journal.info("Docker : %s", e)
+            raise HTTPException(502, str(e)) from e
+        except Exception as e:  # noqa: BLE001 - serveur injoignable, certificat, réponse inattendue…
+            journal.info("Docker injoignable : %s : %s", e.__class__.__name__, str(e)[:300])
+            raise HTTPException(502, f"Docker injoignable : {e.__class__.__name__} : {str(e)[:200]}") from e
 
     async def agenda_ou_erreur(appel):
         if not agenda.configure:
@@ -969,6 +1030,129 @@ def creer_app(config: Config | None = None, registre: Registre | None = None,
         if not agenda.configure:
             return {"configure": False, "evenements": []}
         return {"configure": True, "evenements": evenements_json(await agenda_ou_erreur(prochains(max(1, min(jours, 60)))))}
+
+    # --- mémoire (écran ⚙ Mémoire) ---------------------------------------------------------------------
+    def compte_memoire(requete: Request) -> str:
+        exiger_revelation(requete, "historique")       # ni sur un appareil partagé, ni pour un enfant
+        compte = compte_de(requete)
+        if not compte:
+            raise HTTPException(401, "connexion requise")
+        return compte
+
+    def souvenir_a_moi(ident: int, compte: str) -> dict:
+        try:
+            sv = memoire.lire(ident)
+        except KeyError as e:
+            raise HTTPException(404, "souvenir inconnu") from e
+        if not memoire.visible(sv, compte) or sv["statut"] == "supprime":
+            raise HTTPException(404, "souvenir inconnu")
+        return sv
+
+    @app.get("/api/memoire")
+    def lister_memoire(requete: Request) -> dict:
+        compte = compte_memoire(requete)
+        liste = memoire.liste(compte)
+        return {"souvenirs": liste, "a_valider": sum(1 for x in liste if x["statut"] == "propose")}
+
+    @app.post("/api/memoire")
+    def ajouter_souvenir(n: NouveauSouvenir, requete: Request) -> dict:
+        compte = compte_memoire(requete)
+        try:
+            sv = memoire.ajouter(n.texte, n.portee, compte, "valide", "écran", par=compte)
+        except ValueError as e:
+            raise HTTPException(422, str(e)) from e
+        auditer(requete, "souvenir_ajouté", portee=n.portee)
+        return sv
+
+    @app.post("/api/memoire/{ident}/{decision}")
+    def decider_souvenir(ident: int, decision: Literal["valider", "refuser"], requete: Request) -> dict:
+        compte = compte_memoire(requete)
+        souvenir_a_moi(ident, compte)
+        sv = memoire.changer_statut(ident, "valide" if decision == "valider" else "refuse", compte)
+        auditer(requete, "souvenir_" + ("validé" if decision == "valider" else "refusé"), cible=str(ident))
+        return sv
+
+    @app.patch("/api/memoire/{ident}")
+    def modifier_souvenir(ident: int, m: ModifSouvenir, requete: Request) -> dict:
+        compte = compte_memoire(requete)
+        souvenir_a_moi(ident, compte)
+        try:
+            sv = memoire.modifier(ident, m.texte, m.portee, compte)
+        except ValueError as e:
+            raise HTTPException(422, str(e)) from e
+        auditer(requete, "souvenir_modifié", cible=str(ident))
+        return sv
+
+    @app.delete("/api/memoire/{ident}")
+    def supprimer_souvenir(ident: int, requete: Request) -> dict:
+        compte = compte_memoire(requete)
+        souvenir_a_moi(ident, compte)
+        memoire.changer_statut(ident, "supprime", compte)
+        auditer(requete, "souvenir_supprimé", cible=str(ident))
+        return {"ok": True}
+
+    @app.get("/api/memoire/{ident}/historique")
+    def historique_souvenir(ident: int, requete: Request) -> dict:
+        compte = compte_memoire(requete)
+        souvenir_a_moi(ident, compte)
+        return {"historique": memoire.historique(ident)}
+
+    # --- habitudes et routines ------------------------------------------------------------------------
+    @app.get("/interne/routines", include_in_schema=False)
+    def interne_routines(x_jeton_interne: str | None = Header(None)) -> list[dict]:
+        verifier_jeton(x_jeton_interne)
+        return list(routines.liste.values())
+
+    @app.post("/interne/routines", include_in_schema=False)
+    def interne_creer_routine(r: NouvelleRoutine, x_jeton_interne: str | None = Header(None)) -> dict:
+        verifier_jeton(x_jeton_interne)
+        try:
+            rt = routines.enregistrer(r.nom, [e.model_dump(exclude_none=True) for e in r.etapes], "claude")
+        except ValueError as e:
+            raise HTTPException(422, str(e)) from e
+        audit.noter("routine_créée", "", "", par="claude", nom=rt["nom"])
+        return {"ok": True, "routine": rt, "pour_lancer": f"dire « {rt['nom']} »"}
+
+    @app.get("/api/routines")
+    def lister_routines(requete: Request) -> dict:
+        compte_memoire(requete)
+        return {"routines": list(routines.liste.values())}
+
+    @app.delete("/api/routines/{nom}")
+    def supprimer_routine(nom: str, requete: Request) -> dict:
+        compte_memoire(requete)
+        if not routines.supprimer(nom):
+            raise HTTPException(404, "routine inconnue")
+        auditer(requete, "routine_supprimée", nom=nom)
+        return {"ok": True}
+
+    @app.get("/api/habitudes")
+    def lister_habitudes(requete: Request) -> dict:
+        compte_memoire(requete)
+        ignorees = habitudes_ignorees()
+        h = [x for x in detecter(maison.historique.actions if maison.historique else []) if x["id"] not in ignorees]
+        return {"habitudes": h}
+
+    @app.post("/api/habitudes/{decision}")
+    async def decider_habitude(decision: Literal["accepter", "ignorer"], c: ChoixHabitude, requete: Request) -> dict:
+        """Accepter = créer l'automatisation dans Home Assistant (administrateurs, après un « oui » explicite)."""
+        if decision == "ignorer":
+            compte_memoire(requete)
+            fichier_ignorees.write_text(json.dumps(sorted(habitudes_ignorees() | {c.id})), encoding="utf-8")
+            return {"ok": True}
+        exiger_admin(requete)
+        h = next((x for x in detecter(maison.historique.actions if maison.historique else []) if x["id"] == c.id), None)
+        if not h:
+            raise HTTPException(404, "habitude inconnue ou plus d'actualité")
+        try:
+            ident, conf = automatisation(h)
+        except ValueError as e:
+            raise HTTPException(422, str(e)) from e
+        if not await ha.creer_automatisation(ident, conf):
+            raise HTTPException(502, "Home Assistant a refusé (le jeton doit être celui d'un administrateur HA)")
+        fichier_ignorees.write_text(json.dumps(sorted(habitudes_ignorees() | {c.id})), encoding="utf-8")
+        auditer(requete, "automatisation_créée", nom=conf["alias"])
+        return {"ok": True, "automatisation": conf["alias"]}
 
     @app.get("/api/annonces")
     def lire_annonces(requete: Request, depuis: str = "") -> dict:
@@ -1277,6 +1461,52 @@ def creer_app(config: Config | None = None, registre: Registre | None = None,
             profil = {k: v for k, v in profil.items() if k in ("type", "ton")}   # ni pièce ni préférences
         piece_preferee.set(profil.get("piece", ""))
         consigne_profil = note_profil(nom_profil, profil) if profil else ""
+
+        # --- mémoire : réponse à une proposition, « retiens que… », souvenirs utiles à la réponse ---------
+        qui = ((voix_de[0] if route_locuteur else compte) or "")
+        attente = memoire.proposition_en_attente(d.conversation, qui) if d.conversation else None
+        if attente and RE_OUI.match(d.message):
+            memoire.changer_statut(attente["id"], "valide", qui)
+            return _reponse_ha(d.flux, "C'est retenu.", {"role": "mémoire", "raison": "souvenir validé"}, "mémoire", "sqlite", 0)
+        if attente and RE_NON.match(d.message):
+            memoire.changer_statut(attente["id"], "refuse", qui)
+            return _reponse_ha(d.flux, "D'accord, je ne le retiens pas.", {"role": "mémoire", "raison": "souvenir refusé"},
+                               "mémoire", "sqlite", 0)
+        m_cor = RE_CORRECTION.match(d.message)
+        if m_cor and qui and not attente:
+            # « non, en fait je préfère la lumière chaude » : une correction à retenir (après « oui »)
+            fait = m_cor.group("fait").strip().rstrip(".")
+            sv = memoire.ajouter(f"Correction de {nom_profil or qui} : {fait}", "prive", qui, "propose", "correction",
+                                 d.conversation)
+            return _reponse_ha(d.flux, f"Compris. Je retiens pour la suite : « {fait} » ? Dis oui ou non.",
+                               {"role": "mémoire", "raison": "correction proposée"}, "mémoire", "sqlite", 0)
+        m_ret = RE_RETIENS.match(d.message)
+        if m_ret and qui:
+            fait = m_ret.group("fait").strip().rstrip(".")
+            portee = "prive" if RE_PRIVE.search(d.message) or RE_PERSO.search(fait) else "foyer"
+            fait = RE_PRIVE.sub("", fait).strip(" ,")
+            texte_souvenir = f"{nom_profil or qui} : {fait}" if RE_PERSO.search(fait) else fait
+            sv = memoire.ajouter(texte_souvenir[:1].upper() + texte_souvenir[1:], portee, qui, "propose", "demande",
+                                 d.conversation)
+            quoi = "pour toi seulement" if portee == "prive" else "pour toute la maison"
+            return _reponse_ha(d.flux, f"Je retiens « {sv['texte']} », {quoi} ? Dis oui ou non.",
+                               {"role": "mémoire", "raison": "souvenir proposé"}, "mémoire", "sqlite", 0)
+        if qui and RE_FAIT_PERSO.search(d.message) and len(d.message) < 300:
+            # repéré dans la conversation : proposé discrètement, à valider dans ⚙ Mémoire
+            try:
+                memoire.ajouter(f"{nom_profil or qui} : {d.message.strip()}", "prive", qui, "propose", "conversation")
+            except ValueError:
+                pass
+        if qui:
+            utiles = memoire.chercher(d.message, qui, prive="personnel" not in ctx_revel)
+            if utiles:
+                consigne_profil = (consigne_profil + "\n\nCe que tu sais (souvenirs validés par la famille) :\n"
+                                   + "\n".join(f"- {x['texte']}" for x in utiles)).strip()
+        routine = routines.trouver(d.message) if ha.configure and routines.liste and len(d.message) < 80 else None
+        if routine:
+            texte_r = await lancer_routine(routine, d.conversation)
+            return _reponse_ha(d.flux, texte_r, {"role": "maison", "raison": f"routine « {routine['nom']} »"},
+                               "maison", "routine", 0)
         decision = None
         compte_conversation[d.conversation] = (compte_de(requete) or "", ip_de(requete)[1])
         texte_conversation[d.conversation] = d.message
@@ -1482,8 +1712,12 @@ def creer_app(config: Config | None = None, registre: Registre | None = None,
                             media_type="application/manifest+json")
 
     @app.get("/", include_in_schema=False)
-    def index() -> FileResponse:
-        return FileResponse(STATIC / "index.html")
+    def index() -> Response:
+        """La page, avec la version dans l'adresse des scripts (« reglages.js?v=0.21.0 ») : après une mise à
+        jour, ni le navigateur ni Cloudflare ne peuvent resservir un ancien script."""
+        page = (STATIC / "index.html").read_text(encoding="utf-8")
+        page = re.sub(r'src="/static/([\w.-]+\.js)"', rf'src="/static/\1?v={__version__}"', page)
+        return Response(page, media_type="text/html; charset=utf-8", headers={"Cache-Control": "no-cache"})
 
     app.mount("/static", StaticFiles(directory=STATIC), name="static")
     return app

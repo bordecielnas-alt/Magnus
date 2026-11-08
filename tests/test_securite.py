@@ -308,3 +308,10 @@ def test_scripts_jamais_perimes(tmp_path):
     c = client(a, "127.0.0.1")
     assert c.get("/static/reglages.js").headers["cache-control"] == "no-cache"
     assert c.get("/").headers["cache-control"] == "no-cache"
+
+
+def test_scripts_avec_version_dans_l_adresse(tmp_path):
+    from assistant import __version__
+    a, _ = app(tmp_path)
+    page = client(a, "127.0.0.1").get("/").text
+    assert f'src="/static/reglages.js?v={__version__}"' in page and f'src="/static/orbe.js?v={__version__}"' in page

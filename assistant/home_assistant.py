@@ -130,6 +130,16 @@ class HomeAssistant:
         except httpx.HTTPError:
             return False
 
+    async def creer_automatisation(self, ident: str, config: dict) -> bool:
+        """Crée (ou remplace) une automatisation via l'API de configuration (jeton d'un administrateur HA)."""
+        if not self.configure:
+            return False
+        try:
+            r = await self._client.post(f"/api/config/automation/config/{ident}", json=config)
+            return r.status_code < 300
+        except httpx.HTTPError:
+            return False
+
     async def etat_entite(self, entity_id: str) -> dict | None:
         if not self.configure:
             return None

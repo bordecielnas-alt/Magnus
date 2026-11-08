@@ -115,3 +115,9 @@ def test_api_unraid():
     refus = UnraidDocker("http://tour/graphql", "x", transport=httpx.MockTransport(lambda r: httpx.Response(403)))
     with pytest.raises(PermissionError):
         asyncio.run(refus.conteneurs())
+
+
+def test_certificat_auto_signe_accepte_seulement_en_local():
+    from assistant.docker_diag import UnraidDocker
+    assert UnraidDocker("https://192.168.1.50:4436/graphql", "k")._verifier_certificat() is False
+    assert UnraidDocker("https://tour.exemple.fr/graphql", "k")._verifier_certificat() is True

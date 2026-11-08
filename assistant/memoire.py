@@ -1,0 +1,150 @@
+"""Mémoire de l'assistant : souvenirs du foyer (partagés) et privés (par compte), validés un par un.
+
+- SQLite (<état>/memoire.db), recherche plein texte FTS5 (accents ignorés), sans modèle à télécharger.
+- Cycle d'un souvenir : « propose » (repéré dans la conversation) -> « valide » (la personne a dit oui)
+  ou « refuse ». Seuls les souvenirs validés sont utilisés dans les réponses.
+- Chaque création, validation, modification ou suppression est notée dans l'historique (avant / après).
+- Un souvenir privé n'est visible que par son compte ; un souvenir du foyer par tous.
+"""
+
+from __future__ import annotations
+
+import re
+import sqlite3
+import threading
+from datetime import datetime
+from pathlib import Path
+
+PORTEES = ("foyer", "prive")
+STATUTS = ("propose", "valide", "refuse", "supprime")
+MOTS_VIDES = {"le", "la", "les", "de", "des", "du", "un", "une", "et", "ou", "a", "à", "au", "aux", "en", "est",
+              "que", "qui", "quoi", "je", "tu", "il", "elle", "on", "nous", "vous", "ils", "mon", "ma", "mes",
+              "ton", "ta", "tes", "son", "sa", "ses", "ce", "cette", "pour", "pas", "ne", "se", "sur", "dans",
+              "par", "avec", "moi", "toi", "lui", "y", "d", "l", "j", "c", "qu", "s", "t", "m", "n"}
+
+
+def maintenant() -> str:
+    return datetime.now().astimezone().isoformat(timespec="seconds")
+
+
+class Memoire:
+    def __init__(self, dossier: Path) -> None:
+        dossier.mkdir(parents=True, exist_ok=True)
+        self.fichier = dossier / "memoire.db"
+        self._verrou = threading.Lock()
+        self._db = sqlite3.connect(self.fichier, check_same_thread=False)
+        self._db.row_factory = sqlite3.Row
+        self._db.executescript("""
+            CREATE TABLE IF NOT EXISTS souvenirs (
+                id INTEGER PRIMARY KEY, texte TEXT NOT NULL, portee TEXT NOT NULL, compte TEXT NOT NULL DEFAULT '',
+                statut TEXT NOT NULL, source TEXT NOT NULL DEFAULT '', cree TEXT NOT NULL, maj TEXT NOT NULL,
+                conversation TEXT NOT NULL DEFAULT '');
+            CREATE TABLE IF NOT EXISTS historique (
+                id INTEGER PRIMARY KEY, souvenir INTEGER NOT NULL, quand TEXT NOT NULL, compte TEXT NOT NULL,
+                action TEXT NOT NULL, avant TEXT, apres TEXT);
+            CREATE VIRTUAL TABLE IF NOT EXISTS recherche USING fts5(
+                texte, content='souvenirs', content_rowid='id', tokenize='unicode61 remove_diacritics 2');
+            CREATE TRIGGER IF NOT EXISTS s_ai AFTER INSERT ON souvenirs BEGIN
+                INSERT INTO recherche(rowid, texte) VALUES (new.id, new.texte); END;
+            CREATE TRIGGER IF NOT EXISTS s_ad AFTER DELETE ON souvenirs BEGIN
+                INSERT INTO recherche(recherche, rowid, texte) VALUES ('delete', old.id, old.texte); END;
+            CREATE TRIGGER IF NOT EXISTS s_au AFTER UPDATE ON souvenirs BEGIN
+                INSERT INTO recherche(recherche, rowid, texte) VALUES ('delete', old.id, old.texte);
+                INSERT INTO recherche(rowid, texte) VALUES (new.id, new.texte); END;
+        """)
+
+    # --- écriture -------------------------------------------------------------------------------------
+    def _noter(self, souvenir: int, compte: str, action: str, avant: str | None, apres: str | None) -> None:
+        self._db.execute("INSERT INTO historique(souvenir, quand, compte, action, avant, apres) VALUES (?,?,?,?,?,?)",
+                         (souvenir, maintenant(), compte, action, avant, apres))
+
+    def ajouter(self, texte: str, portee: str, compte: str, statut: str = "propose", source: str = "",
+                conversation: str = "", par: str = "") -> dict:
+        texte = re.sub(r"\s+", " ", texte).strip()
+        if not texte or len(texte) > 500:
+            raise ValueError("souvenir vide ou trop long (500 caractères maximum)")
+        if portee not in PORTEES or statut not in ("propose", "valide"):
+            raise ValueError("portée ou statut invalide")
+        with self._verrou, self._db:
+            existant = self._db.execute(
+                "SELECT id FROM souvenirs WHERE lower(texte)=lower(?) AND statut IN ('propose','valide') "
+                "AND (portee='foyer' OR compte=?)", (texte, compte)).fetchone()
+            if existant:
+                return self.lire(existant["id"])
+            t = maintenant()
+            cur = self._db.execute(
+                "INSERT INTO souvenirs(texte, portee, compte, statut, source, cree, maj, conversation) "
+                "VALUES (?,?,?,?,?,?,?,?)", (texte, portee, compte if portee == "prive" else compte, statut,
+                                              source, t, t, conversation))
+            self._noter(cur.lastrowid, par or compte, "proposé" if statut == "propose" else "ajouté", None, texte)
+        return self.lire(cur.lastrowid)
+
+    def changer_statut(self, ident: int, statut: str, par: str) -> dict:
+        if statut not in STATUTS:
+            raise ValueError("statut invalide")
+        with self._verrou, self._db:
+            s = self._db.execute("SELECT * FROM souvenirs WHERE id=?", (ident,)).fetchone()
+            if not s:
+                raise KeyError(ident)
+            self._db.execute("UPDATE souvenirs SET statut=?, maj=? WHERE id=?", (statut, maintenant(), ident))
+            self._noter(ident, par, {"valide": "validé", "refuse": "refusé", "supprime": "supprimé",
+                                     "propose": "reproposé"}[statut], s["statut"], statut)
+        return self.lire(ident)
+
+    def modifier(self, ident: int, texte: str | None, portee: str | None, par: str) -> dict:
+        with self._verrou, self._db:
+            s = self._db.execute("SELECT * FROM souvenirs WHERE id=?", (ident,)).fetchone()
+            if not s:
+                raise KeyError(ident)
+            nouveau = re.sub(r"\s+", " ", texte).strip() if texte is not None else s["texte"]
+            p = portee or s["portee"]
+            if not nouveau or len(nouveau) > 500 or p not in PORTEES:
+                raise ValueError("souvenir vide, trop long ou portée invalide")
+            self._db.execute("UPDATE souvenirs SET texte=?, portee=?, maj=? WHERE id=?", (nouveau, p, maintenant(), ident))
+            self._noter(ident, par, "modifié", f"{s['portee']} : {s['texte']}", f"{p} : {nouveau}")
+        return self.lire(ident)
+
+    # --- lecture ----------------------------------------------------------------------------------------
+    def lire(self, ident: int) -> dict:
+        s = self._db.execute("SELECT * FROM souvenirs WHERE id=?", (ident,)).fetchone()
+        if not s:
+            raise KeyError(ident)
+        return dict(s)
+
+    def visible(self, s: dict, compte: str, admin: bool = False) -> bool:
+        return s["portee"] == "foyer" or s["compte"] == compte
+
+    def liste(self, compte: str, statuts: tuple[str, ...] = ("propose", "valide")) -> list[dict]:
+        q = ("SELECT * FROM souvenirs WHERE statut IN (%s) AND (portee='foyer' OR compte=?) ORDER BY maj DESC"
+             % ",".join("?" * len(statuts)))
+        return [dict(r) for r in self._db.execute(q, (*statuts, compte))]
+
+    def historique(self, ident: int) -> list[dict]:
+        return [dict(r) for r in self._db.execute("SELECT * FROM historique WHERE souvenir=? ORDER BY id DESC", (ident,))]
+
+    def proposition_en_attente(self, conversation: str, compte: str, delai_s: int = 300) -> dict | None:
+        """Souvenir que l'assistant vient de proposer dans cette conversation (« oui » / « non » attendu)."""
+        from datetime import timedelta
+        limite = (datetime.now().astimezone() - timedelta(seconds=delai_s)).isoformat(timespec="seconds")
+        r = self._db.execute("SELECT * FROM souvenirs WHERE statut='propose' AND conversation=? AND compte=? "
+                             "AND cree >= ? ORDER BY id DESC LIMIT 1", (conversation, compte, limite)).fetchone()
+        return dict(r) if r else None
+
+    def chercher(self, texte: str, compte: str, prive: bool = True, n: int = 6) -> list[dict]:
+        """Souvenirs validés en rapport avec le message (mots communs), foyer + privés du compte."""
+        mots = [m for m in re.findall(r"\w+", texte.lower()) if m not in MOTS_VIDES and len(m) > 2][:12]
+        if not mots:
+            return []
+        requete = " OR ".join(f'"{m}"*' for m in mots)
+        filtre = "(s.portee='foyer' OR (s.portee='prive' AND s.compte=?))" if prive else "s.portee='foyer'"
+        params = (requete, compte, n) if prive else (requete, n)
+        try:
+            rows = self._db.execute(
+                f"SELECT s.* FROM recherche r JOIN souvenirs s ON s.id=r.rowid WHERE recherche MATCH ? "
+                f"AND s.statut='valide' AND {filtre} ORDER BY bm25(recherche) LIMIT ?", params).fetchall()
+        except sqlite3.OperationalError:
+            return []
+        return [dict(r) for r in rows]
+
+    def fermer(self) -> None:
+        self._db.close()

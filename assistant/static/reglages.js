@@ -71,6 +71,21 @@
         <button type="button" class="bouton" id="cDeconnexion">Se déconnecter</button><span class="aide" data-msg="compte"></span></div>
       <div class="codes" id="cCodes" hidden></div>
     </details>
+    <details id="cfgMemoire"><summary>Mémoire <span class="etat" id="eMemoire"></span></summary>
+      <p class="aide">Ce que l'assistant sait de la maison et de toi. Rien n'est retenu sans validation ; « foyer » est partagé avec tous les comptes, « privé » n'est qu'à toi.</p>
+      <div id="cMemoireListe"></div>
+      <div class="rangee"><input id="cMemoireTexte" maxlength="500" placeholder="ex. Les poubelles sortent le mardi soir" style="flex:1;min-width:0;background:var(--bg);color:var(--fg);border:1px solid var(--bord);border-radius:8px;padding:7px 9px;font:inherit;font-size:.85rem">
+        <select id="cMemoirePortee" class="bouton"><option value="foyer">foyer</option><option value="prive">privé</option></select>
+        <button type="button" class="bouton principal" id="cMemoireAjouter">Ajouter</button></div>
+      <p class="aide" data-msg="memoire"></p>
+    </details>
+    <details id="cfgHabitudes"><summary>Habitudes et routines <span class="etat" id="eHabitudes"></span></summary>
+      <p class="aide">Habitudes repérées dans l'historique des actions : « Automatiser » crée l'automatisation dans Home Assistant (administrateur).</p>
+      <div id="cHabitudesListe"></div>
+      <p class="aide" style="margin-top:12px">Routines : dis par exemple « crée une routine mode cinéma qui ferme les volets du salon et met la lumière à 20 % », puis « mode cinéma ».</p>
+      <div id="cRoutinesListe"></div>
+      <p class="aide" data-msg="habitudes"></p>
+    </details>
     <details id="cfgAssistant"><summary>Assistant <span class="etat" id="eAssistant"></span></summary>
       <label class="champ">Nom<input id="cNom" maxlength="40"></label>
       <label class="champ">Mot de réveil (vide = le nom)<input id="cWake" maxlength="40"></label>
@@ -138,7 +153,7 @@
   const raccourci = document.createElement('p');
   raccourci.className = 'aide';
   raccourci.style.cssText = 'margin:0 0 12px;display:flex;gap:16px;flex-wrap:wrap;font-size:.95rem;font-weight:600';
-  for (const [cible, texte] of [['cfgMonCompte', 'Mon compte'], ['cfgAssistant', "Réglages de l'assistant"]]) {
+  for (const [cible, texte] of [['cfgMonCompte', 'Mon compte'], ['cfgMemoire', 'Mémoire'], ['cfgAssistant', "Réglages de l'assistant"]]) {
     const a = Object.assign(document.createElement('a'), {href: '#', textContent: texte + ' ↓'});
     a.style.color = 'var(--accent)';
     a.onclick = ev => { ev.preventDefault(); const d = $(cible); d.open = true; d.scrollIntoView({behavior: 'smooth', block: 'start'}); };
@@ -226,6 +241,8 @@
   async function charger() {
     try { afficher(await api('/api/reglages')); } catch (e) { etat('eSysteme', 'réglages indisponibles : ' + e.message, 'ko'); }
     chargerComptes();
+    chargerMemoire();
+    chargerHabitudes();
   }
 
   // --- comptes ---------------------------------------------------------------------------------
@@ -235,7 +252,99 @@
     secret_modifié: 'secret modifié', 'redémarrage': 'redémarrage', compte_créé: 'compte créé', compte_supprimé: 'compte supprimé',
     compte_réinitialisé: 'compte réinitialisé', invitation_acceptée: 'invitation acceptée', totp_activé: 'code téléphone activé',
     mot_de_passe_changé: 'mot de passe changé', codes_secours_regénérés: 'codes de secours', alias_oublié: 'alias oublié',
-    modèle_téléchargé: 'modèle téléchargé', profil_modifié: 'profil modifié', appareil_partagé: 'appareil marqué partagé', appareil_personnel: 'appareil marqué personnel', voix_enregistrée: 'voix enregistrée', voix_oubliée: 'voix oubliée', totp_activation: 'code téléphone', invitation: 'invitation'};
+    modèle_téléchargé: 'modèle téléchargé', profil_modifié: 'profil modifié', appareil_partagé: 'appareil marqué partagé', appareil_personnel: 'appareil marqué personnel', voix_enregistrée: 'voix enregistrée', souvenir_ajouté: 'souvenir ajouté', souvenir_validé: 'souvenir validé',
+    souvenir_refusé: 'souvenir refusé', souvenir_modifié: 'souvenir modifié', souvenir_supprimé: 'souvenir oublié',
+    automatisation_créée: 'automatisation créée', routine_créée: 'routine créée', routine_supprimée: 'routine supprimée', voix_oubliée: 'voix oubliée', totp_activation: 'code téléphone', invitation: 'invitation'};
+
+  // --- mémoire --------------------------------------------------------------------------------------
+  async function chargerMemoire() {
+    let d;
+    try { d = await api('/api/memoire'); } catch (e) { $('cfgMemoire').hidden = true; return; }
+    $('cfgMemoire').hidden = false;
+    etat('eMemoire', d.a_valider ? d.a_valider + ' à valider' : d.souvenirs.length + ' souvenir(s)', d.a_valider ? 'ko' : '');
+    const liste = $('cMemoireListe');
+    liste.replaceChildren();
+    for (const sv of d.souvenirs) {
+      const ligne = document.createElement('div'); ligne.className = 'compte';
+      const txt = texte('div', sv.texte);
+      txt.appendChild(texte('small', (sv.statut === 'propose' ? 'à valider · ' : '') + (sv.portee === 'prive' ? 'privé' : 'foyer') + ' · ' + quand(sv.maj)));
+      const b = document.createElement('div'); b.className = 'rangee'; b.style.marginTop = '0';
+      const bouton = (libelle, action) => { const x = texte('button', libelle); x.type = 'button'; x.className = 'bouton'; x.onclick = action; b.appendChild(x); };
+      const agir = async (url, opts, ok) => {
+        try {
+          const r = await fetch(url, opts);
+          if (!r.ok) throw new Error(((await r.json().catch(() => ({}))).detail) || 'erreur ' + r.status);
+          if (ok) msg('memoire', ok, true);
+        } catch (e) { msg('memoire', e.message, false); }
+        chargerMemoire();
+      };
+      if (sv.statut === 'propose') {
+        bouton('Retenir', () => agir(`/api/memoire/${sv.id}/valider`, {method: 'POST'}, 'Retenu.'));
+        bouton('Refuser', () => agir(`/api/memoire/${sv.id}/refuser`, {method: 'POST'}, 'Refusé.'));
+      } else {
+        bouton('Modifier', () => {
+          const nouveau = prompt('Corriger le souvenir :', sv.texte);
+          if (nouveau && nouveau.trim() !== sv.texte) agir(`/api/memoire/${sv.id}`, {method: 'PATCH', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({texte: nouveau.trim()})}, 'Corrigé.');
+        });
+        bouton('Historique', async () => {
+          try {
+            const {historique} = await api(`/api/memoire/${sv.id}/historique`);
+            alert(historique.map(h => `${quand(h.quand)} · ${h.action} par ${h.compte}${h.avant && h.action === 'modifié' ? '\n   avant : ' + h.avant : ''}`).join('\n'));
+          } catch (e) { msg('memoire', e.message, false); }
+        });
+        bouton('Oublier', () => { if (confirm('Oublier ce souvenir ?')) agir(`/api/memoire/${sv.id}`, {method: 'DELETE'}, 'Oublié.'); });
+      }
+      ligne.append(txt, b);
+      liste.appendChild(ligne);
+    }
+  }
+  const VERBES_R = {allumer: 'allumer', eteindre: 'éteindre', ouvrir: 'ouvrir', fermer: 'fermer', regler: 'régler'};
+  async function chargerHabitudes() {
+    let h, r;
+    try { [h, r] = await Promise.all([api('/api/habitudes'), api('/api/routines')]); }
+    catch (e) { $('cfgHabitudes').hidden = true; return; }
+    $('cfgHabitudes').hidden = false;
+    etat('eHabitudes', `${h.habitudes.length} habitude(s) · ${r.routines.length} routine(s)`);
+    const lh = $('cHabitudesListe'); lh.replaceChildren();
+    if (!h.habitudes.length) lh.appendChild(texte('p', 'Rien de régulier pour l\'instant.')).className = 'aide';
+    for (const x of h.habitudes) {
+      const ligne = document.createElement('div'); ligne.className = 'compte';
+      const b = document.createElement('div'); b.className = 'rangee'; b.style.marginTop = '0';
+      for (const [lib, dec] of [['Automatiser', 'accepter'], ['Ignorer', 'ignorer']]) {
+        const bt = texte('button', lib); bt.type = 'button'; bt.className = 'bouton' + (dec === 'accepter' ? ' principal' : '');
+        bt.onclick = async () => {
+          if (dec === 'accepter' && !confirm(`Créer dans Home Assistant : ${x.texte} ?`)) return;
+          try { const o = await api(`/api/habitudes/${dec}`, {id: x.id}); msg('habitudes', dec === 'accepter' ? 'Automatisation créée : ' + o.automatisation : 'Ignorée.', true); }
+          catch (e) { msg('habitudes', e.message, false); }
+          chargerHabitudes();
+        };
+        b.appendChild(bt);
+      }
+      ligne.append(texte('div', x.texte), b); lh.appendChild(ligne);
+    }
+    const lr = $('cRoutinesListe'); lr.replaceChildren();
+    for (const rt of r.routines) {
+      const ligne = document.createElement('div'); ligne.className = 'compte';
+      const t = texte('div', rt.nom);
+      t.appendChild(texte('small', rt.etapes.map(e => `${VERBES_R[e.action] || e.action} ${e.entity_ids.join(', ')}${e.valeur != null ? ' ' + e.valeur : ''}${e.couleur ? ' ' + e.couleur : ''}`).join(' · ')));
+      const bt = texte('button', 'Supprimer'); bt.type = 'button'; bt.className = 'bouton';
+      bt.onclick = async () => {
+        if (!confirm(`Supprimer la routine « ${rt.nom} » ?`)) return;
+        const rep = await fetch(`/api/routines/${encodeURIComponent(rt.nom)}`, {method: 'DELETE'});
+        msg('habitudes', rep.ok ? 'Routine supprimée.' : 'Suppression impossible.', rep.ok);
+        chargerHabitudes();
+      };
+      ligne.append(t, bt); lr.appendChild(ligne);
+    }
+  }
+
+  $('cMemoireAjouter').onclick = async () => {
+    const t = $('cMemoireTexte').value.trim();
+    if (t.length < 2) return;
+    try { await api('/api/memoire', {texte: t, portee: $('cMemoirePortee').value}); $('cMemoireTexte').value = ''; msg('memoire', 'Ajouté.', true); }
+    catch (e) { msg('memoire', e.message, false); }
+    chargerMemoire();
+  };
 
   async function chargerComptes() {
     let s;
