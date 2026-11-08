@@ -17,3 +17,5 @@ config/logs/
 config/actions.json
 config/etats_appareils.json
 diagnostic/
+config/annonces.json
+config/voix_comptes.json

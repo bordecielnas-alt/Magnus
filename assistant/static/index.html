@@ -71,6 +71,9 @@
   .histo li { border-bottom:1px solid var(--bord); padding:6px 0; display:grid; grid-template-columns:1fr auto; gap:2px 8px; font-size:.88rem; }
   .histo small { color:var(--muted); grid-column:1; }
   .histo .annulee { opacity:.5; text-decoration:line-through; }
+  .agenda-jour { margin:10px 0 4px; font-size:.78rem; text-transform:uppercase; letter-spacing:.06em; color:var(--muted); }
+  .agenda-jour:first-child { margin-top:0; }
+  .histo .agenda-heure { color:var(--muted); font-variant-numeric:tabular-nums; grid-column:2; grid-row:1; }
   .histo button { grid-row:1 / span 2; grid-column:2; align-self:center; border:1px solid var(--bord); background:transparent; border-radius:8px; padding:4px 10px; cursor:pointer; color:var(--fg); }
   dialog select { width:100%; background:var(--bg); border:1px solid var(--bord); border-radius:8px; padding:6px; color:var(--fg); }
   .ico { width:20px; height:20px; fill:none; stroke:currentColor; stroke-width:1.7; stroke-linecap:round; stroke-linejoin:round; display:block; margin:auto; }
@@ -278,11 +281,20 @@
         <button type="button" data-role="rapide" aria-pressed="false">Rapide</button>
         <button type="button" data-role="raisonnement" aria-pressed="false">Raisonnement</button>
       </div>
+      <button type="button" class="ligne-menu" id="ouvrirAgenda">Agenda</button>
       <button type="button" class="ligne-menu" id="ouvrirHisto">Historique des actions</button>
       <button type="button" class="ligne-menu" id="reglagesOrbe">Réglages</button>
     </div>
   </form>
 </main>
+<dialog id="dlgAgenda">
+  <form method="dialog">
+    <h2>Agenda · 7 jours</h2>
+    <p class="note" id="agendaNote">Chargement…</p>
+    <div id="agendaListe"></div>
+    <div class="actions"><button type="button" class="discret" id="agendaRafraichir">Actualiser</button><button value="ok">Fermer</button></div>
+  </form>
+</dialog>
 <dialog id="dlgHisto">
   <form method="dialog">
     <h2>Historique des actions</h2>
@@ -408,6 +420,44 @@ async function chargerHisto() {
     }
   } catch (e) { $('histoNote').textContent = 'Historique injoignable (' + e.message + ').'; }
 }
+// ----- Agenda des 7 prochains jours (calendrier lu par le serveur) -----
+async function chargerAgenda() {
+  $('agendaNote').textContent = 'Chargement…'; $('agendaListe').innerHTML = '';
+  try {
+    const r = await fetch('/api/agenda?jours=7', {cache: 'no-store'});
+    diag('agenda : HTTP ' + r.status);
+    if (r.status === 404) { $('agendaNote').textContent = 'Pas encore disponible : le serveur doit être mis à jour.'; return; }
+    if (r.status === 403) { $('agendaNote').textContent = 'L\'agenda n\'est pas visible sur un appareil partagé.'; return; }
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    const {configure, evenements = []} = await r.json();
+    if (configure === false) { $('agendaNote').textContent = 'Aucun calendrier configuré (voir Réglages).'; return; }
+    $('agendaNote').textContent = evenements.length ? '' : 'Rien de prévu dans les 7 prochains jours.';
+    let jourCourant = '', ul = null;
+    const auj = new Date().toDateString(), dem = new Date(Date.now() + 864e5).toDateString();
+    for (const ev of evenements) {
+      // une date seule (journée entière) est lue en heure locale, pas en UTC
+      const d = /^\d{4}-\d{2}-\d{2}$/.test(ev.debut || '') ? new Date(ev.debut + 'T00:00') : new Date(ev.debut);
+      const valide = !isNaN(d);
+      const cle = valide ? d.toDateString() : String(ev.debut || '');
+      if (cle !== jourCourant) {
+        jourCourant = cle;
+        const h = document.createElement('div'); h.className = 'agenda-jour';
+        h.textContent = !valide ? cle : cle === auj ? 'Aujourd\'hui' : cle === dem ? 'Demain' : d.toLocaleDateString('fr-FR', {weekday: 'long', day: 'numeric', month: 'long'});
+        ul = document.createElement('ul'); ul.className = 'histo';
+        $('agendaListe').append(h, ul);
+      }
+      const li = document.createElement('li');
+      li.innerHTML = '<span></span><span class="agenda-heure"></span><small></small>';
+      li.children[0].textContent = ev.titre || ev.texte || 'Événement';
+      li.children[1].textContent = ev.journee || !valide ? 'journée' : d.toLocaleTimeString('fr-FR', {hour: '2-digit', minute: '2-digit'});
+      li.children[2].textContent = ev.lieu || '';
+      if (!ev.lieu) li.children[2].remove();
+      ul.appendChild(li);
+    }
+  } catch (e) { $('agendaNote').textContent = 'Agenda injoignable (' + e.message + ').'; }
+}
+$('ouvrirAgenda').onclick = () => { fermerMenu(); $('dlgAgenda').showModal(); chargerAgenda(); };
+$('agendaRafraichir').onclick = chargerAgenda;
 $('ouvrirHisto').onclick = () => { fermerMenu(); $('dlgHisto').showModal(); chargerHisto(); };
 $('histoRafraichir').onclick = chargerHisto;
 

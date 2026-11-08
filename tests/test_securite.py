@@ -301,3 +301,10 @@ def test_matrice_invalide_refusee():
     from assistant.config import RevelationConfig
     with pytest.raises(ValueError):
         RevelationConfig(masquer={"distant": ["mot_de_passe"]})
+
+
+def test_scripts_jamais_perimes(tmp_path):
+    a, _ = app(tmp_path)
+    c = client(a, "127.0.0.1")
+    assert c.get("/static/reglages.js").headers["cache-control"] == "no-cache"
+    assert c.get("/").headers["cache-control"] == "no-cache"

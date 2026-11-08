@@ -52,6 +52,25 @@
     <p class="aide" id="cVersionHaut" style="margin:0 0 8px;text-align:right"></p>
     <div id="bandeauRedemarrage" hidden><span>Certains changements s'appliqueront au redémarrage.</span>
       <button type="button" class="bouton principal" id="cfgRedemarrer">Redémarrer</button></div>
+    <details id="cfgMonCompte"><summary>Mon compte <span class="etat" id="eMonCompte"></span></summary>
+      <label class="champ">Ton des réponses<select id="cTon"><option value="concis">Concis</option><option value="normal">Normal</option><option value="chaleureux">Chaleureux</option></select></label>
+      <label class="champ">Ma pièce (par défaut quand je n'en précise pas)<input id="cPiece" maxlength="40" placeholder="ex. Salon"></label>
+      <label class="champ">Mes préférences (consigne pour l'assistant)<input id="cConsigne" maxlength="500" placeholder="ex. tutoie-moi, températures en °C"></label>
+      <div class="rangee"><button type="button" class="bouton principal" id="cProfilBtn">Enregistrer mon profil</button><span class="aide" data-msg="profil"></span></div>
+      <p class="aide" style="margin-top:12px">Ma voix : <span id="cVoixEtat">…</span></p>
+      <p class="aide" id="cVoixPhrase" hidden></p>
+      <div class="rangee"><button type="button" class="bouton" id="cVoixBtn">Enregistrer une phrase (5 s)</button>
+        <button type="button" class="bouton" id="cVoixOublier">Oublier ma voix</button><span class="aide" data-msg="voix"></span></div>
+      <label class="aide" style="display:flex;gap:8px;align-items:center;margin-top:12px"><input type="checkbox" id="cPartage"> Cet appareil est partagé (tablette commune) : l'assistant en dit moins</label>
+      <p class="aide" id="cContexte"></p>
+      <label class="champ">Mot de passe actuel<input id="cMdpActuel" type="password" autocomplete="current-password"></label>
+      <label class="champ">Nouveau mot de passe (10 caractères min.)<input id="cMdpNouveau" type="password" autocomplete="new-password" minlength="10"></label>
+      <div class="rangee"><button type="button" class="bouton" id="cMdpBtn">Changer le mot de passe</button><span class="aide" data-msg="mdp"></span></div>
+      <p class="aide">Changer le mot de passe déconnecte tous tes autres appareils.</p>
+      <div class="rangee"><button type="button" class="bouton" id="cSecoursBtn">Nouveaux codes de secours</button>
+        <button type="button" class="bouton" id="cDeconnexion">Se déconnecter</button><span class="aide" data-msg="compte"></span></div>
+      <div class="codes" id="cCodes" hidden></div>
+    </details>
     <details id="cfgAssistant"><summary>Assistant <span class="etat" id="eAssistant"></span></summary>
       <label class="champ">Nom<input id="cNom" maxlength="40"></label>
       <label class="champ">Mot de réveil (vide = le nom)<input id="cWake" maxlength="40"></label>
@@ -84,25 +103,6 @@
       <label class="champ">Durée d'une connexion (jours)<input id="cSession" type="number" min="1" max="365"></label>
       <div class="rangee"><button type="button" class="bouton principal" data-enr="acces">Enregistrer</button><span class="aide" data-msg="acces"></span></div>
     </details>
-    <details id="cfgMonCompte"><summary>Mon compte <span class="etat" id="eMonCompte"></span></summary>
-      <label class="champ">Ton des réponses<select id="cTon"><option value="concis">Concis</option><option value="normal">Normal</option><option value="chaleureux">Chaleureux</option></select></label>
-      <label class="champ">Ma pièce (par défaut quand je n'en précise pas)<input id="cPiece" maxlength="40" placeholder="ex. Salon"></label>
-      <label class="champ">Mes préférences (consigne pour l'assistant)<input id="cConsigne" maxlength="500" placeholder="ex. tutoie-moi, températures en °C"></label>
-      <div class="rangee"><button type="button" class="bouton principal" id="cProfilBtn">Enregistrer mon profil</button><span class="aide" data-msg="profil"></span></div>
-      <p class="aide" style="margin-top:12px">Ma voix : <span id="cVoixEtat">…</span></p>
-      <p class="aide" id="cVoixPhrase" hidden></p>
-      <div class="rangee"><button type="button" class="bouton" id="cVoixBtn">Enregistrer une phrase (5 s)</button>
-        <button type="button" class="bouton" id="cVoixOublier">Oublier ma voix</button><span class="aide" data-msg="voix"></span></div>
-      <label class="aide" style="display:flex;gap:8px;align-items:center;margin-top:12px"><input type="checkbox" id="cPartage"> Cet appareil est partagé (tablette commune) : l'assistant en dit moins</label>
-      <p class="aide" id="cContexte"></p>
-      <label class="champ">Mot de passe actuel<input id="cMdpActuel" type="password" autocomplete="current-password"></label>
-      <label class="champ">Nouveau mot de passe (10 caractères min.)<input id="cMdpNouveau" type="password" autocomplete="new-password" minlength="10"></label>
-      <div class="rangee"><button type="button" class="bouton" id="cMdpBtn">Changer le mot de passe</button><span class="aide" data-msg="mdp"></span></div>
-      <p class="aide">Changer le mot de passe déconnecte tous tes autres appareils.</p>
-      <div class="rangee"><button type="button" class="bouton" id="cSecoursBtn">Nouveaux codes de secours</button>
-        <button type="button" class="bouton" id="cDeconnexion">Se déconnecter</button><span class="aide" data-msg="compte"></span></div>
-      <div class="codes" id="cCodes" hidden></div>
-    </details>
     <details id="cfgComptes" hidden><summary>Comptes <span class="etat" id="eComptes"></span></summary>
       <div id="cListeComptes"></div>
       <div class="rangee"><input id="cNouveauNom" placeholder="prénom du nouveau compte" maxlength="40" style="flex:1;min-width:0;background:var(--bg);color:var(--fg);border:1px solid var(--bord);border-radius:8px;padding:7px 9px;font:inherit;font-size:.85rem">
@@ -114,12 +114,38 @@
     <details id="cfgJournal" hidden><summary>Journal <span class="etat" id="eJournal"></span></summary>
       <div class="journal" id="cJournal"></div>
     </details>
+    <details id="cfgServices"><summary>Annonces, agenda, Docker <span class="etat" id="eServices"></span></summary>
+      <label class="aide" style="display:flex;gap:8px;align-items:center;margin-top:10px"><input type="checkbox" id="cProActif"> L'assistant peut prendre la parole de lui-même</label>
+      <label class="champ">Heures calmes (seules les urgences sont dites)<input id="cCalme" placeholder="22:00-07:30"></label>
+      <label class="champ">Briefing du matin (heure, vide = jamais)<input id="cBriefing" placeholder="07:30"></label>
+      <label class="champ">Ville pour la météo<input id="cVille" placeholder="ex. Douai"></label>
+      <label class="champ">Agenda CalDAV : adresse du calendrier<input id="cAgendaUrl" placeholder="http://192.168.1.2:5232/benjamin/agenda/"></label>
+      <label class="champ">Agenda : identifiant<input id="cAgendaUser" autocomplete="off"></label>
+      <label class="champ">Agenda : mot de passe<input id="cAgendaMdp" type="password" autocomplete="off" placeholder="laisser vide pour garder l'actuel"></label>
+      <label class="champ">Annoncer un rendez-vous (minutes avant)<input id="cAgendaAvant" type="number" min="0" max="240"></label>
+      <label class="champ">Docker via l'API Unraid : adresse<input id="cUnraidUrl" placeholder="http://192.168.1.2/graphql"></label>
+      <label class="champ">API Unraid : clé (rôle lecture seule)<input id="cUnraidCle" type="password" autocomplete="off" placeholder="laisser vide pour garder l'actuelle"></label>
+      <input id="cDockerUrl" type="hidden">
+      <div class="rangee"><button type="button" class="bouton principal" data-enr="services">Enregistrer</button><span class="aide" data-msg="services"></span></div>
+    </details>
     <details id="cfgSysteme"><summary>Système <span class="etat" id="eSysteme"></span></summary>
       <p class="aide" id="cSystemeInfo"></p>
       <div class="rangee"><button type="button" class="bouton" id="cfgRedemarrer2">Redémarrer l'assistant</button><span class="aide" data-msg="systeme"></span></div>
     </details>`;
   const actions = dlg.querySelector('.actions');
   actions.parentNode.insertBefore(zone, actions);
+  // Raccourci en haut de la fenêtre : les réglages de l'assistant sont sous ceux de l'affichage
+  const raccourci = document.createElement('p');
+  raccourci.className = 'aide';
+  raccourci.style.cssText = 'margin:0 0 12px;display:flex;gap:16px;flex-wrap:wrap;font-size:.95rem;font-weight:600';
+  for (const [cible, texte] of [['cfgMonCompte', 'Mon compte'], ['cfgAssistant', "Réglages de l'assistant"]]) {
+    const a = Object.assign(document.createElement('a'), {href: '#', textContent: texte + ' ↓'});
+    a.style.color = 'var(--accent)';
+    a.onclick = ev => { ev.preventDefault(); const d = $(cible); d.open = true; d.scrollIntoView({behavior: 'smooth', block: 'start'}); };
+    raccourci.appendChild(a);
+  }
+  const titre = dlg.querySelector('h2');
+  if (titre) titre.after(raccourci); else dlg.prepend(raccourci);
 
   let donnees = null;
   const msg = (cle, texte, ok) => { const e = zone.querySelector(`[data-msg="${cle}"]`); if (e) { e.textContent = texte; e.className = 'aide ' + (ok ? 'msg-ok' : 'msg-ko'); } };
@@ -186,6 +212,11 @@
     $('cSession').value = r.securite.session_jours;
     etat('eAcces', e.securite.mot_de_passe_defini ? 'protégé' : 'sans compte', e.securite.mot_de_passe_defini ? 'ok' : 'ko');
 
+    const pa = r.proactif || {}, ag = r.agenda || {}, dk = r.docker || {};
+    $('cProActif').checked = !!pa.active; $('cCalme').value = pa.heures_calmes || ''; $('cBriefing').value = pa.briefing_heure || '';
+    $('cVille').value = pa.ville || ''; $('cAgendaUrl').value = ag.url || ''; $('cAgendaUser').value = ag.utilisateur || '';
+    $('cAgendaAvant').value = ag.annonce_avant_min ?? 15; $('cDockerUrl').value = dk.url || ''; $('cUnraidUrl').value = dk.unraid_url || '';
+    etat('eServices', [ag.url ? 'agenda' : '', (dk.unraid_url || dk.url) ? 'Docker' : '', pa.briefing_heure ? 'briefing ' + pa.briefing_heure : ''].filter(Boolean).join(' · ') || 'rien de branché');
     const v = e.voix || {};
     $('cSystemeInfo').textContent = `Version ${e.version} · ${e.conteneur ? 'conteneur Docker' : 'PC'} · transcription sur ${v.appareil || '?'} · voix ${v.moteur || '?'}`;
     etat('eSysteme', 'v' + e.version);
@@ -408,6 +439,17 @@
       const jeton = $('cHaJeton').value.trim();
       enregistrer('ha', {home_assistant: {url: $('cHaUrl').value.trim()}},
         jeton ? async () => { await api('/api/reglages/secret', {nom: 'HA_JETON', valeur: jeton}); $('cHaJeton').value = ''; } : null);
+    } else if (b.dataset.enr === 'services') {
+      const mdp = $('cAgendaMdp').value;
+      enregistrer('services', {
+        proactif: {active: $('cProActif').checked, heures_calmes: $('cCalme').value.trim(), briefing_heure: $('cBriefing').value.trim(), ville: $('cVille').value.trim()},
+        agenda: {url: $('cAgendaUrl').value.trim(), utilisateur: $('cAgendaUser').value.trim(), annonce_avant_min: +$('cAgendaAvant').value || 0},
+        docker: {url: $('cDockerUrl').value.trim(), unraid_url: $('cUnraidUrl').value.trim()}},
+        async () => {
+          if (mdp) { await api('/api/reglages/secret', {nom: 'AGENDA_MOT_DE_PASSE', valeur: mdp}); $('cAgendaMdp').value = ''; }
+          const cle = $('cUnraidCle').value.trim();
+          if (cle) { await api('/api/reglages/secret', {nom: 'UNRAID_CLE', valeur: cle}); $('cUnraidCle').value = ''; }
+        });
     } else if (b.dataset.enr === 'acces') {
       enregistrer('acces', {securite: {proxies_de_confiance: liste($('cProxies').value), reseaux_autorises: liste($('cReseaux').value),
                                         session_jours: +$('cSession').value}});

@@ -33,6 +33,7 @@ ENV_MAP: dict[str, tuple[str, str]] = {
     "ASSISTANT_LANGUE": ("identite", "langue"),
     "ASSISTANT_HOTE": ("serveur", "hote"),
     "ASSISTANT_PORT": ("serveur", "port"),
+    "ASSISTANT_DOCKER_URL": ("docker", "url"),
 }
 
 
@@ -120,6 +121,63 @@ class MaisonConfig(BaseModel):
         if refuses:
             raise ValueError(f"domaines sensibles interdits avant la phase 3 : {refuses}")
         return v
+
+
+class DockerConfig(BaseModel):
+    """Diagnostic des conteneurs, en lecture seule, via un docker-socket-proxy (jamais le socket lui-même)."""
+    url: str = ""                  # unix:///var/run/docker.sock (socket monté) ou http://proxy:2375 ; vide = désactivé
+    # API officielle d'Unraid (7.2+) : adresse GraphQL ; la clé est le secret UNRAID_CLE (rôle lecture seule)
+    unraid_url: str = ""           # ex. http://192.168.1.2/graphql ; prioritaire sur « url »
+
+    def cle_unraid(self) -> str:
+        return os.environ.get("UNRAID_CLE", "")
+    timeout: float = Field(default=8, gt=0)
+
+
+class AgendaConfig(BaseModel):
+    """Calendrier CalDAV ; le mot de passe est le secret AGENDA_MOT_DE_PASSE (fichier .env)."""
+    url: str = ""                  # URL du calendrier (collection), vide = désactivé
+    utilisateur: str = ""
+    rappel_min: int = Field(default=15, ge=0)        # rappel ajouté aux événements créés
+    annonce_avant_min: int = Field(default=15, ge=0)  # le mode proactif annonce l'événement N min avant
+
+    def mot_de_passe(self) -> str:
+        return os.environ.get("AGENDA_MOT_DE_PASSE", "")
+
+
+class RegleSurveillance(BaseModel):
+    """« Préviens-moi si la porte du garage reste ouverte plus de 10 minutes. »"""
+    entity_id: str
+    etat: str                      # état qui déclenche (on, open, unavailable…)
+    minutes: float = Field(default=10, ge=0)
+    message: str = ""              # vide = « <nom> est <état> depuis <n> minutes. »
+    priorite: Literal["info", "important", "urgent"] = "important"
+
+
+class ProactifConfig(BaseModel):
+    active: bool = False                 # coupé tant que Benjamin ne l'a pas demandé
+    heures_calmes: str = "22:00-07:30"   # seules les annonces urgentes sont dites
+    intervalle_s: float = Field(default=60, ge=10)
+    briefing_heure: str = ""             # ex. « 07:30 » : météo + actualités chaque matin ; vide = jamais
+    ville: str = ""                      # pour la météo du briefing
+    surveiller: list[RegleSurveillance] = Field(default_factory=list)
+
+    @field_validator("heures_calmes")
+    @classmethod
+    def _plage(cls, v: str) -> str:
+        v = v.strip()
+        if v and not re.fullmatch(r"([01]?\d|2[0-3]):[0-5]\d\s*-\s*([01]?\d|2[0-3]):[0-5]\d", v):
+            raise ValueError("heures calmes au format 22:00-07:30")
+        debut, fin = v.replace(" ", "").split("-")
+        return f"{debut.zfill(5)}-{fin.zfill(5)}"
+
+    @field_validator("briefing_heure")
+    @classmethod
+    def _heure(cls, v: str) -> str:
+        v = v.strip()
+        if v and not re.fullmatch(r"([01]?\d|2[0-3]):[0-5]\d", v):
+            raise ValueError("heure du briefing au format 07:30")
+        return v.zfill(5) if v else v
 
 
 CATEGORIES_REVELATION = {"etat_sensible", "historique", "personnel"}
@@ -271,6 +329,9 @@ class Config(BaseModel):
     voix: VoixConfig = Field(default_factory=VoixConfig)
     securite: SecuriteConfig = Field(default_factory=SecuriteConfig)
     revelation: RevelationConfig = Field(default_factory=RevelationConfig)
+    docker: DockerConfig = Field(default_factory=DockerConfig)
+    proactif: ProactifConfig = Field(default_factory=ProactifConfig)
+    agenda: AgendaConfig = Field(default_factory=AgendaConfig)
 
     @model_validator(mode="after")
     def _roles_valides(self) -> "Config":

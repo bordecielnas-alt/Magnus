@@ -29,7 +29,10 @@ from .maison.alias import AliasAppris
 from .routeur import SIMPLE, Decision, Routeur
 from . import reglages as R
 from .reveil import Reveil
+from .agenda import JOURS, Agenda, decrire
 from .audit import Audit
+from .proactif import Annonces
+from .docker_diag import Docker, UnraidDocker
 from .locuteur import Locuteurs
 from .diagnostic import Diagnostic, GestionnaireJournal
 from .securite import COMPTE_MACHINE, NOM_COOKIE, AccesRefuse, Securite, est_locale
@@ -110,6 +113,34 @@ COOKIE_APPAREIL = "assistant_appareil"     # « partage » : tablette commune, o
 
 class AppareilPartage(BaseModel):
     partage: bool
+
+
+ETATS_FR_COURTS = {"on": "allumé", "off": "éteint", "open": "ouvert", "closed": "fermé",
+                   "unavailable": "injoignable", "home": "à la maison", "not_home": "absent"}
+RE_BRIEFING = re.compile(r"^\s*(fais[- ]moi |donne[- ]moi |lance |le )?(le |mon )?(briefing|r[ée]sum[ée] du (jour|matin))\b", re.I)
+RE_AGENDA = re.compile(r"\b(agenda|calendrier|rendez-vous|rdv|r[ée]union|rappelle-moi|rappel|"
+                       r"qu.est-ce que j.ai|ai-je quelque chose|programme de (la journ[ée]e|demain|la semaine)|"
+                       r"note (dans|sur) l.agenda|anniversaire)\b", re.I)
+NOTE_OUTILS_AGENDA = (
+    "Tu as aussi lire_agenda et ajouter_evenement (agenda familial). Nous sommes le {date}. Pour « rappelle-moi "
+    "de … demain à 9 h », ajoute un événement à cette heure. Résume l'agenda en phrases courtes, sans liste."
+)
+RE_DOCKER = re.compile(r"\b(docker|conteneurs?|containers?|unraid|serveur|plex|nginx|npm|logs?|journaux|"
+                       r"plant[ée]s?|crash|red[ée]marr\w*|ne (r[ée]pond|marche|fonctionne) plus)\b", re.I)
+NOTE_OUTILS_DOCKER = (
+    "Tu as aussi lister_conteneurs et diagnostiquer_conteneur (serveur Unraid, lecture seule). Pour un service "
+    "qui ne marche pas, diagnostique d'abord, puis donne la cause probable et un correctif concret que la "
+    "personne appliquera elle-même (ex. « redémarre le conteneur Plex depuis l'onglet Docker »). Tu ne peux "
+    "rien redémarrer ni modifier : ne prétends jamais l'avoir fait."
+)
+
+
+class NouvelEvenement(BaseModel):
+    titre: str = Field(min_length=1, max_length=200)
+    debut: str = Field(min_length=8, max_length=40)
+    fin: str = Field(default="", max_length=40)
+    lieu: str = Field(default="", max_length=200)
+    journee: bool = False
 
 
 class Profil(BaseModel):
@@ -240,6 +271,98 @@ def creer_app(config: Config | None = None, registre: Registre | None = None,
     securite = securite or Securite(cfg.securite, dossier_etat(cfg))
     audit = Audit(securite.fichier.parent)
     diag = Diagnostic(securite.fichier.parent)
+    docker = (UnraidDocker(cfg.docker.unraid_url, cfg.docker.cle_unraid(), cfg.docker.timeout) if cfg.docker.unraid_url
+              else Docker(cfg.docker.url, cfg.docker.timeout))
+    annonces = Annonces(securite.fichier.parent, cfg.proactif.heures_calmes)
+    agenda = Agenda(cfg.agenda.url, cfg.agenda.utilisateur, cfg.agenda.mot_de_passe())
+
+    def consigne_briefing() -> str:
+        ville = f" à {cfg.proactif.ville}" if cfg.proactif.ville else ""
+        return (f"Fais le briefing du jour, à dire à voix haute en moins de 6 phrases : la météo d'aujourd'hui{ville} "
+                f"(températures, pluie), puis les 3 actualités principales en France ce matin, une phrase chacune. "
+                f"Nous sommes le {time.strftime('%d/%m/%Y')}. Pas de liste, pas de source.")
+
+    async def briefing() -> str:
+        msgs = [Message("system", cfg.consigne_effective + "\n\n" + NOTE_STYLE), Message("user", consigne_briefing())]
+        return sans_emoji((await reg.repondre(cfg.routeur.role_complexe, msgs)).texte)
+
+    async def surveiller_une_fois(etat_veille: dict) -> None:
+        """Un passage de surveillance : présence, conteneurs, règles, briefing."""
+        from datetime import datetime
+        etats = []
+        if ha.configure:
+            try:
+                from .maison.inventaire import CMD_ETATS
+                etats = (await ha.ws([CMD_ETATS])).get(CMD_ETATS) or []
+            except Exception:  # noqa: BLE001 - Home Assistant injoignable : on réessaiera
+                etats = []
+            personnes = [x for x in etats if x.get("entity_id", "").startswith("person.")]
+            if personnes:
+                annonces.presents = any(x.get("state") == "home" for x in personnes)
+        if docker.configure:
+            try:
+                mauvais = {c["nom"]: c for c in await docker.problemes()}
+            except Exception:  # noqa: BLE001
+                mauvais = None
+            if mauvais is not None:
+                for nom, c in mauvais.items():
+                    quoi = "est en mauvaise santé" if c["sante"] == "unhealthy" else f"s'est arrêté ({c['statut']})"
+                    annonces.ajouter(f"Le conteneur {nom} {quoi}. Demande-moi un diagnostic.", "important",
+                                     "docker", f"docker:{nom}")
+                for nom in etat_veille.get("docker", set()) - set(mauvais):
+                    annonces.resoudre(f"docker:{nom}")
+                etat_veille["docker"] = set(mauvais)
+        par_id = {x.get("entity_id"): x for x in etats}
+        for regle in cfg.proactif.surveiller:
+            x = par_id.get(regle.entity_id)
+            cle = f"regle:{regle.entity_id}:{regle.etat}"
+            if not x:
+                continue
+            if x.get("state") != regle.etat:
+                annonces.resoudre(cle)
+                continue
+            try:
+                depuis = datetime.fromisoformat(x.get("last_changed", "").replace("Z", "+00:00"))
+            except ValueError:
+                continue
+            minutes = (datetime.now(depuis.tzinfo) - depuis).total_seconds() / 60
+            if minutes >= regle.minutes:
+                nom = (x.get("attributes") or {}).get("friendly_name", regle.entity_id)
+                texte = regle.message or f"{nom} est {ETATS_FR_COURTS.get(regle.etat, regle.etat)} depuis {int(minutes)} minutes."
+                annonces.ajouter(texte, regle.priorite, "surveillance", cle)
+        if agenda.configure and cfg.agenda.annonce_avant_min:
+            from datetime import datetime as dt, timedelta
+            maintenant = dt.now().astimezone()
+            try:
+                bientot = await agenda.evenements(maintenant, maintenant + timedelta(minutes=cfg.agenda.annonce_avant_min))
+            except Exception:  # noqa: BLE001
+                bientot = []
+            for e in bientot:
+                if e.get("journee"):
+                    continue
+                minutes = max(0, round((e["debut"] - maintenant).total_seconds() / 60))
+                annonces.ajouter(f"Dans {minutes} minutes : {e.get('titre', 'un événement')}"
+                                 + (f" ({e['lieu']})" if e.get("lieu") else "") + ".", "important", "agenda",
+                                 f"agenda:{e.get('uid', e.get('titre'))}:{e['debut']:%Y%m%d%H%M}")
+        h = cfg.proactif.briefing_heure
+        jour = time.strftime("%Y-%m-%d")
+        if h and time.strftime("%H:%M") >= h and etat_veille.get("briefing") != jour and annonces.presents is not False:
+            etat_veille["briefing"] = jour
+            try:
+                annonces.ajouter(await briefing(), "info", "briefing", f"briefing:{jour}")
+            except Exception as e:  # noqa: BLE001
+                journal.info("briefing impossible : %s", e)
+
+    async def boucle_surveillance() -> None:
+        import asyncio as aio
+        veille: dict = {"briefing": time.strftime("%Y-%m-%d") if cfg.proactif.briefing_heure
+                        and time.strftime("%H:%M") >= cfg.proactif.briefing_heure else ""}
+        while True:
+            try:
+                await surveiller_une_fois(veille)
+            except Exception:  # noqa: BLE001 - la surveillance ne doit jamais s'arrêter
+                journal.exception("surveillance : erreur")
+            await aio.sleep(cfg.proactif.intervalle_s)
     locuteurs = Locuteurs(cfg.voix.chemin_locuteur(), securite.fichier.parent, cfg.voix.seuil_locuteur)
     locuteur_conversation: dict[str, tuple[str, float]] = {}   # conversation -> (compte reconnu, instant)
 
@@ -271,11 +394,14 @@ def creer_app(config: Config | None = None, registre: Registre | None = None,
 
     def outils_maison(conversation: str) -> dict:
         env = {"ASSISTANT_INTERNE_URL": f"http://127.0.0.1:{cfg.serveur.port}",
-               "ASSISTANT_INTERNE_JETON": jeton_interne, "ASSISTANT_CONVERSATION": conversation}
+               "ASSISTANT_INTERNE_JETON": jeton_interne, "ASSISTANT_CONVERSATION": conversation,
+               "ASSISTANT_DOCKER": "1" if docker.configure else "0",
+               "ASSISTANT_AGENDA": "1" if agenda.configure else "0"}
         return {
             "mcp": {"mcpServers": {"maison": {"command": sys.executable, "args": ["-m", "assistant.mcp_maison"], "env": env}}},
             "autoriser": ["mcp__maison"],
-            "note": NOTE_OUTILS_MAISON,
+            "note": NOTE_OUTILS_MAISON + ("\n\n" + NOTE_OUTILS_DOCKER if docker.configure else "")
+                    + ("\n\n" + NOTE_OUTILS_AGENDA.format(date=f"{JOURS[time.localtime().tm_wday]} {time.strftime('%d/%m/%Y %H:%M')}") if agenda.configure else ""),
         }
 
     def verifier_jeton(x_jeton_interne: str | None) -> None:
@@ -287,7 +413,11 @@ def creer_app(config: Config | None = None, registre: Registre | None = None,
         import asyncio
         if cfg.voix.active and cfg.voix.whisper_present() and cfg.voix.synthese_presente():
             app.state.prechauffage = asyncio.create_task(voix.prechauffer())
+        if cfg.proactif.active and (ha.configure or docker.configure or cfg.proactif.briefing_heure):
+            app.state.surveillance = asyncio.create_task(boucle_surveillance())
         yield
+        if getattr(app.state, "surveillance", None):
+            app.state.surveillance.cancel()
         await reg.fermer()
         await ha.fermer()
 
@@ -300,6 +430,8 @@ def creer_app(config: Config | None = None, registre: Registre | None = None,
     app.state.voix = voix
     app.state.securite = securite
     app.state.audit = audit
+    app.state.annonces = annonces
+    app.state.surveiller_une_fois = surveiller_une_fois     # pour les tests
 
     def ip_de(requete: Request) -> tuple[str, str]:
         """(IP directe, IP réelle du client). « testclient » = client de test de Starlette, traité comme local."""
@@ -343,6 +475,16 @@ def creer_app(config: Config | None = None, registre: Registre | None = None,
     def exiger_revelation(requete: Request, categorie: str) -> None:
         if categorie in contexte_de(requete)["masques"]:
             raise HTTPException(403, "information non donnée sur cet appareil")
+
+    @app.middleware("http")
+    async def pas_de_page_perimee(requete: Request, suite):
+        """Pages et scripts : le navigateur revérifie à chaque chargement (304 si inchangé), sinon une
+        tablette peut garder l'ancien reglages.js après une mise à jour."""
+        rep_ = await suite(requete)
+        chemin = requete.url.path
+        if chemin == "/" or chemin == "/connexion" or chemin.endswith((".js", ".html", ".css", ".webmanifest")):
+            rep_.headers["Cache-Control"] = "no-cache"
+        return rep_
 
     @app.middleware("http")
     async def controle_acces(requete: Request, suite):
@@ -762,6 +904,105 @@ def creer_app(config: Config | None = None, registre: Registre | None = None,
         exiger_revelation(requete, "historique")
         return {"appareils": await maison.etats_appareils()}
 
+    @app.get("/interne/docker/conteneurs", include_in_schema=False)
+    async def interne_conteneurs(x_jeton_interne: str | None = Header(None)) -> list[dict]:
+        verifier_jeton(x_jeton_interne)
+        return await docker_ou_erreur(docker.conteneurs())
+
+    @app.get("/interne/docker/diagnostic", include_in_schema=False)
+    async def interne_diagnostic(nom: str, x_jeton_interne: str | None = Header(None)) -> dict:
+        verifier_jeton(x_jeton_interne)
+        return await docker_ou_erreur(docker.diagnostic(nom))
+
+    async def docker_ou_erreur(appel):
+        if not docker.configure:
+            raise HTTPException(503, "diagnostic Docker non configuré (docker.url)")
+        try:
+            return await appel
+        except ValueError as e:
+            raise HTTPException(404, str(e)) from e
+        except Exception as e:  # noqa: BLE001 - proxy injoignable, refus…
+            raise HTTPException(502, f"Docker injoignable : {e.__class__.__name__}") from e
+
+    async def agenda_ou_erreur(appel):
+        if not agenda.configure:
+            raise HTTPException(503, "agenda non configuré (agenda.url)")
+        try:
+            return await appel
+        except PermissionError as e:
+            raise HTTPException(502, str(e)) from e
+        except Exception as e:  # noqa: BLE001
+            raise HTTPException(502, f"agenda injoignable : {e.__class__.__name__}") from e
+
+    def evenements_json(evts: list[dict]) -> list[dict]:
+        return [{"titre": e.get("titre", ""), "debut": e["debut"].isoformat(), "journee": e.get("journee", False),
+                 "lieu": e.get("lieu", ""), "texte": decrire(e)} for e in evts]
+
+    async def prochains(jours: float) -> list[dict]:
+        from datetime import datetime as dt, timedelta
+        maintenant = dt.now().astimezone()
+        debut = maintenant.replace(hour=0, minute=0, second=0, microsecond=0)
+        return await agenda.evenements(debut, maintenant + timedelta(days=jours))
+
+    @app.get("/interne/agenda", include_in_schema=False)
+    async def interne_agenda(jours: int = 7, x_jeton_interne: str | None = Header(None)) -> list[dict]:
+        verifier_jeton(x_jeton_interne)
+        return evenements_json(await agenda_ou_erreur(prochains(max(1, min(jours, 60)))))
+
+    @app.post("/interne/agenda", include_in_schema=False)
+    async def interne_ajouter(e: NouvelEvenement, x_jeton_interne: str | None = Header(None)) -> dict:
+        verifier_jeton(x_jeton_interne)
+        from datetime import datetime as dt
+        try:
+            debut = dt.fromisoformat(e.debut).astimezone()
+            fin = dt.fromisoformat(e.fin).astimezone() if e.fin else None
+        except ValueError as x:
+            raise HTTPException(422, "date invalide (format 2026-11-12T14:30)") from x
+        uid = await agenda_ou_erreur(agenda.ajouter(e.titre, debut, fin, e.lieu, cfg.agenda.rappel_min, e.journee))
+        audit.noter("agenda_ajout", "", "", par="claude", titre=e.titre, debut=e.debut)
+        return {"ok": True, "uid": uid, "resume": decrire({"debut": debut, "titre": e.titre, "lieu": e.lieu,
+                                                           "journee": e.journee})}
+
+    @app.get("/api/agenda")
+    async def lire_agenda(requete: Request, jours: int = 7) -> dict:
+        exiger_revelation(requete, "historique")
+        if not agenda.configure:
+            return {"configure": False, "evenements": []}
+        return {"configure": True, "evenements": evenements_json(await agenda_ou_erreur(prochains(max(1, min(jours, 60)))))}
+
+    @app.get("/api/annonces")
+    def lire_annonces(requete: Request, depuis: str = "") -> dict:
+        """Ce que l'assistant a à dire de lui-même ; « parler » : à dire à voix haute maintenant."""
+        caches = contexte_de(requete)["masques"]
+        liste = annonces.depuis(depuis)
+        if "historique" in caches:         # appareil partagé / enfant : seulement les urgences
+            liste = [a for a in liste if a["priorite"] == "urgent"]
+        return {"annonces": liste, "heures_calmes": cfg.proactif.heures_calmes, "presents": annonces.presents}
+
+    @app.post("/api/annonces/{ident}/lue")
+    def annonce_lue(ident: str) -> dict:
+        if not annonces.marquer_lue(ident):
+            raise HTTPException(404, "annonce inconnue")
+        return {"ok": True}
+
+    @app.post("/api/briefing")
+    async def demander_briefing() -> dict:
+        try:
+            texte = await briefing()
+        except FournisseurIndisponible as e:
+            raise HTTPException(503, f"aucun modèle disponible ({e})") from e
+        return {"texte": texte}
+
+    @app.get("/api/docker")
+    async def etat_docker(requete: Request) -> dict:
+        """Conteneurs et ceux qui posent problème (administrateurs)."""
+        exiger_admin(requete)
+        if not docker.configure:
+            return {"configure": False, "conteneurs": [], "problemes": []}
+        liste = await docker_ou_erreur(docker.conteneurs())
+        mauvais = [c["nom"] for c in await docker_ou_erreur(docker.problemes())]
+        return {"configure": True, "conteneurs": liste, "problemes": mauvais}
+
     @app.post("/interne/maison/agir", include_in_schema=False)
     async def interne_agir(a: Action, x_jeton_interne: str | None = Header(None)) -> dict:
         verifier_jeton(x_jeton_interne)
@@ -1016,6 +1257,8 @@ def creer_app(config: Config | None = None, registre: Registre | None = None,
 
     @app.post("/api/chat")
     async def chat(d: DemandeChat, requete: Request):
+        if RE_BRIEFING.search(d.message):
+            d = d.model_copy(update={"message": consigne_briefing(), "role": cfg.routeur.role_complexe})
         demande_en_cours.set((d.source, d.message))
         compte = compte_de(requete)
         ctx_revel = frozenset(contexte_de(requete)["masques"])
@@ -1098,9 +1341,19 @@ def creer_app(config: Config | None = None, registre: Registre | None = None,
         # Claude avec les outils maison : demande ouverte sur la maison (« il fait sombre au salon »),
         # ou demande simple que les règles n'ont pas su traiter
         outils = None
-        if (ha.configure and cfg.maison.outils_pour_claude and (decision is not None or role == cfg.routeur.role_complexe)
-                and cfg.routeur.role_complexe in reg.roles
-                and getattr(reg.pour_role(cfg.routeur.role_complexe), "accepte_outils", False)
+        claude_outille = (cfg.routeur.role_complexe in reg.roles
+                          and getattr(reg.pour_role(cfg.routeur.role_complexe), "accepte_outils", False))
+        if agenda.configure and claude_outille and RE_AGENDA.search(d.message) and "historique" not in ctx_revel:
+            role = cfg.routeur.role_complexe
+            route["outils"] = "Claude avec l'agenda"
+            outils = outils_maison(d.conversation)
+        elif docker.configure and claude_outille and RE_DOCKER.search(d.message) and securite.est_admin(compte):
+            # serveur, conteneurs : Claude avec les outils de diagnostic (administrateurs seulement)
+            role = cfg.routeur.role_complexe
+            route["outils"] = "Claude avec diagnostic Docker"
+            outils = outils_maison(d.conversation)
+        elif (ha.configure and cfg.maison.outils_pour_claude and (decision is not None or role == cfg.routeur.role_complexe)
+                and claude_outille
                 and await maison.evoque(d.message)):
             if role == cfg.routeur.role_simple:
                 role = cfg.routeur.role_complexe

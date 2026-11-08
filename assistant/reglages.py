@@ -24,9 +24,12 @@ MODIFIABLES: dict[str, set[str]] = {
     "roles": {"rapide", "raisonnement", "secours"},
     "voix": {"voix", "fenetre_s", "toujours_a_l_ecoute", "lenteur"},
     "securite": {"reseaux_autorises", "proxies_de_confiance", "session_jours"},
+    "docker": {"url", "unraid_url"},
+    "agenda": {"url", "utilisateur", "annonce_avant_min"},
+    "proactif": {"active", "heures_calmes", "briefing_heure", "ville"},
 }
 FOURNISSEURS_MODIFIABLES = {"url", "modele", "effort"}
-SECRETS_MODIFIABLES = {"HA_JETON"}
+SECRETS_MODIFIABLES = {"HA_JETON", "AGENDA_MOT_DE_PASSE", "UNRAID_CLE"}
 
 
 class ReglageInvalide(ValueError):
@@ -139,4 +142,11 @@ def vue(cfg: Config) -> dict[str, Any]:
         "securite": {"reseaux_autorises": cfg.securite.reseaux_autorises,
                      "proxies_de_confiance": cfg.securite.proxies_de_confiance,
                      "session_jours": cfg.securite.session_jours},
+        "docker": {"url": cfg.docker.url, "unraid_url": cfg.docker.unraid_url,
+                   "cle_definie": secret_defini("UNRAID_CLE")},
+        "agenda": {"url": cfg.agenda.url, "utilisateur": cfg.agenda.utilisateur,
+                   "annonce_avant_min": cfg.agenda.annonce_avant_min,
+                   "mot_de_passe_defini": secret_defini("AGENDA_MOT_DE_PASSE")},
+        "proactif": {"active": cfg.proactif.active, "heures_calmes": cfg.proactif.heures_calmes,
+                     "briefing_heure": cfg.proactif.briefing_heure, "ville": cfg.proactif.ville},
     }

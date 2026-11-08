@@ -49,6 +49,45 @@ OUTILS = [
 ]
 
 
+OUTILS_DOCKER = [
+    {
+        "name": "lister_conteneurs",
+        "description": "Liste les conteneurs Docker du serveur Unraid (nom, image, état, santé). Lecture seule.",
+        "inputSchema": {"type": "object", "properties": {}},
+    },
+    {
+        "name": "diagnostiquer_conteneur",
+        "description": "Diagnostic d'un conteneur : état, santé, redémarrages, code de sortie, manque de mémoire, "
+                       "lignes d'erreur récentes et dernières lignes du journal. Lecture seule : tu ne peux rien "
+                       "redémarrer ni modifier, seulement proposer un correctif.",
+        "inputSchema": {"type": "object", "properties": {"nom": {"type": "string"}}, "required": ["nom"]},
+    },
+]
+
+
+OUTILS_AGENDA = [
+    {
+        "name": "lire_agenda",
+        "description": "Événements de l'agenda familial de aujourd'hui à dans N jours (par défaut 7).",
+        "inputSchema": {"type": "object", "properties": {"jours": {"type": "integer"}}},
+    },
+    {
+        "name": "ajouter_evenement",
+        "description": "Ajoute un événement (avec rappel) dans l'agenda. debut et fin : date-heure ISO locale "
+                       "(ex. 2026-11-12T14:30) ; fin facultative (1 h par défaut). journee=true pour un jour entier "
+                       "(debut = la date). Confirme ensuite en une phrase ce qui a été ajouté.",
+        "inputSchema": {"type": "object", "properties": {
+            "titre": {"type": "string"}, "debut": {"type": "string"}, "fin": {"type": "string"},
+            "lieu": {"type": "string"}, "journee": {"type": "boolean"}}, "required": ["titre", "debut"]},
+    },
+]
+
+
+def outils() -> list[dict]:
+    return (OUTILS + (OUTILS_DOCKER if os.environ.get("ASSISTANT_DOCKER") == "1" else [])
+            + (OUTILS_AGENDA if os.environ.get("ASSISTANT_AGENDA") == "1" else []))
+
+
 def _client() -> httpx.Client:
     return httpx.Client(
         base_url=os.environ.get("ASSISTANT_INTERNE_URL", "http://127.0.0.1:8080"),
@@ -66,6 +105,14 @@ def appeler(nom: str, args: dict) -> str:
             r = c.get(f"/interne/maison/etat/{args['entity_id']}", params={"conversation": conv})
         elif nom == "agir":
             r = c.post("/interne/maison/agir", json={**args, "conversation": conv})
+        elif nom == "lister_conteneurs":
+            r = c.get("/interne/docker/conteneurs")
+        elif nom == "diagnostiquer_conteneur":
+            r = c.get("/interne/docker/diagnostic", params={"nom": args["nom"]})
+        elif nom == "lire_agenda":
+            r = c.get("/interne/agenda", params={"jours": args.get("jours", 7)})
+        elif nom == "ajouter_evenement":
+            r = c.post("/interne/agenda", json=args)
         elif nom == "annuler":
             r = c.post("/interne/maison/annuler", json={"conversation": conv})
         else:
@@ -86,7 +133,7 @@ def traiter(msg: dict) -> dict | None:
     elif methode == "ping":
         res = {}
     elif methode == "tools/list":
-        res = {"tools": OUTILS}
+        res = {"tools": outils()}
     elif methode == "tools/call":
         p = msg.get("params") or {}
         try:
