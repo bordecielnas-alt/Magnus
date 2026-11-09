@@ -1,0 +1,245 @@
+// Cartes du chat : l'état réel d'un appareil, sous la réponse, avec ses réglages.
+// Le serveur construit les cartes (ligne {"cartes": [...]} du flux /api/chat) ; un geste appelle
+// POST /api/maison/carte, sans passer par un modèle, et la carte est redessinée avec l'état renvoyé.
+(() => {
+  const css = `
+  .cartes { display:grid; gap:10px; margin-top:.7em; font-size:.95rem; text-shadow:none; }
+  .carte { background:var(--surface); border:1px solid var(--bord); border-radius:16px; padding:12px 14px; display:grid; gap:10px; max-width:380px; }
+  .carte.occupee { opacity:.75; }
+  .carte-tete { display:flex; align-items:center; gap:10px; }
+  .carte-tete .titre { flex:1; min-width:0; line-height:1.25; }
+  .carte-tete .titre small { display:block; color:var(--muted); font-size:.8rem; }
+  .carte .halo { height:6px; border-radius:99px; background:var(--bord); transition:background .25s, box-shadow .25s; }
+  .carte .ligne { display:flex; align-items:center; gap:10px; }
+  .carte .ligne > span { width:68px; flex:none; color:var(--muted); font-size:.82rem; }
+  .carte .ligne output { width:52px; text-align:right; font-variant-numeric:tabular-nums; font-size:.82rem; color:var(--muted); }
+  .carte input[type=range] { -webkit-appearance:none; appearance:none; flex:1; min-width:0; height:28px; background:transparent; cursor:pointer; margin:0; touch-action:none; }
+  .carte input[type=range]::-webkit-slider-runnable-track { height:8px; border-radius:99px; background:var(--piste, var(--bord)); }
+  .carte input[type=range]::-moz-range-track { height:8px; border-radius:99px; background:var(--piste, var(--bord)); }
+  .carte input[type=range]::-webkit-slider-thumb { -webkit-appearance:none; width:22px; height:22px; margin-top:-7px; border-radius:50%; background:var(--fg); border:3px solid var(--bg); }
+  .carte input[type=range]::-moz-range-thumb { width:16px; height:16px; border-radius:50%; background:var(--fg); border:3px solid var(--bg); }
+  .carte input[type=range]:disabled { opacity:.4; cursor:default; }
+  .carte .r-int { --piste:linear-gradient(90deg, #1b2229, #f5e6c4); }
+  .carte .r-blanc { --piste:linear-gradient(90deg, #ffb46b, #fff4e0 50%, #cfe6ff); }
+  .carte .pastilles { display:flex; gap:7px; flex-wrap:wrap; }
+  .carte .pastilles button { width:28px; height:28px; border-radius:50%; border:2px solid var(--bord); background:var(--c); cursor:pointer; padding:0; }
+  .carte .pastilles button:hover { border-color:var(--fg); }
+  .inter { position:relative; width:46px; height:26px; flex:none; display:inline-block; }
+  .inter input { position:absolute; inset:0; opacity:0; margin:0; cursor:pointer; width:100%; height:100%; }
+  .inter span { position:absolute; inset:0; border-radius:99px; background:var(--bord); transition:background .2s; pointer-events:none; }
+  .inter span::after { content:""; position:absolute; top:3px; left:3px; width:20px; height:20px; border-radius:50%; background:var(--fg); transition:transform .2s; }
+  .inter input:checked + span { background:var(--accent); }
+  .inter input:checked + span::after { transform:translateX(20px); background:var(--accent-fg); }
+  .inter input:focus-visible + span { outline:2px solid var(--accent); outline-offset:2px; }
+  .inter input:disabled + span { opacity:.4; }
+  .carte .pied-carte { display:flex; align-items:center; gap:10px; flex-wrap:wrap; }
+  .carte .pied-carte button { background:none; border:1px solid var(--bord); border-radius:99px; padding:3px 10px; color:var(--muted); font-size:.8rem; cursor:pointer; }
+  .carte .note { color:var(--muted); font-size:.8rem; flex:1; min-width:0; }
+  .carte .note.ko { color:var(--rouge); }
+  .carte .rangs { list-style:none; margin:0; padding:0; display:grid; gap:4px; }
+  .carte .rangs > li { display:grid; gap:8px; }
+  .carte .rang { display:flex; align-items:center; gap:10px; }
+  .carte .rang button.nom { flex:1; min-width:0; text-align:left; background:none; border:0; padding:4px 0; cursor:pointer; color:var(--fg); }
+  .carte .rang small { color:var(--muted); font-size:.8rem; font-variant-numeric:tabular-nums; }
+  .carte .point { width:9px; height:9px; border-radius:50%; flex:none; background:var(--bord); }
+  .carte .point.on { background:#f5d58a; box-shadow:0 0 8px #f5d58a; }
+  .carte[hidden] { display:none; }
+  .carte .rangs .carte { border-radius:12px; background:var(--bg); padding:8px 12px; }
+  .rangs .carte > .carte-tete, .rangs .carte > .pied-carte { display:none; }
+  .carte .rang span.nom { flex:1; min-width:0; padding:4px 0; }
+  @media (prefers-reduced-motion: reduce) { .carte *, .inter * { transition:none !important; } }`;
+  const style = document.createElement('style');
+  style.textContent = css;
+  document.head.appendChild(style);
+
+  const echap = s => String(s ?? '').replace(/[&<>"]/g, c => ({'&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;'}[c]));
+  let n = 0;
+
+  function kelvinEnCouleur(k) {
+    const t = Math.max(0, Math.min(1, (k - 2200) / (6500 - 2200)));
+    const m = (a, b) => Math.round(a + (b - a) * t);
+    return t < .5 ? `rgb(255,${m(180, 250)},${m(107, 230)})` : `rgb(${m(255, 207)},${m(250, 230)},255)`;
+  }
+  function teinte(c) {
+    if (!c.allume) return null;
+    if (c.rgb) return `rgb(${c.rgb.join(',')})`;
+    if (c.kelvin) return kelvinEnCouleur(c.kelvin);
+    return '#f5e6c4';
+  }
+  function resume(c) {
+    if (!c.disponible) return 'injoignable';
+    if (c.type === 'volet') return c.position != null ? c.position + ' %' : (c.ouvert ? 'ouvert' : 'fermé');
+    if (!c.allume) return 'éteint';
+    return c.intensite != null ? c.intensite + ' %' : 'allumé';
+  }
+
+  // Appel au serveur, carte « occupée » pendant l'envoi, puis redessinée avec l'état renvoyé
+  async function envoyer(el, conv, corpsJson) {
+    el.classList.add('occupee');
+    // carte détaillée d'un groupe : le message va au pied du groupe
+    const note = (el.parentElement?.closest('.carte-groupe') || el).querySelector(':scope > .pied-carte .note');
+    try {
+      const r = await fetch('/api/maison/carte', {method: 'POST', headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({conversation: conv, ...corpsJson})});
+      const o = await r.json().catch(() => ({}));
+      if (!r.ok) throw new Error(typeof o.detail === 'string' ? o.detail : 'HTTP ' + r.status);
+      if (o.carte) {
+        const neuve = dessiner(o.carte, conv);
+        el.replaceWith(neuve);
+        const n2 = (neuve.parentElement?.closest('.carte-groupe') || neuve).querySelector(':scope > .pied-carte .note');
+        n2.textContent = o.texte || ''; n2.classList.remove('ko');
+        if (neuve.closest('.carte-groupe')) majRang(neuve, o.carte);
+      }
+    } catch (e) {
+      el.classList.remove('occupee');
+      if (note) { note.textContent = 'Pas fait : ' + e.message; note.classList.add('ko'); }
+    }
+  }
+
+  async function annuler(el, conv) {
+    const note = el.querySelector(':scope > .pied-carte .note');
+    try {
+      const r = await fetch('/api/maison/carte/annuler', {method: 'POST', headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({conversation: conv})});
+      const o = await r.json().catch(() => ({}));
+      if (!r.ok) throw new Error(typeof o.detail === 'string' ? o.detail : 'HTTP ' + r.status);
+      // redessine toutes les cartes de la réponse touchées par l'annulation
+      const zone = el.closest('.cartes');
+      for (const c of o.cartes?.[0]?.type === 'groupe' ? o.cartes[0].elements : (o.cartes || [])) {
+        zone?.querySelectorAll(`.carte[data-id="${CSS.escape(c.entity_id)}"]`).forEach(x => {
+          x.replaceWith(dessiner(c, conv)); majRang(null, c, zone);
+        });
+      }
+      const n2 = zone?.querySelector('.pied-carte .note') || note;
+      if (n2) { n2.textContent = o.texte || ''; n2.classList.toggle('ko', !o.ok); }
+    } catch (e) {
+      if (note) { note.textContent = 'Annulation impossible : ' + e.message; note.classList.add('ko'); }
+    }
+  }
+
+  function piedCarte(el, conv) {
+    const p = document.createElement('div');
+    p.className = 'pied-carte';
+    p.innerHTML = '<span class="note" role="status"></span><button type="button">Annuler</button>';
+    p.querySelector('button').onclick = () => annuler(el, conv);
+    return p;
+  }
+
+  // Curseur : la valeur s'affiche pendant le glissé ; l'envoi part au relâchement
+  function curseur(el, classe, libelle, min, max, pas, valeur, format, envoi, actif) {
+    const id = 'carte-' + (++n);
+    const l = document.createElement('div');
+    l.className = 'ligne';
+    l.innerHTML = `<span id="${id}-l">${libelle}</span><input type="range" class="${classe}" id="${id}" aria-labelledby="${id}-l"`
+      + ` min="${min}" max="${max}" step="${pas}" value="${valeur}"${actif ? '' : ' disabled'}><output for="${id}">${format(valeur)}</output>`;
+    const r = l.querySelector('input'), out = l.querySelector('output');
+    r.addEventListener('input', () => { out.textContent = format(+r.value); });
+    r.addEventListener('change', () => envoi(+r.value));
+    return l;
+  }
+
+  function dessiner(c, conv) {
+    if (c.type === 'groupe') return dessinerGroupe(c, conv);
+    const el = document.createElement('div');
+    el.className = 'carte';
+    el.dataset.id = c.entity_id;
+    const ok = c.disponible;
+    const inter = c.type === 'volet' ? c.ouvert : c.allume;
+    el.innerHTML = `<div class="carte-tete"><div class="titre"><strong>${echap(c.nom)}</strong>`
+      + `<small>${echap([c.piece, ok ? '' : 'injoignable'].filter(Boolean).join(' · '))}</small></div>`
+      + `<label class="inter"><input type="checkbox" aria-label="${c.type === 'volet' ? 'Ouvrir' : 'Allumer'} ${echap(c.nom)}"`
+      + `${inter ? ' checked' : ''}${ok ? '' : ' disabled'}><span></span></label></div>`;
+    el.querySelector('.inter input').onchange = e => envoyer(el, conv, {entity_id: c.entity_id, allume: e.target.checked});
+    const reg = c.reglages || {};
+    if (c.type === 'lumiere') {
+      const halo = document.createElement('div');
+      halo.className = 'halo';
+      const t = teinte(c);
+      if (t) { halo.style.background = t; halo.style.boxShadow = `0 0 ${6 + (c.intensite ?? 60) / 5}px ${t}`; }
+      el.appendChild(halo);
+      if (reg.intensite) el.appendChild(curseur(el, 'r-int', 'Intensité', 1, 100, 1, c.intensite ?? 0,
+        v => c.allume || v ? v + ' %' : '–', v => envoyer(el, conv, {entity_id: c.entity_id, intensite: v}), ok));
+      if (reg.blanc) el.appendChild(curseur(el, 'r-blanc', 'Blanc', reg.blanc[0], reg.blanc[1], 100,
+        c.kelvin ?? Math.round((reg.blanc[0] + reg.blanc[1]) / 200) * 100, v => v + ' K',
+        v => envoyer(el, conv, {entity_id: c.entity_id, kelvin: v}), ok));
+      if (reg.couleurs) {
+        const l = document.createElement('div');
+        l.className = 'ligne';
+        l.innerHTML = '<span>Couleur</span><div class="pastilles"></div>';
+        for (const [nom, hex] of Object.entries(reg.couleurs)) {
+          const b = document.createElement('button');
+          b.type = 'button'; b.style.setProperty('--c', hex); b.title = nom; b.setAttribute('aria-label', nom); b.disabled = !ok;
+          b.onclick = () => envoyer(el, conv, {entity_id: c.entity_id, couleur: nom});
+          l.lastChild.appendChild(b);
+        }
+        el.appendChild(l);
+      }
+    } else if (c.type === 'volet' && reg.position) {
+      el.appendChild(curseur(el, 'r-pos', 'Ouverture', 0, 100, 5, c.position ?? 0, v => v + ' %',
+        v => envoyer(el, conv, {entity_id: c.entity_id, position: v}), ok));
+    }
+    el.appendChild(piedCarte(el, conv));
+    return el;
+  }
+
+  const detaillable = c => c.disponible && (c.type === 'lumiere' ? Object.values(c.reglages || {}).some(Boolean)
+    : c.type === 'volet' && c.reglages?.position);
+
+  // Plusieurs appareils : une ligne chacun (interrupteur) ; toucher le nom déplie sa carte détaillée
+  function dessinerGroupe(g, conv) {
+    const el = document.createElement('div');
+    el.className = 'carte carte-groupe';
+    const allumes = g.elements.filter(c => c.allume || c.ouvert).length;
+    el.innerHTML = `<div class="carte-tete"><div class="titre"><strong>${echap(g.titre)}</strong>`
+      + `<small>${g.elements.length} appareils · <span class="compte">${allumes}</span> allumés</small></div></div><ul class="rangs"></ul>`;
+    for (const c of g.elements) {
+      const li = document.createElement('li');
+      li.dataset.rang = c.entity_id;
+      li.innerHTML = `<div class="rang"><span class="point${c.allume || c.ouvert ? ' on' : ''}"></span>`
+        + (detaillable(c) ? `<button type="button" class="nom" aria-expanded="false">${echap(c.nom)}</button>` : `<span class="nom">${echap(c.nom)}</span>`)
+        + `<small>${echap(resume(c))}</small>`
+        + `<label class="inter"><input type="checkbox" aria-label="${echap(c.nom)}"${c.allume || c.ouvert ? ' checked' : ''}`
+        + `${c.disponible ? '' : ' disabled'}><span></span></label></div>`;
+      const detail = dessiner(c, conv);
+      detail.hidden = true;
+      li.appendChild(detail);
+      li.querySelector('.inter input').onchange = e => {
+        envoyer(li.querySelector(':scope > .carte'), conv, {entity_id: c.entity_id, allume: e.target.checked});
+      };
+      const bNom = li.querySelector('button.nom');
+      if (bNom) bNom.onclick = e => {
+        const d = li.querySelector(':scope > .carte');
+        d.hidden = !d.hidden;
+        e.currentTarget.setAttribute('aria-expanded', String(!d.hidden));
+      };
+      el.querySelector('.rangs').appendChild(li);
+    }
+    el.appendChild(piedCarte(el, conv));
+    return el;
+  }
+
+  // Dans un groupe, la ligne résumée suit la carte détaillée
+  function majRang(detail, c, zone) {
+    const li = detail ? detail.closest('li[data-rang]') : zone?.querySelector(`li[data-rang="${CSS.escape(c.entity_id)}"]`);
+    if (!li) return;
+    const on = !!(c.allume || c.ouvert);
+    li.querySelector('.point').classList.toggle('on', on);
+    li.querySelector('.rang small').textContent = resume(c);
+    li.querySelector('.rang .inter input').checked = on;
+    const d = li.querySelector(':scope > .carte');
+    if (d && li.querySelector('.nom').getAttribute('aria-expanded') === 'true') d.hidden = false;
+    else if (d) d.hidden = true;
+    const g = li.closest('.carte-groupe');
+    if (g) g.querySelector('.compte').textContent = g.querySelectorAll('.rang .point.on').length;
+  }
+
+  window.cartesChat = {
+    afficher(corps, cartes, conversation) {
+      if (!Array.isArray(cartes) || !cartes.length) return;
+      const zone = document.createElement('div');
+      zone.className = 'cartes';
+      for (const c of cartes) zone.appendChild(dessiner(c, conversation));
+      corps.appendChild(zone);
+    },
+  };
+})();
