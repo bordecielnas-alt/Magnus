@@ -87,3 +87,23 @@ def test_supprimer_un_evenement():
     import pytest
     with pytest.raises(PermissionError):                       # jamais hors du calendrier configuré
         asyncio.run(a.supprimer("/remote.php/dav/calendars/autre/agenda/x.ics"))
+
+
+def test_rappel_ne_passe_pas_par_la_maison(tmp_path, monkeypatch):
+    from pathlib import Path
+
+    from fastapi.testclient import TestClient
+
+    from assistant.config import SecuriteConfig, charger
+    from assistant.main import creer_app
+    from assistant.securite import Securite
+    from tests.test_home_assistant import CFG_HA
+    from tests.test_maison import FauxHA
+    from tests.test_routeur import routeur
+    r, _ = routeur()
+    cfg = charger(env={}, fichier=Path("inexistant.yaml")).model_copy(update={"home_assistant": CFG_HA})
+    cfg.agenda.url = "https://cloud.exemple.fr/remote.php/dav/calendars/ben/perso/"
+    ha = FauxHA()
+    c = TestClient(creer_app(cfg, r.registre, ha, securite=Securite(SecuriteConfig(), tmp_path)), client=("127.0.0.1", 1))
+    rep = c.post("/api/chat", json={"message": "mets un rappel dans 1 minute", "conversation": "r1"}).json()
+    assert ha.appels == [] and rep["route"]["role"] == "raisonnement"          # ni maison ni Assist

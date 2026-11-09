@@ -145,8 +145,52 @@ OUTILS_DOCKER += [
 ]
 
 
+OUTILS_RAPPELS = [
+    {
+        "name": "creer_rappel",
+        "description": "Rappel dans le chat (pas dans le calendrier) : « rappelle-moi dans 10 min de… », « mets un rappel "
+                       "à 18 h pour… ». quand : date-heure ISO locale (ex. 2026-11-09T18:00). Un rendez-vous (médecin, "
+                       "réunion…) va plutôt dans l'agenda ; si ce n'est pas clair, demande. Confirme en une phrase courte.",
+        "inputSchema": {"type": "object", "properties": {"quand": {"type": "string"}, "texte": {"type": "string"}},
+                        "required": ["quand", "texte"]},
+    },
+    {
+        "name": "lister_rappels",
+        "description": "Rappels à venir (id, heure, texte).",
+        "inputSchema": {"type": "object", "properties": {}},
+    },
+    {
+        "name": "supprimer_rappel",
+        "description": "Supprime un rappel à venir par son id (lu avec lister_rappels).",
+        "inputSchema": {"type": "object", "properties": {"id": {"type": "string"}}, "required": ["id"]},
+    },
+]
+
+
+OUTILS_RAPPELS = [
+    {
+        "name": "creer_rappel",
+        "description": "Rappel dans le chat (pas dans le calendrier) : « rappelle-moi dans 10 min de… », « mets un rappel "
+                       "à 18 h pour… ». quand : date-heure ISO locale (ex. 2026-11-09T18:00). Un rendez-vous (médecin, "
+                       "réunion…) va plutôt dans l'agenda ; si ce n'est pas clair, demande. Confirme en une phrase courte.",
+        "inputSchema": {"type": "object", "properties": {"quand": {"type": "string"}, "texte": {"type": "string"}},
+                        "required": ["quand", "texte"]},
+    },
+    {
+        "name": "lister_rappels",
+        "description": "Rappels à venir (id, heure, texte).",
+        "inputSchema": {"type": "object", "properties": {}},
+    },
+    {
+        "name": "supprimer_rappel",
+        "description": "Supprime un rappel à venir par son id (lu avec lister_rappels).",
+        "inputSchema": {"type": "object", "properties": {"id": {"type": "string"}}, "required": ["id"]},
+    },
+]
+
+
 def outils() -> list[dict]:
-    return (OUTILS + OUTILS_ROUTINES + OUTILS_MEMOIRE + (OUTILS_DOCKER if os.environ.get("ASSISTANT_DOCKER") == "1" else [])
+    return (OUTILS + OUTILS_ROUTINES + OUTILS_RAPPELS + OUTILS_RAPPELS + OUTILS_MEMOIRE + (OUTILS_DOCKER if os.environ.get("ASSISTANT_DOCKER") == "1" else [])
             + (OUTILS_AGENDA if os.environ.get("ASSISTANT_AGENDA") == "1" else []))
 
 
@@ -187,6 +231,18 @@ def appeler(nom: str, args: dict) -> str:
             r = c.get("/interne/routines")
         elif nom == "proposer_souvenir":
             r = c.post("/interne/memoire", json={**args, "conversation": conv})
+        elif nom == "creer_rappel":
+            r = c.post("/interne/rappels", json={**args, "conversation": conv})
+        elif nom == "lister_rappels":
+            r = c.get("/interne/rappels", params={"conversation": conv})
+        elif nom == "supprimer_rappel":
+            r = c.delete(f"/interne/rappels/{args['id']}")
+        elif nom == "creer_rappel":
+            r = c.post("/interne/rappels", json={**args, "conversation": conv})
+        elif nom == "lister_rappels":
+            r = c.get("/interne/rappels", params={"conversation": conv})
+        elif nom == "supprimer_rappel":
+            r = c.delete(f"/interne/rappels/{args['id']}")
         elif nom == "annuler":
             r = c.post("/interne/maison/annuler", json={"conversation": conv})
         else:

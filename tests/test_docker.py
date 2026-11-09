@@ -150,3 +150,15 @@ def test_api_unraid_schema_recent_et_erreur_400():
         lambda r: httpx.Response(200, json={"errors": [{"message": "Forbidden resource"}]})))
     with pytest.raises(PermissionError):
         asyncio.run(droits.conteneurs())
+
+
+def test_conteneurs_arretes_expres_ne_sont_pas_des_problemes():
+    from assistant.docker_diag import UnraidDocker
+
+    def repondre(req):
+        return httpx.Response(200, json={"data": {"docker": {"containers": [
+            {"id": "1", "names": ["/adminer"], "state": "EXITED", "status": "Created", "autoStart": False},
+            {"id": "2", "names": ["/vieux"], "state": "EXITED", "status": "Exited (137) 2 days ago", "autoStart": False},
+            {"id": "3", "names": ["/plex"], "state": "EXITED", "status": "Exited (1) 3 minutes ago", "autoStart": True}]}}})
+    d = UnraidDocker("http://x/graphql", "k", transport=httpx.MockTransport(repondre))
+    assert [c["nom"] for c in asyncio.run(d.problemes())] == ["plex"]

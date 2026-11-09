@@ -32,6 +32,7 @@ from . import reglages as R
 from .reveil import Reveil
 from .agenda import JOURS, Agenda, decrire
 from .audit import Audit
+from .rappels import Rappels
 from .telegram import Telegram
 from .habitudes import Routines, automatisation, detecter
 from .memoire import Memoire
@@ -163,6 +164,12 @@ NOTE_OUTILS_AGENDA = (
     "Tu as aussi lire_agenda et ajouter_evenement (agenda familial). Nous sommes le {date}. Pour « rappelle-moi "
     "de … demain à 9 h », ajoute un événement à cette heure. Résume l'agenda en phrases courtes, sans liste."
 )
+RE_RAPPEL = re.compile(r"\b(rappel|rappelle[sz]?(-| )moi|me rappelle[rs]?|m.e?rappelle|pr[ée]viens[- ]moi)\b", re.I)
+NOTE_RAPPELS = (
+    "Rappels : « rappelle-moi… », « mets un rappel… » = creer_rappel (dans le chat, à l'heure dite). Un rendez-vous "
+    "(médecin, réunion, anniversaire…) va dans l'agenda avec ajouter_evenement. Si tu ne sais pas lequel, demande. "
+    "Nous sommes le {date}."
+)
 RE_SUITE_AGENDA = re.compile(r"\b(supprime|efface|annule|enl[èe]ve|retire|d[ée]place|d[ée]cale|change|modifie|"
                              r"celui|celle|ce|cet|le premier|le deuxi[èe]me|oui|non)\b", re.I)
 RE_DOCKER = re.compile(r"\b(docker|conteneurs?|containers?|unraid|serveur|plex|nginx|npm|logs?|journaux|disques?( durs?)?|"
@@ -216,6 +223,12 @@ class ModifSouvenir(BaseModel):
 
 class SuppressionEvenement(BaseModel):
     ref: str = Field(min_length=1, max_length=500)
+    conversation: str = Field(default="", max_length=64)
+
+
+class NouveauRappel(BaseModel):
+    quand: str = Field(min_length=8, max_length=40)
+    texte: str = Field(min_length=1, max_length=300)
     conversation: str = Field(default="", max_length=64)
 
 
@@ -365,6 +378,18 @@ def creer_app(config: Config | None = None, registre: Registre | None = None,
               else Docker(cfg.docker.url, cfg.docker.timeout))
     annonces = Annonces(securite.fichier.parent, cfg.proactif.heures_calmes)
     telegram = Telegram(cfg.telegram.jeton(), cfg.telegram.chat_id)
+    rappels = Rappels(securite.fichier.parent)
+
+    async def boucle_rappels() -> None:
+        """Toutes les 5 s : un rappel arrivé à l'heure devient une annonce (dite même en heures calmes)."""
+        import asyncio as aio
+        while True:
+            try:
+                for r in rappels.echus():
+                    await signaler(f"Rappel : {r['texte']}", "urgent", "rappel", f"rappel:{r['id']}", cfg.telegram.agenda)
+            except Exception:  # noqa: BLE001
+                journal.exception("rappels : erreur")
+            await aio.sleep(5)
     redemarrage_attente: dict[str, tuple[str, str, float]] = {}   # conversation -> (conteneur, compte, instant)
 
     async def signaler(texte: str, priorite: str, source: str, cle: str, vers_telegram: bool = True) -> None:
@@ -471,7 +496,8 @@ def creer_app(config: Config | None = None, registre: Registre | None = None,
                 if e.get("journee"):
                     continue
                 minutes = max(0, round((e["debut"] - maintenant).total_seconds() / 60))
-                await signaler(f"Dans {minutes} minutes : {e.get('titre', 'un événement')}"
+                quand = "C'est l'heure" if minutes <= 1 else f"Dans {minutes} minutes"
+                await signaler(f"{quand} : {e.get('titre', 'un événement')}"
                                + (f" ({e['lieu']})" if e.get("lieu") else "") + ".", "important", "agenda",
                                f"agenda:{e.get('uid', e.get('titre'))}:{e['debut']:%Y%m%d%H%M}", cfg.telegram.agenda)
         h = cfg.proactif.briefing_heure
@@ -530,7 +556,8 @@ def creer_app(config: Config | None = None, registre: Registre | None = None,
         return {
             "mcp": {"mcpServers": {"maison": {"command": sys.executable, "args": ["-m", "assistant.mcp_maison"], "env": env}}},
             "autoriser": ["mcp__maison"],
-            "note": NOTE_OUTILS_MAISON + ("\n\n" + NOTE_OUTILS_DOCKER if docker.configure else "")
+            "note": NOTE_OUTILS_MAISON + "\n\n" + NOTE_RAPPELS.format(
+                date=f"{JOURS[time.localtime().tm_wday]} {time.strftime('%d/%m/%Y %H:%M')}") + ("\n\n" + NOTE_OUTILS_DOCKER if docker.configure else "")
                     + ("\n\n" + NOTE_OUTILS_AGENDA.format(date=f"{JOURS[time.localtime().tm_wday]} {time.strftime('%d/%m/%Y %H:%M')}") if agenda.configure else ""),
         }
 
@@ -543,11 +570,13 @@ def creer_app(config: Config | None = None, registre: Registre | None = None,
         import asyncio
         if cfg.voix.active and cfg.voix.whisper_present() and cfg.voix.synthese_presente():
             app.state.prechauffage = asyncio.create_task(voix.prechauffer())
-        if (cfg.proactif.active and (ha.configure or docker.configure or cfg.proactif.briefing_heure)) or telegram.configure:
+        app.state.rappels = asyncio.create_task(boucle_rappels())
+        if (cfg.proactif.active and (ha.configure or docker.configure or cfg.proactif.briefing_heure)) or telegram.configure                 or agenda.configure:
             app.state.surveillance = asyncio.create_task(boucle_surveillance())
         yield
         if getattr(app.state, "surveillance", None):
             app.state.surveillance.cancel()
+        app.state.rappels.cancel()
         await reg.fermer()
         await ha.fermer()
 
@@ -1344,6 +1373,38 @@ def creer_app(config: Config | None = None, registre: Registre | None = None,
             raise HTTPException(422, str(e)) from e
         return {"ok": True, "en_attente": "la personne doit répondre oui ou non", "souvenir": sv["texte"]}
 
+    @app.post("/interne/rappels", include_in_schema=False)
+    def interne_creer_rappel(n: NouveauRappel, x_jeton_interne: str | None = Header(None)) -> dict:
+        verifier_jeton(x_jeton_interne)
+        from datetime import datetime as dt
+        try:
+            quand = dt.fromisoformat(n.quand)
+            r = rappels.ajouter(n.texte, quand.astimezone() if quand.tzinfo is None else quand,
+                                compte_conversation.get(n.conversation, ("", ""))[0], n.conversation)
+        except ValueError as e:
+            raise HTTPException(422, str(e)) from e
+        return {"ok": True, "id": r["id"], "quand": r["quand"], "texte": r["texte"]}
+
+    @app.get("/interne/rappels", include_in_schema=False)
+    def interne_lister_rappels(conversation: str = "", x_jeton_interne: str | None = Header(None)) -> list[dict]:
+        verifier_jeton(x_jeton_interne)
+        compte = compte_conversation.get(conversation, ("", ""))[0]
+        return [{k: r[k] for k in ("id", "quand", "texte")} for r in rappels.a_venir(compte or None)]
+
+    @app.delete("/interne/rappels/{ident}", include_in_schema=False)
+    def interne_supprimer_rappel(ident: str, x_jeton_interne: str | None = Header(None)) -> dict:
+        verifier_jeton(x_jeton_interne)
+        r = rappels.supprimer(ident)
+        if not r:
+            raise HTTPException(404, "rappel inconnu ou déjà passé")
+        return {"ok": True, "supprime": r["texte"]}
+
+    @app.get("/api/rappels")
+    def lister_rappels(requete: Request) -> dict:
+        compte = compte_de(requete) or ""
+        return {"rappels": [{k: r[k] for k in ("id", "quand", "texte")}
+                            for r in rappels.a_venir(None if compte == COMPTE_MACHINE else compte)]}
+
     @app.get("/interne/routines", include_in_schema=False)
     def interne_routines(x_jeton_interne: str | None = Header(None)) -> list[dict]:
         verifier_jeton(x_jeton_interne)
@@ -1778,9 +1839,15 @@ def creer_app(config: Config | None = None, registre: Registre | None = None,
         texte_conversation[d.conversation] = d.message
         cartes_conversation.pop(d.conversation, None)
         creer_routine = bool(RE_CREER_ROUTINE.search(d.message))
+        # « mets un rappel », « rappelle-moi » : l'agenda, jamais une commande de maison ni Assist (minuteur HA)
+        if RE_RAPPEL.search(d.message):
+            d = d.model_copy(update={"role": cfg.routeur.role_complexe})
+            pour_agenda = True
+        else:
+            pour_agenda = False
         if creer_routine:
             d = d.model_copy(update={"role": cfg.routeur.role_complexe})
-        if (d.role == ROLE_AUTO and ha.configure and not creer_routine
+        if (d.role == ROLE_AUTO and ha.configure and not creer_routine and not pour_agenda
                 and (maison.en_attente(d.conversation) or maison.reconnait(d.message, d.conversation))):
             # Commande de maison reconnue (ou réponse à « Lequel ? ») : inutile de consulter le routeur
             decision = Decision(SIMPLE, cfg.routeur.role_simple, "commande maison", 0.0)
@@ -1799,7 +1866,7 @@ def creer_app(config: Config | None = None, registre: Registre | None = None,
         # Maison : réponse à une question « lequel ? » en cours, ou demande simple
         echec_ha = ""
         simple = decision is not None and decision.categorie == SIMPLE
-        if decision is None and ha.configure and not creer_routine and maison.reconnait(d.message, d.conversation):
+        if decision is None and ha.configure and not creer_routine and not pour_agenda and maison.reconnait(d.message, d.conversation):
             simple = True    # rôle choisi à la main : une commande de maison reste une commande de maison
         if ha.configure and cfg.home_assistant.pour_simples and (simple or maison.en_attente(d.conversation)):
             rm = await maison.traiter(d.message, d.conversation)
@@ -1846,7 +1913,12 @@ def creer_app(config: Config | None = None, registre: Registre | None = None,
         outils = None
         claude_outille = (cfg.routeur.role_complexe in reg.roles
                           and getattr(reg.pour_role(cfg.routeur.role_complexe), "accepte_outils", False))
-        if claude_outille and ha.configure and creer_routine:
+        if claude_outille and pour_agenda:
+            role = cfg.routeur.role_complexe
+            route["outils"] = "Claude avec rappels et agenda"
+            agenda_recent[d.conversation] = time.monotonic()
+            outils = outils_maison(d.conversation)
+        elif claude_outille and ha.configure and creer_routine:
             route["outils"] = "Claude crée une routine"
             outils = outils_maison(d.conversation)
         elif claude_outille and qui and RE_SUJET_MEMOIRE.search(d.message) and "personnel" not in ctx_revel:

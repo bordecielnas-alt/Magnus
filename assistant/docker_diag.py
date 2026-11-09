@@ -103,9 +103,12 @@ class Docker:
 
     async def problemes(self) -> list[dict]:
         """Conteneurs arrêtés anormalement ou en mauvaise santé (pour le mode proactif)."""
+        def tombe(c: dict) -> bool:
+            if c["etat"] != "exited" or re.search(r"Exited \(0\)|^Created", c["statut"]):
+                return False            # arrêt normal, ou jamais démarré (« Created »)
+            return c.get("demarrage_auto") is not False   # arrêté exprès : pas de démarrage automatique
         return [c for c in await self.conteneurs()
-                if c["sante"] == "unhealthy" or c["etat"] in ("restarting", "dead")
-                or (c["etat"] == "exited" and not re.search(r"Exited \(0\)", c["statut"]))]
+                if c["sante"] == "unhealthy" or c["etat"] in ("restarting", "dead") or tombe(c)]
 
 
 class UnraidDocker(Docker):
