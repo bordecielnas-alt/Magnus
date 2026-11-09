@@ -68,7 +68,8 @@ OUTILS_DOCKER = [
 OUTILS_AGENDA = [
     {
         "name": "lire_agenda",
-        "description": "Événements de l'agenda familial de aujourd'hui à dans N jours (par défaut 7).",
+        "description": "Événements de l'agenda familial de aujourd'hui à dans N jours (par défaut 7), avec leur "
+                       "« ref » (pour supprimer_evenement).",
         "inputSchema": {"type": "object", "properties": {"jours": {"type": "integer"}}},
     },
     {
@@ -119,6 +120,15 @@ OUTILS_MEMOIRE = [
 ]
 
 
+OUTILS_AGENDA.append({
+    "name": "supprimer_evenement",
+    "description": "Supprime UN événement de l'agenda, par sa ref (lue avec lire_agenda). Seulement quand la personne "
+                   "l'a demandé clairement et qu'un seul événement correspond ; sinon demande lequel. Dis ensuite "
+                   "en une phrase ce qui a été supprimé.",
+    "inputSchema": {"type": "object", "properties": {"ref": {"type": "string"}}, "required": ["ref"]},
+})
+
+
 def outils() -> list[dict]:
     return (OUTILS + OUTILS_ROUTINES + OUTILS_MEMOIRE + (OUTILS_DOCKER if os.environ.get("ASSISTANT_DOCKER") == "1" else [])
             + (OUTILS_AGENDA if os.environ.get("ASSISTANT_AGENDA") == "1" else []))
@@ -147,6 +157,8 @@ def appeler(nom: str, args: dict) -> str:
             r = c.get("/interne/docker/diagnostic", params={"nom": args["nom"]})
         elif nom == "lire_agenda":
             r = c.get("/interne/agenda", params={"jours": args.get("jours", 7)})
+        elif nom == "supprimer_evenement":
+            r = c.post("/interne/agenda/supprimer", json={"ref": args["ref"], "conversation": conv})
         elif nom == "ajouter_evenement":
             r = c.post("/interne/agenda", json=args)
         elif nom == "creer_routine":

@@ -143,13 +143,15 @@ RE_PERSO = re.compile(r"\b(je|j.|mon|ma|mes|moi)\b", re.I)
 RE_FAIT_PERSO = re.compile(r"\b(je m.appelle|ma (femme|fille|m[èe]re|s[œo]eur|compagne|copine)|mon (mari|fils|p[èe]re|fr[èe]re|"
                            r"compagnon|copain|chien|chat)|je (suis allergique|d[ée]teste|pr[ée]f[èe]re|n.aime pas|"
                            r"travaille|bosse)|j.(adore|aime pas|aime bien|habite)|mon anniversaire)\b", re.I)
-RE_AGENDA = re.compile(r"\b(agenda|calendrier|rendez-vous|rdv|r[ée]union|rappelle-moi|rappel|"
+RE_AGENDA = re.compile(r"\b(agenda|calendrier|rendez.vous|rdv|r[ée]union|rappelle-moi|rappel|"
                        r"qu.est-ce que j.ai|ai-je quelque chose|programme de (la journ[ée]e|demain|la semaine)|"
                        r"note (dans|sur) l.agenda|anniversaire)\b", re.I)
 NOTE_OUTILS_AGENDA = (
     "Tu as aussi lire_agenda et ajouter_evenement (agenda familial). Nous sommes le {date}. Pour « rappelle-moi "
     "de … demain à 9 h », ajoute un événement à cette heure. Résume l'agenda en phrases courtes, sans liste."
 )
+RE_SUITE_AGENDA = re.compile(r"\b(supprime|efface|annule|enl[èe]ve|retire|d[ée]place|d[ée]cale|change|modifie|"
+                             r"celui|celle|ce|cet|le premier|le deuxi[èe]me|oui|non)\b", re.I)
 RE_DOCKER = re.compile(r"\b(docker|conteneurs?|containers?|unraid|serveur|plex|nginx|npm|logs?|journaux|"
                        r"plant[ée]s?|crash|red[ée]marr\w*|ne (r[ée]pond|marche|fonctionne) plus)\b", re.I)
 NOTE_OUTILS_DOCKER = (
@@ -195,6 +197,11 @@ class NouveauSouvenir(BaseModel):
 class ModifSouvenir(BaseModel):
     texte: str | None = Field(default=None, min_length=2, max_length=500)
     portee: Literal["foyer", "prive"] | None = None
+
+
+class SuppressionEvenement(BaseModel):
+    ref: str = Field(min_length=1, max_length=500)
+    conversation: str = Field(default="", max_length=64)
 
 
 class NouvelEvenement(BaseModel):
@@ -534,6 +541,7 @@ def creer_app(config: Config | None = None, registre: Registre | None = None,
 
     compte_conversation: dict[str, tuple[str, str]] = {}    # conversation -> (compte, ip)
     texte_conversation: dict[str, str] = {}                  # conversation -> dernière demande (historique)
+    agenda_recent: dict[str, float] = {}                     # conversation -> dernier échange sur l'agenda
     masques_conversation: dict[str, frozenset] = {}          # conversation -> ce qu'on ne révèle pas (outils de Claude)
 
     def contexte_de(requete: Request) -> dict:
@@ -1030,7 +1038,7 @@ def creer_app(config: Config | None = None, registre: Registre | None = None,
 
     def evenements_json(evts: list[dict]) -> list[dict]:
         return [{"titre": e.get("titre", ""), "debut": e["debut"].isoformat(), "journee": e.get("journee", False),
-                 "lieu": e.get("lieu", ""), "texte": decrire(e)} for e in evts]
+                 "lieu": e.get("lieu", ""), "texte": decrire(e), "ref": e.get("href", "")} for e in evts]
 
     async def prochains(jours: float) -> list[dict]:
         from datetime import datetime as dt, timedelta
@@ -1056,6 +1064,20 @@ def creer_app(config: Config | None = None, registre: Registre | None = None,
         audit.noter("agenda_ajout", "", "", par="claude", titre=e.titre, debut=e.debut)
         return {"ok": True, "uid": uid, "resume": decrire({"debut": debut, "titre": e.titre, "lieu": e.lieu,
                                                            "journee": e.journee})}
+
+    @app.post("/interne/agenda/supprimer", include_in_schema=False)
+    async def interne_supprimer(s_: SuppressionEvenement, x_jeton_interne: str | None = Header(None)) -> dict:
+        verifier_jeton(x_jeton_interne)
+        evts = await agenda_ou_erreur(prochains(366))
+        e = next((x for x in evts if x.get("href") == s_.ref), None)
+        if not e:
+            raise HTTPException(404, "événement introuvable dans l'agenda (ref inconnue)")
+        await agenda_ou_erreur(agenda.supprimer(s_.ref))
+        compte, ip = compte_conversation.get(s_.conversation, ("", ""))
+        # le journal garde de quoi le recréer si c'était une erreur
+        audit.noter("agenda_suppression", compte, ip, par="claude", titre=e.get("titre", ""),
+                    debut=e["debut"].isoformat(), lieu=e.get("lieu", ""))
+        return {"ok": True, "supprime": decrire(e)}
 
     @app.get("/api/agenda")
     async def lire_agenda(requete: Request, jours: int = 7) -> dict:
@@ -1643,7 +1665,10 @@ def creer_app(config: Config | None = None, registre: Registre | None = None,
             role = cfg.routeur.role_complexe
             route["outils"] = "Claude avec la mémoire"
             outils = outils_maison(d.conversation)
-        elif agenda.configure and claude_outille and RE_AGENDA.search(d.message) and "historique" not in ctx_revel:
+        elif (agenda.configure and claude_outille and "historique" not in ctx_revel
+                and (RE_AGENDA.search(d.message) or (time.monotonic() - agenda_recent.get(d.conversation, -1e9) < 180
+                                                  and RE_SUITE_AGENDA.search(d.message)))):
+            agenda_recent[d.conversation] = time.monotonic()
             role = cfg.routeur.role_complexe
             route["outils"] = "Claude avec l'agenda"
             outils = outils_maison(d.conversation)

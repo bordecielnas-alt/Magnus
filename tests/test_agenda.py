@@ -63,3 +63,27 @@ def test_client_caldav():
     uid = asyncio.run(a.ajouter("Courses", datetime(2026, 11, 14, 9, 0, tzinfo=LOCAL)))
     assert vus[-1][0] == "PUT" and vus[-1][1].startswith("/benjamin/agenda/") and vus[-1][2] == "Basic"
     assert uid.endswith("@assistant")
+
+
+def test_supprimer_un_evenement():
+    vus = []
+
+    def repondre(req: httpx.Request) -> httpx.Response:
+        vus.append((req.method, req.url.path))
+        if req.method == "REPORT":
+            corps = ("<d:multistatus xmlns:d='DAV:' xmlns:c='urn:ietf:params:xml:ns:caldav'>"
+                     f"<d:response><d:href>/remote.php/dav/calendars/ben/perso/abc.ics</d:href><d:propstat><d:prop>"
+                     f"<c:calendar-data>{ICS}</c:calendar-data></d:prop></d:propstat></d:response></d:multistatus>")
+            return httpx.Response(207, text=corps)
+        if req.method == "DELETE":
+            return httpx.Response(204)
+        return httpx.Response(405)
+    a = Agenda("https://cloud.exemple.fr/remote.php/dav/calendars/ben/perso/", "ben", "x",
+               transport=httpx.MockTransport(repondre))
+    evts = asyncio.run(a.evenements(datetime(2026, 11, 12, tzinfo=LOCAL), datetime(2026, 11, 20, tzinfo=LOCAL)))
+    assert evts[0]["href"] == "/remote.php/dav/calendars/ben/perso/abc.ics"
+    asyncio.run(a.supprimer(evts[0]["href"]))
+    assert vus[-1] == ("DELETE", "/remote.php/dav/calendars/ben/perso/abc.ics")
+    import pytest
+    with pytest.raises(PermissionError):                       # jamais hors du calendrier configuré
+        asyncio.run(a.supprimer("/remote.php/dav/calendars/autre/agenda/x.ics"))

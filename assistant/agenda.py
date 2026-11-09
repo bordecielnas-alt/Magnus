@@ -128,9 +128,15 @@ class Agenda:
         if r.status_code == 401:
             raise PermissionError("agenda : identifiant ou mot de passe refusé")
         r.raise_for_status()
-        donnees = re.findall(r"<[^>]*calendar-data[^>]*>(.*?)</[^>]*calendar-data>", r.text, re.S)
         import html
-        evts = [e for d in donnees for e in lire_evenements(html.unescape(d))]
+        evts = []
+        # chaque <response> : l'adresse du fichier .ics (pour le supprimer) et son contenu
+        for bloc in re.findall(r"<[^>]*response[ >].*?</[^>]*response>", r.text, re.S | re.I) or [r.text]:
+            href = re.search(r"<[^>]*href[^>]*>(.*?)</[^>]*href>", bloc, re.S | re.I)
+            for d in re.findall(r"<[^>]*calendar-data[^>]*>(.*?)</[^>]*calendar-data>", bloc, re.S):
+                for e in lire_evenements(html.unescape(d)):
+                    e["href"] = html.unescape(href.group(1).strip()) if href else ""
+                    evts.append(e)
         # récurrences non développées : on ne garde que ce qui tombe dans la plage demandée
         evts = [e for e in evts if e["debut"] < fin and e.get("fin", e["debut"]) >= debut]
         return sorted(evts, key=lambda e: e["debut"])
@@ -146,6 +152,19 @@ class Agenda:
             raise PermissionError("agenda : identifiant ou mot de passe refusé")
         r.raise_for_status()
         return uid
+
+
+    async def supprimer(self, href: str) -> None:
+        """Supprime un événement par l'adresse de son fichier .ics (donnée par evenements)."""
+        from urllib.parse import urljoin, urlparse
+        cible = urljoin(self.url, href)
+        if urlparse(cible).netloc != urlparse(self.url).netloc or not urlparse(cible).path.startswith(urlparse(self.url).path):
+            raise PermissionError("agenda : événement hors du calendrier configuré")
+        async with self._client() as c:
+            r = await c.delete(cible)
+        if r.status_code == 401:
+            raise PermissionError("agenda : identifiant ou mot de passe refusé")
+        r.raise_for_status()
 
 
 JOURS = ["lundi", "mardi", "mercredi", "jeudi", "vendredi", "samedi", "dimanche"]
