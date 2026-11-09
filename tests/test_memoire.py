@@ -123,3 +123,52 @@ def test_creer_une_routine_n_allume_rien(tmp_path):
     c = TestClient(creer_app(cfg, r.registre, ha, securite=Securite(SecuriteConfig(), tmp_path)), client=("127.0.0.1", 1))
     rep = c.post("/api/chat", json={"message": "Crée une routine qui met le plafonnier en rouge", "conversation": "w3"}).json()
     assert ha.appels == [] and rep["route"]["role"] == "raisonnement"
+
+
+def test_restaurer_un_souvenir_oublie_ou_refuse(tmp_path):
+    m = Memoire(tmp_path)
+    a = m.ajouter("Le wifi invité s'appelle Maison-Invités", "foyer", "b", "valide")
+    m.changer_statut(a["id"], "supprime", "b")
+    assert m.restaurer(a["id"], "b")["statut"] == "valide"
+    p = m.ajouter("Benjamin boit son café sans sucre", "prive", "b")
+    m.changer_statut(p["id"], "refuse", "b")
+    assert m.restaurer(p["id"], "b")["statut"] == "propose"          # un refus annulé redevient « à valider »
+    assert m.historique(p["id"])[0]["action"] == "restauré"
+    m.changer_statut(a["id"], "supprime", "b")
+    m.ajouter("le wifi invité s'appelle maison-invités", "foyer", "b", "valide")
+    try:
+        m.restaurer(a["id"], "b")
+        assert False, "doublon restauré"
+    except ValueError:
+        pass
+
+
+def test_passer_en_prive_un_souvenir_du_foyer(tmp_path):
+    m = Memoire(tmp_path)
+    a = m.ajouter("Le code du garage est 1234", "foyer", "autre", "valide")
+    m.modifier(a["id"], None, "prive", "b")
+    assert any(x["id"] == a["id"] for x in m.liste("b")) and all(x["id"] != a["id"] for x in m.liste("autre"))
+
+
+def test_ecran_tout_valider_corbeille_restaurer(tmp_path):
+    c, _ = client_machine(tmp_path)
+    for i, msg in enumerate(["Retiens que le portail se ferme à 22 h", "Retiens que la chaudière est au garage"]):
+        c.post("/api/chat", json={"message": msg, "conversation": f"t{i}"})
+    d = c.get("/api/memoire").json()
+    assert d["a_valider"] == 2 and d["souvenirs"][0]["origine"] == "conversation" and d["souvenirs"][0]["auteur"]
+    assert c.post("/api/memoire/valider-tout").json()["valides"] == 2
+    assert c.get("/api/memoire").json()["a_valider"] == 0
+    ident = d["souvenirs"][0]["id"]
+    c.delete(f"/api/memoire/{ident}")
+    assert [x["id"] for x in c.get("/api/memoire?corbeille=1").json()["souvenirs"]] == [ident]
+    assert c.post(f"/api/memoire/{ident}/restaurer").json()["statut"] == "valide"
+    assert c.get("/api/memoire?corbeille=1").json()["souvenirs"] == []
+    assert c.post(f"/api/memoire/{ident}/restaurer").status_code == 409
+
+
+def test_mise_a_jour_proposee_montre_l_ancien_texte(tmp_path):
+    c, _ = client_machine(tmp_path)
+    a = c.post("/api/memoire", json={"texte": "Benjamin a 10 disques durs", "portee": "foyer"}).json()
+    Memoire(tmp_path).ajouter("Benjamin a 8 disques durs", "foyer", a["compte"], "propose", "claude", "z", remplace=a["id"])
+    props = [x for x in c.get("/api/memoire").json()["souvenirs"] if x["statut"] == "propose"]
+    assert props[0]["remplace_texte"] == "Benjamin a 10 disques durs"

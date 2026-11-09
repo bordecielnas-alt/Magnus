@@ -100,6 +100,27 @@ class Memoire:
                                      "propose": "reproposé"}[statut], s["statut"], statut)
         return self.lire(ident)
 
+    def restaurer(self, ident: int, par: str) -> dict:
+        """Annule un oubli ou un refus : le souvenir reprend le statut qu'il avait (validé par défaut)."""
+        with self._verrou, self._db:
+            s = self._db.execute("SELECT * FROM souvenirs WHERE id=?", (ident,)).fetchone()
+            if not s:
+                raise KeyError(ident)
+            if s["statut"] not in ("refuse", "supprime"):
+                raise ValueError("ce souvenir n'est ni oublié ni refusé")
+            doublon = self._db.execute(
+                "SELECT id FROM souvenirs WHERE id<>? AND lower(texte)=lower(?) AND statut IN ('propose','valide') "
+                "AND (portee='foyer' OR compte=?)", (ident, s["texte"], s["compte"])).fetchone()
+            if doublon:
+                raise ValueError("un souvenir identique est déjà en mémoire")
+            dernier = self._db.execute(
+                "SELECT avant FROM historique WHERE souvenir=? AND action IN ('supprimé','refusé') ORDER BY id DESC "
+                "LIMIT 1", (ident,)).fetchone()
+            statut = dernier["avant"] if dernier and dernier["avant"] in ("propose", "valide") else "valide"
+            self._db.execute("UPDATE souvenirs SET statut=?, maj=? WHERE id=?", (statut, maintenant(), ident))
+            self._noter(ident, par, "restauré", s["statut"], statut)
+        return self.lire(ident)
+
     def modifier(self, ident: int, texte: str | None, portee: str | None, par: str) -> dict:
         with self._verrou, self._db:
             s = self._db.execute("SELECT * FROM souvenirs WHERE id=?", (ident,)).fetchone()
@@ -109,7 +130,10 @@ class Memoire:
             p = portee or s["portee"]
             if not nouveau or len(nouveau) > 500 or p not in PORTEES:
                 raise ValueError("souvenir vide, trop long ou portée invalide")
-            self._db.execute("UPDATE souvenirs SET texte=?, portee=?, maj=? WHERE id=?", (nouveau, p, maintenant(), ident))
+            # un souvenir du foyer passé en privé devient celui de la personne qui le change
+            compte = par if p == "prive" and s["portee"] == "foyer" and par else s["compte"]
+            self._db.execute("UPDATE souvenirs SET texte=?, portee=?, compte=?, maj=? WHERE id=?",
+                             (nouveau, p, compte, maintenant(), ident))
             self._noter(ident, par, "modifié", f"{s['portee']} : {s['texte']}", f"{p} : {nouveau}")
         return self.lire(ident)
 

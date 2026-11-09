@@ -74,11 +74,8 @@
       <div class="codes" id="cCodes" hidden></div>
     </details>
     <details id="cfgMemoire"><summary>Mémoire <span class="etat" id="eMemoire"></span></summary>
-      <p class="aide">Ce que l'assistant sait de la maison et de toi. Rien n'est retenu sans validation ; « foyer » est partagé avec tous les comptes, « privé » n'est qu'à toi.</p>
-      <div id="cMemoireListe"></div>
-      <div class="rangee"><input id="cMemoireTexte" maxlength="500" placeholder="ex. Les poubelles sortent le mardi soir" style="flex:1;min-width:0;background:var(--bg);color:var(--fg);border:1px solid var(--bord);border-radius:8px;padding:7px 9px;font:inherit;font-size:.85rem">
-        <select id="cMemoirePortee" class="bouton"><option value="foyer">foyer</option><option value="prive">privé</option></select>
-        <button type="button" class="bouton principal" id="cMemoireAjouter">Ajouter</button></div>
+      <p class="aide">Ce que l'assistant sait de la maison et de toi : souvenirs à valider, recherche, modification, corbeille. Aussi dans le menu ⋯ &gt; Mémoire.</p>
+      <div class="rangee"><button type="button" class="bouton principal" id="cMemoireOuvrir">Ouvrir la mémoire</button></div>
       <p class="aide" data-msg="memoire"></p>
     </details>
     <details id="cfgHabitudes"><summary>Habitudes et routines <span class="etat" id="eHabitudes"></span></summary>
@@ -142,7 +139,15 @@
       <label class="champ">Annoncer un rendez-vous (minutes avant)<input id="cAgendaAvant" type="number" min="0" max="240"></label>
       <label class="champ">Docker via l'API Unraid : adresse<input id="cUnraidUrl" placeholder="http://192.168.1.2/graphql"></label>
       <label class="champ">API Unraid : clé (rôle lecture seule)<input id="cUnraidCle" type="password" autocomplete="off" placeholder="laisser vide pour garder l'actuelle"></label>
+      <label class="champ">API Unraid : clé pour redémarrer un conteneur (droits Docker seulement, facultatif)<input id="cUnraidCleActions" type="password" autocomplete="off" placeholder="laisser vide pour garder l'actuelle"></label>
       <input id="cDockerUrl" type="hidden">
+      <label class="champ">Telegram : jeton du bot (donné par @BotFather)<input id="cTgJeton" type="password" autocomplete="off" placeholder="laisser vide pour garder l'actuel"></label>
+      <div class="rangee"><label class="aide" style="margin:0"><input type="checkbox" id="cTgDocker"> conteneurs</label>
+        <label class="aide" style="margin:0"><input type="checkbox" id="cTgDisques"> disques</label>
+        <label class="aide" style="margin:0"><input type="checkbox" id="cTgAgenda"> rendez-vous</label></div>
+      <div class="rangee"><button type="button" class="bouton" id="cTgTrouver">Trouver mon chat</button>
+        <button type="button" class="bouton" id="cTgTest">Message de test</button><span class="aide" data-msg="telegram"></span></div>
+      <p class="aide">Telegram : crée un bot avec @BotFather, colle son jeton, enregistre et redémarre ; envoie « /start » à ton bot, puis « Trouver mon chat ».</p>
       <div class="rangee"><button type="button" class="bouton principal" data-enr="services">Enregistrer</button><span class="aide" data-msg="services"></span></div>
     </details>
     <details id="cfgSysteme"><summary>Système <span class="etat" id="eSysteme"></span></summary>
@@ -232,6 +237,9 @@
     const pa = r.proactif || {}, ag = r.agenda || {}, dk = r.docker || {};
     $('cProActif').checked = !!pa.active; $('cCalme').value = pa.heures_calmes || ''; $('cBriefing').value = pa.briefing_heure || '';
     $('cVille').value = pa.ville || ''; $('cAgendaUrl').value = ag.url || ''; $('cAgendaUser').value = ag.utilisateur || '';
+    const tg = r.telegram || {};
+    $('cTgDocker').checked = tg.docker !== false; $('cTgDisques').checked = tg.disques !== false; $('cTgAgenda').checked = tg.agenda !== false;
+    $('cTgJeton').placeholder = tg.jeton_defini ? 'jeton enregistré — laisser vide pour le garder' : 'jeton du bot';
     $('cAgendaAvant').value = ag.annonce_avant_min ?? 15; $('cDockerUrl').value = dk.url || ''; $('cUnraidUrl').value = dk.unraid_url || '';
     etat('eServices', [ag.url ? 'agenda' : '', (dk.unraid_url || dk.url) ? 'Docker' : '', pa.briefing_heure ? 'briefing ' + pa.briefing_heure : ''].filter(Boolean).join(' · ') || 'rien de branché');
     const v = e.voix || {};
@@ -255,51 +263,24 @@
     compte_réinitialisé: 'compte réinitialisé', invitation_acceptée: 'invitation acceptée', totp_activé: 'code téléphone activé',
     mot_de_passe_changé: 'mot de passe changé', codes_secours_regénérés: 'codes de secours', alias_oublié: 'alias oublié',
     modèle_téléchargé: 'modèle téléchargé', profil_modifié: 'profil modifié', appareil_partagé: 'appareil marqué partagé', appareil_personnel: 'appareil marqué personnel', voix_enregistrée: 'voix enregistrée', souvenir_ajouté: 'souvenir ajouté', souvenir_validé: 'souvenir validé',
-    souvenir_refusé: 'souvenir refusé', souvenir_modifié: 'souvenir modifié', souvenir_supprimé: 'souvenir oublié', compte_renommé: 'compte renommé',
+    souvenir_refusé: 'souvenir refusé', souvenir_modifié: 'souvenir modifié', souvenir_supprimé: 'souvenir oublié', souvenir_restauré: 'souvenir restauré', compte_renommé: 'compte renommé', conteneur_redémarré: 'conteneur redémarré',
     automatisation_créée: 'automatisation créée', routine_créée: 'routine créée', routine_supprimée: 'routine supprimée', voix_oubliée: 'voix oubliée', totp_activation: 'code téléphone', invitation: 'invitation'};
 
   // --- mémoire --------------------------------------------------------------------------------------
-  async function chargerMemoire() {
-    let d;
-    try { d = await api('/api/memoire'); } catch (e) { $('cfgMemoire').hidden = true; return; }
-    $('cfgMemoire').hidden = false;
-    etat('eMemoire', d.a_valider ? d.a_valider + ' à valider' : d.souvenirs.length + ' souvenir(s)', d.a_valider ? 'ko' : '');
-    const liste = $('cMemoireListe');
-    liste.replaceChildren();
-    for (const sv of d.souvenirs) {
-      const ligne = document.createElement('div'); ligne.className = 'compte';
-      const txt = texte('div', sv.texte);
-      txt.appendChild(texte('small', (sv.statut === 'propose' ? 'à valider · ' : '') + (sv.portee === 'prive' ? 'privé' : 'foyer') + ' · ' + quand(sv.maj)));
-      const b = document.createElement('div'); b.className = 'rangee'; b.style.marginTop = '0';
-      const bouton = (libelle, action) => { const x = texte('button', libelle); x.type = 'button'; x.className = 'bouton'; x.onclick = action; b.appendChild(x); };
-      const agir = async (url, opts, ok) => {
-        try {
-          const r = await fetch(url, opts);
-          if (!r.ok) throw new Error(((await r.json().catch(() => ({}))).detail) || 'erreur ' + r.status);
-          if (ok) msg('memoire', ok, true);
-        } catch (e) { msg('memoire', e.message, false); }
-        chargerMemoire();
-      };
-      if (sv.statut === 'propose') {
-        bouton('Retenir', () => agir(`/api/memoire/${sv.id}/valider`, {method: 'POST'}, 'Retenu.'));
-        bouton('Refuser', () => agir(`/api/memoire/${sv.id}/refuser`, {method: 'POST'}, 'Refusé.'));
-      } else {
-        bouton('Modifier', () => {
-          const nouveau = prompt('Corriger le souvenir :', sv.texte);
-          if (nouveau && nouveau.trim() !== sv.texte) agir(`/api/memoire/${sv.id}`, {method: 'PATCH', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({texte: nouveau.trim()})}, 'Corrigé.');
-        });
-        bouton('Historique', async () => {
-          try {
-            const {historique} = await api(`/api/memoire/${sv.id}/historique`);
-            alert(historique.map(h => `${quand(h.quand)} · ${h.action} par ${h.compte}${h.avant && h.action === 'modifié' ? '\n   avant : ' + h.avant : ''}`).join('\n'));
-          } catch (e) { msg('memoire', e.message, false); }
-        });
-        bouton('Oublier', () => { if (confirm('Oublier ce souvenir ?')) agir(`/api/memoire/${sv.id}`, {method: 'DELETE'}, 'Oublié.'); });
-      }
-      ligne.append(txt, b);
-      liste.appendChild(ligne);
-    }
+  // L'écran complet est dans memoire.js (fenêtre « Mémoire ») ; ici, le résumé et un bouton pour l'ouvrir.
+  function suivreMemoire(info) {
+    $('cfgMemoire').hidden = !info;
+    if (info) etat('eMemoire', info.a_valider ? info.a_valider + ' à valider' : info.total + ' souvenir(s)', info.a_valider ? 'ko' : '');
   }
+  function chargerMemoire() { if (window.memoireAssistant) window.memoireAssistant.charger(); }
+  (function chargerScriptMemoire() {
+    const moi = document.currentScript && document.currentScript.src;
+    const sc = document.createElement('script');
+    sc.src = '/static/memoire.js' + (moi && moi.includes('?') ? moi.slice(moi.indexOf('?')) : '');
+    sc.onload = () => { if (window.memoireAssistant) window.memoireAssistant.suivre(suivreMemoire); };
+    document.body.appendChild(sc);
+  })();
+  $('cMemoireOuvrir').onclick = () => { if (window.memoireAssistant) window.memoireAssistant.ouvrir(); };
   const VERBES_R = {allumer: 'allumer', eteindre: 'éteindre', ouvrir: 'ouvrir', fermer: 'fermer', regler: 'régler'};
   async function chargerHabitudes() {
     let h, r;
@@ -340,13 +321,6 @@
     }
   }
 
-  $('cMemoireAjouter').onclick = async () => {
-    const t = $('cMemoireTexte').value.trim();
-    if (t.length < 2) return;
-    try { await api('/api/memoire', {texte: t, portee: $('cMemoirePortee').value}); $('cMemoireTexte').value = ''; msg('memoire', 'Ajouté.', true); }
-    catch (e) { msg('memoire', e.message, false); }
-    chargerMemoire();
-  };
 
   async function chargerComptes() {
     let s;
@@ -566,17 +540,30 @@
       enregistrer('services', {
         proactif: {active: $('cProActif').checked, heures_calmes: $('cCalme').value.trim(), briefing_heure: $('cBriefing').value.trim(), ville: $('cVille').value.trim()},
         agenda: {url: $('cAgendaUrl').value.trim(), utilisateur: $('cAgendaUser').value.trim(), annonce_avant_min: +$('cAgendaAvant').value || 0},
-        docker: {url: $('cDockerUrl').value.trim(), unraid_url: $('cUnraidUrl').value.trim()}},
+        docker: {url: $('cDockerUrl').value.trim(), unraid_url: $('cUnraidUrl').value.trim()},
+        telegram: {docker: $('cTgDocker').checked, disques: $('cTgDisques').checked, agenda: $('cTgAgenda').checked}},
         async () => {
           if (mdp) { await api('/api/reglages/secret', {nom: 'AGENDA_MOT_DE_PASSE', valeur: mdp}); $('cAgendaMdp').value = ''; }
           const cle = $('cUnraidCle').value.trim();
           if (cle) { await api('/api/reglages/secret', {nom: 'UNRAID_CLE', valeur: cle}); $('cUnraidCle').value = ''; }
+          const cleA = $('cUnraidCleActions').value.trim();
+          if (cleA) { await api('/api/reglages/secret', {nom: 'UNRAID_CLE_ACTIONS', valeur: cleA}); $('cUnraidCleActions').value = ''; }
+          const tgj = $('cTgJeton').value.trim();
+          if (tgj) { await api('/api/reglages/secret', {nom: 'TELEGRAM_JETON', valeur: tgj}); $('cTgJeton').value = ''; }
         });
     } else if (b.dataset.enr === 'acces') {
       enregistrer('acces', {securite: {proxies_de_confiance: liste($('cProxies').value), reseaux_autorises: liste($('cReseaux').value),
                                         session_jours: +$('cSession').value}});
     }
   });
+
+  for (const [id, action, ok] of [['cTgTrouver', 'trouver', o => `Relié au chat de ${o.nom || o.chat_id} : un message vient de t'être envoyé.`],
+                                  ['cTgTest', 'test', () => 'Message envoyé.']]) {
+    $(id).onclick = async () => {
+      try { msg('telegram', ok(await api('/api/telegram/' + action, {})), true); }
+      catch (e) { msg('telegram', e.message, false); }
+    };
+  }
 
   $('cOllamaTirerBtn').onclick = async () => {
     const m = $('cOllamaTirer').value.trim();
