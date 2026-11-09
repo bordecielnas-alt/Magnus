@@ -131,7 +131,22 @@ class DockerConfig(BaseModel):
 
     def cle_unraid(self) -> str:
         return os.environ.get("UNRAID_CLE", "")
+
+    def cle_unraid_actions(self) -> str:
+        """2e clé, limitée à Docker, pour redémarrer un conteneur (après confirmation)."""
+        return os.environ.get("UNRAID_CLE_ACTIONS", "")
     timeout: float = Field(default=8, gt=0)
+
+
+class TelegramConfig(BaseModel):
+    """Notifications sur le téléphone ; le jeton du bot est le secret TELEGRAM_JETON."""
+    chat_id: str = ""              # trouvé avec « Trouver mon chat » (après /start au bot)
+    docker: bool = True            # conteneur arrêté ou en mauvaise santé
+    disques: bool = True           # disque en erreur, trop chaud, SMART, array arrêté
+    agenda: bool = True            # rendez-vous imminent
+
+    def jeton(self) -> str:
+        return os.environ.get("TELEGRAM_JETON", "")
 
 
 class AgendaConfig(BaseModel):
@@ -332,6 +347,7 @@ class Config(BaseModel):
     docker: DockerConfig = Field(default_factory=DockerConfig)
     proactif: ProactifConfig = Field(default_factory=ProactifConfig)
     agenda: AgendaConfig = Field(default_factory=AgendaConfig)
+    telegram: TelegramConfig = Field(default_factory=TelegramConfig)
 
     @model_validator(mode="after")
     def _roles_valides(self) -> "Config":

@@ -129,6 +129,22 @@ OUTILS_AGENDA.append({
 })
 
 
+OUTILS_DOCKER += [
+    {
+        "name": "etat_serveur",
+        "description": "État du serveur Unraid : array (démarré ?), capacité, chaque disque (état, température, "
+                       "erreurs, SMART, espace libre), dernier contrôle de parité, et liste des alertes.",
+        "inputSchema": {"type": "object", "properties": {}},
+    },
+    {
+        "name": "demander_redemarrage",
+        "description": "Prépare le redémarrage d'un conteneur. Rien n'est fait tout de suite : termine ta réponse par "
+                       "« Je redémarre <nom> ? » ; le redémarrage a lieu seulement si la personne répond oui.",
+        "inputSchema": {"type": "object", "properties": {"nom": {"type": "string"}}, "required": ["nom"]},
+    },
+]
+
+
 def outils() -> list[dict]:
     return (OUTILS + OUTILS_ROUTINES + OUTILS_MEMOIRE + (OUTILS_DOCKER if os.environ.get("ASSISTANT_DOCKER") == "1" else [])
             + (OUTILS_AGENDA if os.environ.get("ASSISTANT_AGENDA") == "1" else []))
@@ -151,6 +167,10 @@ def appeler(nom: str, args: dict) -> str:
             r = c.get(f"/interne/maison/etat/{args['entity_id']}", params={"conversation": conv})
         elif nom == "agir":
             r = c.post("/interne/maison/agir", json={**args, "conversation": conv})
+        elif nom == "etat_serveur":
+            r = c.get("/interne/unraid")
+        elif nom == "demander_redemarrage":
+            r = c.post("/interne/docker/redemarrer", json={"nom": args["nom"], "conversation": conv})
         elif nom == "lister_conteneurs":
             r = c.get("/interne/docker/conteneurs")
         elif nom == "diagnostiquer_conteneur":

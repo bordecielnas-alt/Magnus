@@ -142,11 +142,11 @@ class UnraidDocker(Docker):
         except ValueError:
             return True
 
-    async def _graphql(self, requete: str) -> dict:
+    async def _graphql(self, requete: str, variables: dict | None = None, cle: str | None = None) -> dict:
         async with httpx.AsyncClient(timeout=self.timeout, transport=self._transport,
                                      verify=self._verifier_certificat()) as c:
-            r = await c.post(self.url, json={"query": requete},
-                             headers={"x-api-key": self.cle, "Content-Type": "application/json"})
+            r = await c.post(self.url, json={"query": requete, **({"variables": variables} if variables else {})},
+                             headers={"x-api-key": cle or self.cle, "Content-Type": "application/json"})
         if r.status_code in (401, 403):
             raise PermissionError("API Unraid : clé refusée ou droits insuffisants")
         try:
@@ -198,3 +198,72 @@ class UnraidDocker(Docker):
         return {"nom": c["nom"], "image": c["image"], "etat": c["etat"], "statut": c["statut"], "sante": c["sante"],
                 "demarrage_auto": c.get("demarrage_auto"),
                 "remarque": "API Unraid : pas de journaux disponibles ; diagnostic à partir de l'état et du statut."}
+
+
+    # --- état du serveur (array, disques, parité) ------------------------------------------------------
+    REQUETE_SERVEUR = """query {
+      array {
+        state
+        capacity { kilobytes { free used total } }
+        parityCheckStatus { status errors progress running date }
+        parities { name device status temp numErrors warning critical isSpinning type }
+        disks { name device status temp numErrors warning critical isSpinning type fsSize fsFree fsUsed }
+        caches { name device status temp numErrors warning critical isSpinning type fsSize fsFree fsUsed }
+      }
+      disks { name device smartStatus temperature }
+    }"""
+
+    async def serveur(self) -> dict:
+        """État de l'array : disques (état, température, erreurs, espace), SMART, parité, alertes."""
+        data = await self._graphql(self.REQUETE_SERVEUR)
+        a = data.get("array") or {}
+        smart = {(d.get("device") or "").split("/")[-1]: d for d in data.get("disks") or []}
+        disques, alertes = [], []
+        for groupe in ("parities", "disks", "caches"):
+            for d in a.get(groupe) or []:
+                if (d.get("status") or "") == "DISK_NP":       # emplacement vide
+                    continue
+                s_ = smart.get((d.get("device") or "").split("/")[-1], {})
+                temp = d.get("temp")
+                libre = d.get("fsFree")
+                info = {"nom": d.get("name"), "type": (d.get("type") or "").lower(), "etat": d.get("status"),
+                        "temperature": temp, "erreurs": int(d.get("numErrors") or 0),
+                        "smart": s_.get("smartStatus"), "en_rotation": d.get("isSpinning"),
+                        "libre_go": round(int(libre) / 1024 / 1024, 1) if libre not in (None, "") else None,
+                        "utilise_pct": round(100 * int(d["fsUsed"]) / int(d["fsSize"])) if d.get("fsSize") and d.get("fsUsed") else None}
+                disques.append(info)
+                nom = info["nom"] or d.get("device")
+                if info["etat"] not in ("DISK_OK", None):
+                    alertes.append(f"{nom} : état {info['etat']}")
+                if temp and d.get("critical") and temp >= d["critical"]:
+                    alertes.append(f"{nom} : {temp} °C (critique)")
+                elif temp and d.get("warning") and temp >= d["warning"]:
+                    alertes.append(f"{nom} : {temp} °C (chaud)")
+                if info["erreurs"]:
+                    alertes.append(f"{nom} : {info['erreurs']} erreur(s) de lecture/écriture")
+                if info["smart"] and info["smart"] != "OK":
+                    alertes.append(f"{nom} : SMART {info['smart']}")
+                if info["utilise_pct"] and info["utilise_pct"] >= 95:
+                    alertes.append(f"{nom} : plein à {info['utilise_pct']} %")
+        parite = a.get("parityCheckStatus") or {}
+        if parite.get("errors"):
+            alertes.append(f"parité : {parite['errors']} erreur(s) au dernier contrôle")
+        if a.get("state") and a["state"] != "STARTED":
+            alertes.append(f"array : {a['state']}")
+        cap = ((a.get("capacity") or {}).get("kilobytes") or {})
+        to = lambda v: round(int(v) / 1024 / 1024 / 1024, 2) if v not in (None, "") else None  # noqa: E731
+        return {"array": a.get("state"), "capacite_to": {"total": to(cap.get("total")), "libre": to(cap.get("free")),
+                                                         "utilise": to(cap.get("used"))},
+                "parite": parite, "disques": disques, "alertes": alertes}
+
+    # --- redémarrer un conteneur (2e clé, droits Docker) --------------------------------------------------
+    async def redemarrer(self, nom: str, cle_actions: str) -> dict:
+        if not cle_actions:
+            raise PermissionError("pas de clé Unraid pour les actions Docker (UNRAID_CLE_ACTIONS)")
+        c = await self.trouver(nom)
+        if not c:
+            raise ValueError(f"conteneur « {nom} » introuvable ou ambigu")
+        data = await self._graphql("mutation($id: PrefixedID!) { docker { restart(id: $id) { id state status } } }",
+                                   {"id": c["id"]}, cle=cle_actions)
+        r = ((data.get("docker") or {}).get("restart")) or {}
+        return {"nom": c["nom"], "etat": (r.get("state") or "").lower(), "statut": r.get("status", "")}
