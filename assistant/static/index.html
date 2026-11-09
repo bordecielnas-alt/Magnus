@@ -106,6 +106,9 @@
   .reflechit { font-style:italic; background:linear-gradient(90deg, var(--muted) 0 40%, var(--accent) 50%, var(--muted) 60% 100%);
                background-size:300% 100%; -webkit-background-clip:text; background-clip:text; color:transparent; animation:balaye 1.6s linear infinite; }
   @keyframes balaye { from { background-position:100% 0; } to { background-position:0 0; } }
+  .msg.annonce .corps { border-left:2px solid var(--muted); padding-left:10px; }
+  .msg.annonce.important .corps, .msg.annonce.urgent .corps { border-left-color:#e8b04a; }
+  .msg.annonce.urgent .corps { font-weight:600; }
   .pied { display:flex; align-items:center; gap:6px; flex-wrap:wrap; margin-top:8px; font-size:.78rem; color:var(--muted); }
   .puce { border:0; border-radius:999px; padding:2px 4px; background:transparent; color:var(--muted); cursor:pointer; font-size:.78rem; }
   .puce:hover { color:var(--fg); }
@@ -311,6 +314,7 @@
     <label class="ligne" for="rgTrainees">Traînées (à gauche : particules nettes)<input type="range" id="rgTrainees" min="0" max="12" step="1"></label>
     <label class="ligne" for="rgBrume">Brume<input type="range" id="rgBrume" min="0" max="100"></label>
     <label class="case"><input type="checkbox" id="lireTout"> Lire aussi à voix haute les réponses aux messages écrits</label>
+    <label class="case"><input type="checkbox" id="sonAccueil"> Petit son d'éveil de l'orbe avant qu'il parle <button type="button" class="discret" id="essaiAccueil">Écouter</button></label>
     <fieldset>
       <legend>Écran</legend>
       <label class="ligne" for="rotation">Orientation
@@ -777,6 +781,60 @@ async function traiter(message, vocal, role = 'auto') {
   }
 }
 
+// ----- Annonces (rappels de l'agenda, alertes) : le serveur les prépare, la page les montre et les dit -----
+// GET /api/annonces?depuis=<dernier id> toutes les 10 s → {annonces:[{id, heure, texte, priorite, source, parler}]}
+let dernierAnnonce = '', annoncesActives = true;
+const annoncesVues = new Set(), annoncesFile = [];
+let annoncesEnCours = false;
+async function verifierAnnonces() {
+  if (!annoncesActives || enLigne === false || document.hidden) return;
+  try {
+    const r = await fetch('/api/annonces' + (dernierAnnonce ? '?depuis=' + encodeURIComponent(dernierAnnonce) : ''), {cache: 'no-store'});
+    if (r.status === 404) { annoncesActives = false; diag('annonces : pas disponibles sur ce serveur'); return; }
+    if (r.status === 403 || !r.ok) return;
+    const {annonces = []} = await r.json();
+    for (const a of annonces) {
+      if (a.id != null) dernierAnnonce = String(a.id);
+      if (a.id == null || annoncesVues.has(String(a.id))) continue;
+      annoncesVues.add(String(a.id));
+      annoncesFile.push(a);
+    }
+    if (annonces.length) diag('annonces : ' + annonces.length + ' reçue(s)');
+    traiterAnnonces();
+  } catch (e) {}
+}
+const attendre = ms => new Promise(r => setTimeout(r, ms));
+async function traiterAnnonces() {
+  if (annoncesEnCours) return;
+  annoncesEnCours = true;
+  try {
+    while (annoncesFile.length) {
+      // on ne coupe ni une réponse, ni sa lecture, ni une dictée en cours
+      while (occupe || voixActive || (enregistreur && enregistreur.state === 'recording')) await attendre(500);
+      const a = annoncesFile.shift();
+      const corps = bulleReponse();
+      const b = corps.parentElement;
+      b.classList.add('annonce', a.priorite || 'info');
+      corps.innerHTML = miseEnForme(a.texte || '');
+      const pied = document.createElement('div');
+      pied.className = 'pied';
+      const h = a.heure ? new Date(a.heure) : new Date();
+      pied.innerHTML = '<span></span>';
+      pied.firstChild.textContent = (isNaN(h) ? '' : h.toLocaleTimeString('fr-FR', {hour: '2-digit', minute: '2-digit'}) + ' · ') + (a.source || 'annonce');
+      corps.appendChild(pied);
+      marquerDerniers(); defiler();
+      orbe.impulsion(12);
+      diag('annonce ' + a.id + ' (' + (a.priorite || 'info') + (a.parler ? ', dite' : '') + ') : « ' + a.texte + ' »');
+      fetch('/api/annonces/' + encodeURIComponent(a.id) + '/lue', {method: 'POST'})
+        .then(r => { if (!r.ok) diag('annonce ' + a.id + ' : marquage lu HTTP ' + r.status); }).catch(() => {});
+      if (a.parler && !muet && a.texte) await direAVoixHaute(a.texte);   // le son d'éveil part au début
+      estomper();
+    }
+  } finally { annoncesEnCours = false; }
+}
+setTimeout(verifierAnnonces, 1500); setInterval(verifierAnnonces, 10000);
+document.addEventListener('visibilitychange', () => { if (!document.hidden) verifierAnnonces(); });
+
 // Sous chaque réponse : l'heure, un résumé cliquable (route · durée) et le détail technique complet.
 function ajouterPied(corps, o, route, texte) {
   let r = '', categorie = 'forcé';
@@ -1210,6 +1268,65 @@ function debloquerSon() {
 }
 for (const ev of ['pointerdown', 'keydown']) document.addEventListener(ev, debloquerSon, true);
 
+// Son d'éveil de l'orbe juste avant qu'il prenne la parole : un grondement grave et progressif,
+// comme une orbe qui se réveille (environ 2,5 s, sans notes aiguës). Fabriqué sur place (aucun fichier).
+// Le contexte audio est réveillé au premier toucher (exigé sur téléphone).
+let ctxAccueil = null, sonAccueil = true;
+try { sonAccueil = localStorage.getItem('voix.accueil') !== '0'; } catch (e) {}
+function contexteAccueil() {
+  try {
+    if (!ctxAccueil) ctxAccueil = new AudioContext();
+    if (ctxAccueil.state === 'suspended') ctxAccueil.resume().catch(() => {});
+  } catch (e) { ctxAccueil = null; }
+  return ctxAccueil;
+}
+for (const ev of ['pointerdown', 'keydown']) document.addEventListener(ev, () => { if (sonAccueil) contexteAccueil(); }, true);
+function jouerAccueil(force) {
+  if ((!sonAccueil && !force) || muet) return;
+  const c = contexteAccueil();
+  if (!c || c.state !== 'running') { diag('son d\'éveil : contexte audio pas encore réveillé, sauté'); return; }
+  const t = c.currentTime + .02, D = 2.6;
+  const sortie = c.createGain(); sortie.gain.value = .7; sortie.connect(c.destination);
+  // enveloppe lente : monte pendant 1,4 s, tient un peu, puis s'éteint doucement
+  const env = (g, pic) => {
+    g.gain.setValueAtTime(.0001, t);
+    g.gain.exponentialRampToValueAtTime(pic * .25, t + .6);
+    g.gain.exponentialRampToValueAtTime(pic, t + 1.4);
+    g.gain.setValueAtTime(pic, t + 1.7);
+    g.gain.exponentialRampToValueAtTime(.0001, t + D);
+  };
+  // grondement : une fondamentale très grave qui monte lentement, et ses harmoniques
+  // (pour qu'on l'entende aussi sur un petit haut-parleur de téléphone), adoucis par un filtre qui s'ouvre
+  const filtre = c.createBiquadFilter(); filtre.type = 'lowpass'; filtre.Q.value = .7;
+  filtre.frequency.setValueAtTime(90, t); filtre.frequency.exponentialRampToValueAtTime(320, t + 1.6);
+  filtre.connect(sortie);
+  for (const [type, f0, f1, pic] of [['sine', 34, 48, .26], ['triangle', 68, 96, .1], ['sine', 102, 144, .035]]) {
+    const o = c.createOscillator(), g = c.createGain();
+    o.type = type; o.frequency.setValueAtTime(f0, t); o.frequency.exponentialRampToValueAtTime(f1, t + 1.8);
+    env(g, pic); o.connect(g).connect(filtre); o.start(t); o.stop(t + D + .05);
+  }
+  // léger battement lent pour que le grondement « respire »
+  const lfo = c.createOscillator(), lg = c.createGain();
+  lfo.frequency.value = 3.2; lg.gain.value = 1.5; lfo.connect(lg).connect(filtre.detune); lfo.start(t); lfo.stop(t + D);
+  // texture : bruit très grave (bruit brun) qui gonfle avec le grondement
+  const n = Math.floor(c.sampleRate * D), tampon = c.createBuffer(1, n, c.sampleRate), d = tampon.getChannelData(0);
+  let dernier = 0;
+  for (let i = 0; i < n; i++) { dernier = (dernier + .02 * (Math.random() * 2 - 1)) / 1.02; d[i] = dernier * 3.5; }
+  const bruit = c.createBufferSource(); bruit.buffer = tampon;
+  const lp = c.createBiquadFilter(); lp.type = 'lowpass';
+  lp.frequency.setValueAtTime(120, t); lp.frequency.exponentialRampToValueAtTime(420, t + 1.6);
+  const gb = c.createGain(); env(gb, .12);
+  bruit.connect(lp).connect(gb).connect(sortie); bruit.start(t); bruit.stop(t + D);
+  orbe.impulsion(10);
+  diag('son d\'éveil joué');
+}
+$('sonAccueil').checked = sonAccueil;
+$('sonAccueil').onchange = () => {
+  sonAccueil = $('sonAccueil').checked;
+  try { localStorage.setItem('voix.accueil', sonAccueil ? '1' : '0'); } catch (e) {}
+};
+$('essaiAccueil').onclick = ev => { ev.preventDefault(); contexteAccueil(); setTimeout(() => jouerAccueil(true), 60); };
+
 // Bouton haut-parleur : coupe la voix de l'assistant (gardé d'une visite à l'autre)
 const ICONE_SON = '<svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 9h4l5-4v14l-5-4H4z"/><path d="M16.5 9a4 4 0 0 1 0 6"/><path d="M19 6.5a8 8 0 0 1 0 11"/></svg>';
 const ICONE_MUET = '<svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 9h4l5-4v14l-5-4H4z"/><path d="M17 9.5l5 5M22 9.5l-5 5"/></svg>';
@@ -1270,6 +1387,7 @@ async function direAVoixHaute(source) {
   const moi = ++numeroLecture;
   voixActive = true;
   orbe.etat('parole');
+  jouerAccueil();   // pendant que la première phrase se prépare
   const pulse = setInterval(() => orbe.impulsion(4), 180);
   try {
     // deux phrases d'avance : avec un réseau lent, la suivante est prête quand la précédente finit
