@@ -1094,20 +1094,46 @@ def creer_app(config: Config | None = None, registre: Registre | None = None,
             raise HTTPException(401, "connexion requise")
         return compte
 
-    def souvenir_a_moi(ident: int, compte: str) -> dict:
+    def souvenir_a_moi(ident: int, compte: str, corbeille: bool = False) -> dict:
         try:
             sv = memoire.lire(ident)
         except KeyError as e:
             raise HTTPException(404, "souvenir inconnu") from e
-        if not memoire.visible(sv, compte) or sv["statut"] == "supprime":
+        if not memoire.visible(sv, compte) or (sv["statut"] == "supprime" and not corbeille):
             raise HTTPException(404, "souvenir inconnu")
         return sv
 
+    def souvenir_json(sv: dict) -> dict:
+        """Un souvenir pour l'écran : qui l'a ajouté (nom du compte), d'où il vient, ce qu'il remplace."""
+        c = securite.comptes.get(sv["compte"]) or {}
+        o = {**sv, "auteur": c.get("nom", sv["compte"]) if sv["compte"] != COMPTE_MACHINE else cfg.identite.nom,
+             "origine": "écran" if sv["source"] == "écran" else "conversation"}
+        if sv.get("remplace"):
+            try:
+                o["remplace_texte"] = memoire.lire(sv["remplace"])["texte"]
+            except KeyError:
+                pass
+        return o
+
     @app.get("/api/memoire")
-    def lister_memoire(requete: Request) -> dict:
+    def lister_memoire(requete: Request, corbeille: bool = False) -> dict:
+        """Souvenirs validés et à valider ; avec ?corbeille=1, les oubliés et refusés (restaurables)."""
         compte = compte_memoire(requete)
+        if corbeille:
+            return {"souvenirs": [souvenir_json(x) for x in memoire.liste(compte, ("supprime", "refuse"))[:200]]}
         liste = memoire.liste(compte)
-        return {"souvenirs": liste, "a_valider": sum(1 for x in liste if x["statut"] == "propose")}
+        return {"souvenirs": [souvenir_json(x) for x in liste],
+                "a_valider": sum(1 for x in liste if x["statut"] == "propose")}
+
+    @app.post("/api/memoire/valider-tout")
+    def valider_tous_les_souvenirs(requete: Request) -> dict:
+        compte = compte_memoire(requete)
+        n = 0
+        for sv in memoire.liste(compte, ("propose",)):
+            memoire.changer_statut(sv["id"], "valide", compte)
+            auditer(requete, "souvenir_validé", cible=str(sv["id"]))
+            n += 1
+        return {"ok": True, "valides": n}
 
     @app.post("/api/memoire")
     def ajouter_souvenir(n: NouveauSouvenir, requete: Request) -> dict:
@@ -1120,12 +1146,20 @@ def creer_app(config: Config | None = None, registre: Registre | None = None,
         return sv
 
     @app.post("/api/memoire/{ident}/{decision}")
-    def decider_souvenir(ident: int, decision: Literal["valider", "refuser"], requete: Request) -> dict:
+    def decider_souvenir(ident: int, decision: Literal["valider", "refuser", "restaurer"], requete: Request) -> dict:
         compte = compte_memoire(requete)
+        if decision == "restaurer":
+            souvenir_a_moi(ident, compte, corbeille=True)
+            try:
+                sv = memoire.restaurer(ident, compte)
+            except ValueError as e:
+                raise HTTPException(409, str(e)) from e
+            auditer(requete, "souvenir_restauré", cible=str(ident))
+            return souvenir_json(sv)
         souvenir_a_moi(ident, compte)
         sv = memoire.changer_statut(ident, "valide" if decision == "valider" else "refuse", compte)
         auditer(requete, "souvenir_" + ("validé" if decision == "valider" else "refusé"), cible=str(ident))
-        return sv
+        return souvenir_json(sv)
 
     @app.patch("/api/memoire/{ident}")
     def modifier_souvenir(ident: int, m: ModifSouvenir, requete: Request) -> dict:
@@ -1136,7 +1170,7 @@ def creer_app(config: Config | None = None, registre: Registre | None = None,
         except ValueError as e:
             raise HTTPException(422, str(e)) from e
         auditer(requete, "souvenir_modifié", cible=str(ident))
-        return sv
+        return souvenir_json(sv)
 
     @app.delete("/api/memoire/{ident}")
     def supprimer_souvenir(ident: int, requete: Request) -> dict:
@@ -1150,7 +1184,8 @@ def creer_app(config: Config | None = None, registre: Registre | None = None,
     def historique_souvenir(ident: int, requete: Request) -> dict:
         compte = compte_memoire(requete)
         souvenir_a_moi(ident, compte)
-        return {"historique": memoire.historique(ident)}
+        noms = {c: v.get("nom", c) for c, v in securite.comptes.items()} | {COMPTE_MACHINE: cfg.identite.nom}
+        return {"historique": [{**h, "compte": noms.get(h["compte"], h["compte"])} for h in memoire.historique(ident)]}
 
     # --- habitudes et routines ------------------------------------------------------------------------
     @app.post("/interne/memoire", include_in_schema=False)
