@@ -31,6 +31,7 @@ from . import reglages as R
 from .reveil import Reveil
 from .agenda import JOURS, Agenda, decrire
 from .audit import Audit
+from .telegram import Telegram
 from .habitudes import Routines, automatisation, detecter
 from .memoire import Memoire
 from .proactif import Annonces
@@ -152,13 +153,15 @@ NOTE_OUTILS_AGENDA = (
 )
 RE_SUITE_AGENDA = re.compile(r"\b(supprime|efface|annule|enl[èe]ve|retire|d[ée]place|d[ée]cale|change|modifie|"
                              r"celui|celle|ce|cet|le premier|le deuxi[èe]me|oui|non)\b", re.I)
-RE_DOCKER = re.compile(r"\b(docker|conteneurs?|containers?|unraid|serveur|plex|nginx|npm|logs?|journaux|"
+RE_DOCKER = re.compile(r"\b(docker|conteneurs?|containers?|unraid|serveur|plex|nginx|npm|logs?|journaux|disques?( durs?)?|"
+                       r"hdd|array|parit[ée]|smart|stockage|espace (libre|disque)|"
                        r"plant[ée]s?|crash|red[ée]marr\w*|ne (r[ée]pond|marche|fonctionne) plus)\b", re.I)
 NOTE_OUTILS_DOCKER = (
     "Tu as aussi lister_conteneurs et diagnostiquer_conteneur (serveur Unraid, lecture seule). Pour un service "
     "qui ne marche pas, diagnostique d'abord, puis donne la cause probable et un correctif concret que la "
-    "personne appliquera elle-même (ex. « redémarre le conteneur Plex depuis l'onglet Docker »). Tu ne peux "
-    "rien redémarrer ni modifier : ne prétends jamais l'avoir fait."
+    "personne appliquera elle-même. etat_serveur donne les disques, la parité et les alertes. Pour redémarrer un "
+    "conteneur, utilise demander_redemarrage puis demande « Je redémarre <nom> ? » : c'est le « oui » de la personne "
+    "qui le fait. Tu ne peux rien faire d'autre : ne prétends jamais avoir agi."
 )
 
 
@@ -201,6 +204,11 @@ class ModifSouvenir(BaseModel):
 
 class SuppressionEvenement(BaseModel):
     ref: str = Field(min_length=1, max_length=500)
+    conversation: str = Field(default="", max_length=64)
+
+
+class DemandeRedemarrage(BaseModel):
+    nom: str = Field(min_length=1, max_length=100)
     conversation: str = Field(default="", max_length=64)
 
 
@@ -344,6 +352,17 @@ def creer_app(config: Config | None = None, registre: Registre | None = None,
     docker = (UnraidDocker(cfg.docker.unraid_url, cfg.docker.cle_unraid(), cfg.docker.timeout) if cfg.docker.unraid_url
               else Docker(cfg.docker.url, cfg.docker.timeout))
     annonces = Annonces(securite.fichier.parent, cfg.proactif.heures_calmes)
+    telegram = Telegram(cfg.telegram.jeton(), cfg.telegram.chat_id)
+    redemarrage_attente: dict[str, tuple[str, str, float]] = {}   # conversation -> (conteneur, compte, instant)
+
+    async def signaler(texte: str, priorite: str, source: str, cle: str, vers_telegram: bool = True) -> None:
+        """Une alerte : gardée dans les annonces (sans doublon) et envoyée sur Telegram la première fois."""
+        a = annonces.ajouter(texte, priorite, source, cle)
+        if a and vers_telegram and telegram.configure:
+            try:
+                await telegram.envoyer(f"{cfg.identite.nom} : {texte}")
+            except Exception as e:  # noqa: BLE001
+                journal.info("Telegram : envoi impossible (%s)", e)
     memoire = Memoire(securite.fichier.parent)
     routines = Routines(securite.fichier.parent)
     fichier_ignorees = securite.fichier.parent / "habitudes_ignorees.json"
@@ -394,8 +413,8 @@ def creer_app(config: Config | None = None, registre: Registre | None = None,
             if mauvais is not None:
                 for nom, c in mauvais.items():
                     quoi = "est en mauvaise santé" if c["sante"] == "unhealthy" else f"s'est arrêté ({c['statut']})"
-                    annonces.ajouter(f"Le conteneur {nom} {quoi}. Demande-moi un diagnostic.", "important",
-                                     "docker", f"docker:{nom}")
+                    await signaler(f"Le conteneur {nom} {quoi}. Demande-moi un diagnostic.", "important",
+                                   "docker", f"docker:{nom}", cfg.telegram.docker)
                 for nom in etat_veille.get("docker", set()) - set(mauvais):
                     annonces.resoudre(f"docker:{nom}")
                 etat_veille["docker"] = set(mauvais)
@@ -416,7 +435,19 @@ def creer_app(config: Config | None = None, registre: Registre | None = None,
             if minutes >= regle.minutes:
                 nom = (x.get("attributes") or {}).get("friendly_name", regle.entity_id)
                 texte = regle.message or f"{nom} est {ETATS_FR_COURTS.get(regle.etat, regle.etat)} depuis {int(minutes)} minutes."
-                annonces.ajouter(texte, regle.priorite, "surveillance", cle)
+                await signaler(texte, regle.priorite, "surveillance", cle)
+        if isinstance(docker, UnraidDocker) and docker.configure:
+            try:
+                alertes = (await docker.serveur())["alertes"]
+            except Exception:  # noqa: BLE001
+                alertes = None
+            if alertes is not None:
+                for texte_a in alertes:
+                    await signaler(f"Serveur : {texte_a}.", "urgent" if "critique" in texte_a or "SMART" in texte_a
+                                   else "important", "disques", f"disque:{texte_a}", cfg.telegram.disques)
+                for ancienne in etat_veille.get("disques", set()) - set(alertes):
+                    annonces.resoudre(f"disque:{ancienne}")
+                etat_veille["disques"] = set(alertes)
         if agenda.configure and cfg.agenda.annonce_avant_min:
             from datetime import datetime as dt, timedelta
             maintenant = dt.now().astimezone()
@@ -428,9 +459,9 @@ def creer_app(config: Config | None = None, registre: Registre | None = None,
                 if e.get("journee"):
                     continue
                 minutes = max(0, round((e["debut"] - maintenant).total_seconds() / 60))
-                annonces.ajouter(f"Dans {minutes} minutes : {e.get('titre', 'un événement')}"
-                                 + (f" ({e['lieu']})" if e.get("lieu") else "") + ".", "important", "agenda",
-                                 f"agenda:{e.get('uid', e.get('titre'))}:{e['debut']:%Y%m%d%H%M}")
+                await signaler(f"Dans {minutes} minutes : {e.get('titre', 'un événement')}"
+                               + (f" ({e['lieu']})" if e.get("lieu") else "") + ".", "important", "agenda",
+                               f"agenda:{e.get('uid', e.get('titre'))}:{e['debut']:%Y%m%d%H%M}", cfg.telegram.agenda)
         h = cfg.proactif.briefing_heure
         jour = time.strftime("%Y-%m-%d")
         if h and time.strftime("%H:%M") >= h and etat_veille.get("briefing") != jour and annonces.presents is not False:
@@ -500,7 +531,7 @@ def creer_app(config: Config | None = None, registre: Registre | None = None,
         import asyncio
         if cfg.voix.active and cfg.voix.whisper_present() and cfg.voix.synthese_presente():
             app.state.prechauffage = asyncio.create_task(voix.prechauffer())
-        if cfg.proactif.active and (ha.configure or docker.configure or cfg.proactif.briefing_heure):
+        if (cfg.proactif.active and (ha.configure or docker.configure or cfg.proactif.briefing_heure)) or telegram.configure:
             app.state.surveillance = asyncio.create_task(boucle_surveillance())
         yield
         if getattr(app.state, "surveillance", None):
@@ -1001,6 +1032,58 @@ def creer_app(config: Config | None = None, registre: Registre | None = None,
     async def etat_des_appareils(requete: Request) -> dict:
         exiger_revelation(requete, "historique")
         return {"appareils": await maison.etats_appareils()}
+
+    @app.get("/interne/unraid", include_in_schema=False)
+    async def interne_unraid(x_jeton_interne: str | None = Header(None)) -> dict:
+        verifier_jeton(x_jeton_interne)
+        if not isinstance(docker, UnraidDocker):
+            raise HTTPException(503, "l'état du serveur demande l'API Unraid (docker.unraid_url)")
+        return await docker_ou_erreur(docker.serveur())
+
+    @app.post("/interne/docker/redemarrer", include_in_schema=False)
+    async def interne_redemarrer(r: DemandeRedemarrage, x_jeton_interne: str | None = Header(None)) -> dict:
+        verifier_jeton(x_jeton_interne)
+        compte, _ = compte_conversation.get(r.conversation, ("", ""))
+        if not securite.est_admin(compte):
+            raise HTTPException(403, "réservé aux administrateurs")
+        if not isinstance(docker, UnraidDocker) or not cfg.docker.cle_unraid_actions():
+            raise HTTPException(503, "redémarrage non configuré (2e clé Unraid « actions Docker »)")
+        c = await docker_ou_erreur(docker.trouver(r.nom))
+        if not c:
+            raise HTTPException(404, f"conteneur « {r.nom} » introuvable ou ambigu")
+        redemarrage_attente[r.conversation] = (c["nom"], compte, time.monotonic())
+        return {"en_attente": f"demande « Je redémarre {c['nom']} ? » ; rien n'est fait avant le oui"}
+
+    @app.get("/api/unraid")
+    async def etat_unraid(requete: Request) -> dict:
+        exiger_admin(requete)
+        if not isinstance(docker, UnraidDocker):
+            return {"configure": False}
+        return {"configure": True, **(await docker_ou_erreur(docker.serveur()))}
+
+    @app.post("/api/telegram/{action}")
+    async def essai_telegram(action: Literal["test", "trouver"], requete: Request) -> dict:
+        exiger_admin(requete)
+        if not telegram.jeton:
+            raise HTTPException(409, "jeton du bot manquant (enregistre-le, puis redémarre l'assistant)")
+        try:
+            if action == "trouver":
+                chat = await telegram.trouver_chat()
+                if not chat:
+                    raise HTTPException(404, "aucun message reçu : envoie « /start » à ton bot dans Telegram, puis réessaie")
+                telegram.chat_id = chat["id"]
+                await ecrire_reglages_telegram(chat["id"])
+                await telegram.envoyer(f"{cfg.identite.nom} est relié à ce chat. Les alertes arriveront ici.")
+                return {"ok": True, "chat_id": chat["id"], "nom": chat["nom"]}
+            await telegram.envoyer(f"{cfg.identite.nom} : message de test.")
+            return {"ok": True}
+        except RuntimeError as e:
+            raise HTTPException(502, str(e)) from e
+
+    async def ecrire_reglages_telegram(chat_id: str) -> None:
+        cfg.telegram.chat_id = chat_id
+        if persister:
+            R.appliquer({"telegram": {"chat_id": chat_id}}, defauts_bruts())
 
     @app.get("/interne/docker/conteneurs", include_in_schema=False)
     async def interne_conteneurs(x_jeton_interne: str | None = Header(None)) -> list[dict]:
@@ -1573,6 +1656,22 @@ def creer_app(config: Config | None = None, registre: Registre | None = None,
             profil = {k: v for k, v in profil.items() if k in ("type", "ton")}   # ni pièce ni préférences
         piece_preferee.set(profil.get("piece", ""))
         consigne_profil = note_profil(nom_profil, profil) if profil else ""
+
+        # --- redémarrage de conteneur en attente de « oui » ------------------------------------------------
+        attente_r = redemarrage_attente.get(d.conversation)
+        if attente_r and time.monotonic() - attente_r[2] < 120 and (RE_OUI.match(d.message) or RE_NON.match(d.message)):
+            redemarrage_attente.pop(d.conversation, None)
+            if RE_NON.match(d.message) or attente_r[1] != compte:
+                return _reponse_ha(d.flux, "D'accord, je ne redémarre rien.", {"role": "docker", "raison": "annulé"},
+                                   "docker", "unraid", 0)
+            try:
+                res = await docker.redemarrer(attente_r[0], cfg.docker.cle_unraid_actions())
+                texte_r = f"C'est fait : {res['nom']} redémarre ({res['statut'] or res['etat']})."
+                auditer(requete, "conteneur_redémarré", nom=res["nom"])
+            except Exception as e:  # noqa: BLE001
+                texte_r = f"Le redémarrage de {attente_r[0]} a échoué : {e}"
+                journal.info("redémarrage de %s impossible : %s", attente_r[0], e)
+            return _reponse_ha(d.flux, texte_r, {"role": "docker", "raison": "redémarrage confirmé"}, "docker", "unraid", 0)
 
         # --- mémoire : réponse à une proposition, « retiens que… », souvenirs utiles à la réponse ---------
         qui = ((voix_de[0] if route_locuteur else compte) or "")
