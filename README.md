@@ -88,6 +88,8 @@ Avec un jeton d'utilisateur HA non administrateur, les registres (pièces, alias
 
 Quand une demande touche ou lit des appareils (règles, Assist ou outils de Claude), la réponse est suivie d'une **carte** : interrupteur, intensité, blanc chaud/froid et couleurs pour une lumière (selon ce que l'ampoule sait faire), ouverture pour un volet, interrupteur pour une prise. Plusieurs appareils : une carte « groupe », une ligne chacun, qu'on déplie pour les réglages.
 
+Les cartes arrivent **repliées** (nom et état) : un toucher sur l'en-tête les déplie. Sur téléphone, les réglages sont **verrouillés** pour ne pas gêner le défilement : un **appui long** sur la carte les active (bordure en couleur, « Réglages actifs »), puis ils se reverrouillent après 20 s sans y toucher. Sur ordinateur, pas de verrou.
+
 Les cartes sont construites par le serveur (`assistant/maison/cartes.py`) avec l'état lu dans Home Assistant : aucun modèle n'en écrit le contenu. Dans le flux NDJSON de `/api/chat`, elles arrivent dans une ligne `{"cartes": [...]}` avant `fin` (champ `cartes` sans flux). Un geste sur une carte appelle `POST /api/maison/carte` sans passer par un modèle : mêmes appareils autorisés, actions sensibles refusées, historique et « annule » comme à la voix (`POST /api/maison/carte/annuler`). Les appareils masqués (accès à distance, appareil partagé) n'ont pas de carte.
 
 ## Voix (locale)
