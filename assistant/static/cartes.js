@@ -1,11 +1,28 @@
 // Cartes du chat : l'état réel d'un appareil, sous la réponse, avec ses réglages.
 // Le serveur construit les cartes (ligne {"cartes": [...]} du flux /api/chat) ; un geste appelle
 // POST /api/maison/carte, sans passer par un modèle, et la carte est redessinée avec l'état renvoyé.
+// Les cartes arrivent repliées (un toucher sur l'en-tête les déplie). Sur écran tactile, les réglages
+// sont verrouillés pour ne pas gêner le défilement : un appui long sur la carte les active, et ils se
+// verrouillent d'eux-mêmes après DUREE_ACTIF ms sans toucher la carte.
 (() => {
   const css = `
   .cartes { display:grid; gap:10px; margin-top:.7em; font-size:.95rem; text-shadow:none; }
   .carte { background:var(--surface); border:1px solid var(--bord); border-radius:16px; padding:12px 14px; display:grid; gap:10px; max-width:380px; }
   .carte.occupee { opacity:.75; }
+  .cartes > .carte { -webkit-user-select:none; user-select:none; -webkit-touch-callout:none; transition:border-color .2s, box-shadow .2s; }
+  .cartes > .carte > .carte-tete { cursor:pointer; }
+  .cartes > .carte.repliee > :not(.carte-tete) { display:none; }
+  .cartes > .carte.repliee > .carte-tete .inter { display:none; }
+  .carte-tete .chevron { flex:none; color:var(--muted); font-size:.8rem; transition:transform .2s; }
+  .carte:not(.repliee) > .carte-tete .chevron { transform:rotate(180deg); }
+  .carte-tete .teinte { width:10px; height:10px; border-radius:50%; flex:none; background:var(--bord); }
+  .cartes.verrouillee .carte input, .cartes.verrouillee .carte .pastilles button,
+  .cartes.verrouillee .carte .pied-carte button { pointer-events:none; }
+  .cartes.verrouillee .carte input[type=range] { touch-action:pan-y; }
+  .cartes.verrouillee .carte .ligne, .cartes.verrouillee .carte .inter, .cartes.verrouillee .pied-carte button { opacity:.5; }
+  .cartes .indice { color:var(--muted); font-size:.78rem; }
+  .cartes .indice[hidden] { display:none; }
+  .cartes.active > .carte:not(.repliee) { border-color:var(--accent); box-shadow:0 0 0 1px var(--accent); }
   .carte-tete { display:flex; align-items:center; gap:10px; }
   .carte-tete .titre { flex:1; min-width:0; line-height:1.25; }
   .carte-tete .titre small { display:block; color:var(--muted); font-size:.8rem; }
@@ -85,6 +102,7 @@
       if (!r.ok) throw new Error(typeof o.detail === 'string' ? o.detail : 'HTTP ' + r.status);
       if (o.carte) {
         const neuve = dessiner(o.carte, conv);
+        if (el.parentElement?.classList.contains('cartes')) habiller(neuve, el.classList.contains('repliee'));
         el.replaceWith(neuve);
         const n2 = (neuve.parentElement?.closest('.carte-groupe') || neuve).querySelector(':scope > .pied-carte .note');
         n2.textContent = o.texte || ''; n2.classList.remove('ko');
@@ -107,10 +125,12 @@
       const zone = el.closest('.cartes');
       for (const c of o.cartes?.[0]?.type === 'groupe' ? o.cartes[0].elements : (o.cartes || [])) {
         zone?.querySelectorAll(`.carte[data-id="${CSS.escape(c.entity_id)}"]`).forEach(x => {
-          x.replaceWith(dessiner(c, conv)); majRang(null, c, zone);
+          const neuve = dessiner(c, conv);
+          if (x.parentElement === zone) habiller(neuve, x.classList.contains('repliee'));
+          x.replaceWith(neuve); majRang(null, c, zone);
         });
       }
-      const n2 = zone?.querySelector('.pied-carte .note') || note;
+      const n2 = zone?.querySelector(':scope > .carte > .pied-carte .note') || note;
       if (n2) { n2.textContent = o.texte || ''; n2.classList.toggle('ko', !o.ok); }
     } catch (e) {
       if (note) { note.textContent = 'Annulation impossible : ' + e.message; note.classList.add('ko'); }
@@ -146,7 +166,7 @@
     const ok = c.disponible;
     const inter = c.type === 'volet' ? c.ouvert : c.allume;
     el.innerHTML = `<div class="carte-tete"><div class="titre"><strong>${echap(c.nom)}</strong>`
-      + `<small>${echap([c.piece, ok ? '' : 'injoignable'].filter(Boolean).join(' · '))}</small></div>`
+      + `<small>${echap([c.piece, resume(c)].filter(Boolean).join(' · '))}</small></div>`
       + `<label class="inter"><input type="checkbox" aria-label="${c.type === 'volet' ? 'Ouvrir' : 'Allumer'} ${echap(c.nom)}"`
       + `${inter ? ' checked' : ''}${ok ? '' : ' disabled'}><span></span></label></div>`;
     el.querySelector('.inter input').onchange = e => envoyer(el, conv, {entity_id: c.entity_id, allume: e.target.checked});
@@ -233,13 +253,97 @@
     if (g) g.querySelector('.compte').textContent = g.querySelectorAll('.rang .point.on').length;
   }
 
+  // Carte du premier niveau : repliable d'un toucher sur l'en-tête (hors interrupteur), chevron, teinte
+  function habiller(el, replie) {
+    el.classList.toggle('repliee', replie);
+    const tete = el.querySelector(':scope > .carte-tete');
+    if (!el.classList.contains('carte-groupe')) {
+      const t = el.querySelector(':scope > .halo')?.style.background;
+      const p = document.createElement('span');
+      p.className = 'teinte';
+      if (t) { p.style.background = t; p.style.boxShadow = `0 0 6px ${t}`; }
+      tete.prepend(p);
+    }
+    const ch = document.createElement('span');
+    ch.className = 'chevron'; ch.setAttribute('aria-hidden', 'true'); ch.textContent = '▾';
+    tete.appendChild(ch);
+    tete.setAttribute('role', 'button'); tete.tabIndex = 0;
+    tete.setAttribute('aria-expanded', String(!replie));
+    const basculer = () => {
+      const r = !el.classList.contains('repliee');
+      el.classList.toggle('repliee', r);
+      tete.setAttribute('aria-expanded', String(!r));
+      el.closest('.cartes')?.dispatchEvent(new Event('carte-basculee'));
+    };
+    tete.addEventListener('click', e => {
+      if (e.target.closest('.inter') || el.closest('.cartes')?.dataset.ignorerClic) return;
+      basculer();
+    });
+    tete.addEventListener('keydown', e => {
+      if ((e.key === 'Enter' || e.key === ' ') && !e.target.closest('.inter')) { e.preventDefault(); basculer(); }
+    });
+    return el;
+  }
+
+  // Écran tactile : réglages verrouillés, appui long pour les activer
+  const DUREE_APPUI = 450, DUREE_ACTIF = 20000;
+  function verrou(zone) {
+    const indice = document.createElement('div');
+    indice.className = 'indice'; indice.setAttribute('role', 'status');
+    zone.appendChild(indice);
+    let minuteur = null, relock = null, x0 = 0, y0 = 0, enAttente = false;
+    const majIndice = () => {
+      const ouverte = zone.querySelector(':scope > .carte:not(.repliee)');
+      indice.hidden = !ouverte;
+      indice.textContent = zone.classList.contains('active') ? 'Réglages actifs' : 'Appui long sur la carte pour régler';
+    };
+    const verrouiller = () => { zone.classList.add('verrouillee'); zone.classList.remove('active'); majIndice(); };
+    const prolonger = () => { clearTimeout(relock); relock = setTimeout(verrouiller, DUREE_ACTIF); };
+    const activer = carte => {
+      // les réglages restent inertes jusqu'à ce que le doigt se lève : l'appui long ne règle rien
+      enAttente = true; zone.classList.add('active');
+      if (carte?.classList.contains('repliee')) carte.querySelector(':scope > .carte-tete').click();
+      navigator.vibrate?.(15);
+      // le toucher qui a servi à l'appui long ne doit ni replier la carte ni actionner un réglage
+      zone.dataset.ignorerClic = '1';
+      setTimeout(() => { delete zone.dataset.ignorerClic; }, 500);
+      majIndice(); prolonger();
+    };
+    zone.addEventListener('pointerdown', e => {
+      if (!zone.classList.contains('verrouillee')) { prolonger(); return; }
+      const carte = e.target.closest('.cartes > .carte');
+      if (!carte) return;
+      x0 = e.clientX; y0 = e.clientY;
+      clearTimeout(minuteur);
+      minuteur = setTimeout(() => activer(carte), DUREE_APPUI);
+    });
+    zone.addEventListener('pointermove', e => {
+      if (minuteur && Math.hypot(e.clientX - x0, e.clientY - y0) > 10) { clearTimeout(minuteur); minuteur = null; }
+    });
+    const lacher = () => {
+      clearTimeout(minuteur); minuteur = null;
+      if (enAttente) { enAttente = false; setTimeout(() => zone.classList.remove('verrouillee'), 50); }
+    };
+    for (const t of ['pointerup', 'pointercancel']) zone.addEventListener(t, lacher);
+    document.addEventListener('pointerup', lacher);   // doigt levé hors de la carte
+    zone.addEventListener('pointerleave', () => { clearTimeout(minuteur); minuteur = null; });
+    zone.addEventListener('contextmenu', e => e.preventDefault());   // appui long : pas de menu du navigateur
+    zone.addEventListener('input', prolonger);
+    zone.addEventListener('carte-basculee', majIndice);
+    zone.addEventListener('click', e => { if (zone.dataset.ignorerClic) { e.preventDefault(); e.stopPropagation(); } }, true);
+    verrouiller();
+  }
+
+  const tactile = () => matchMedia('(pointer: coarse)').matches;
+
   window.cartesChat = {
     afficher(corps, cartes, conversation) {
       if (!Array.isArray(cartes) || !cartes.length) return;
       const zone = document.createElement('div');
       zone.className = 'cartes';
-      for (const c of cartes) zone.appendChild(dessiner(c, conversation));
+      for (const c of cartes) zone.appendChild(habiller(dessiner(c, conversation), true));
       corps.appendChild(zone);
+      if (tactile()) verrou(zone);
     },
   };
 })();
