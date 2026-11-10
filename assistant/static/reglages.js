@@ -196,7 +196,7 @@
     const r = d.reglages, e = d.etat;
     $('bandeauRedemarrage').hidden = !e.redemarrage_necessaire;
     $('cNom').value = r.identite.nom; $('cWake').value = r.identite.wake_word || '';
-    etat('eAssistant', r.identite.nom + ' · « ' + r.identite.wake_word_effectif + ' »');
+    etat('eAssistant', (r.identite.nom_effectif || r.identite.nom) + ' · « ' + r.identite.wake_word_effectif + ' »');
 
     const ids = Object.keys(r.fournisseurs);
     const libelles = Object.fromEntries(ids.map(i => [i, i + ' (' + r.fournisseurs[i].modele + ')']));

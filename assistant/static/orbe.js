@@ -191,8 +191,9 @@ void main(){
     pts.push([x1, y1]); return pts;
   }
 
-  let t0 = performance.now(), temps = 0;
+  let t0 = performance.now(), temps = 0, enPause = false;
   function frame(now) {
+    if (enPause) { t0 = now; requestAnimationFrame(frame); return; }   // thème œil : l'orbe est cachée
     let dt = Math.min(.05, (now - t0) / 1000); t0 = now;
     if (reduit) dt *= .35;
     temps += dt;
@@ -461,6 +462,7 @@ void main(){
       if (r.trainees != null) traine = Math.max(0, Math.min(12, Math.round(+r.trainees)));
     },
     redimensionner: taille,
+    pause(b) { enPause = !!b; },
   };
 }
 creerOrbe.ECOLES = {
