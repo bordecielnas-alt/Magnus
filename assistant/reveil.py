@@ -48,8 +48,15 @@ class Detection:
     commande: str         # ce qui suit le wake word (vide si « <nom> ? » seul)
 
 
-def detecter(texte: str, wake_word: str) -> Detection:
-    """Cherche le wake word dans les trois premiers mots (« Ok <nom>, … », « Dis <nom>… »)."""
+def detecter(texte: str, wake_word: str | list[str]) -> Detection:
+    """Cherche le wake word dans les trois premiers mots (« Ok <nom>, … », « Dis <nom>… »).
+    `wake_word` peut être une liste de variantes acceptées (« hal », « hall »…)."""
+    if isinstance(wake_word, (list, tuple)):
+        for w in wake_word:
+            d = detecter(texte, w)
+            if d.reveil:
+                return d
+        return Detection(False, "")
     cible = normaliser(wake_word).split()
     if not cible:
         return Detection(False, "")
@@ -63,6 +70,8 @@ def detecter(texte: str, wake_word: str) -> Detection:
         if distance(candidat, " ".join(cible)) <= tolerance(" ".join(cible)):
             fin = jetons[i + n - 1].end()
             reste = texte[fin:].lstrip(" ,.!?;:-—").strip()
+            # « Hal 9000, … » : le numéro fait partie du nom
+            reste = re.sub(r"^(9000|9 000|neuf mille)\b[\s,.!?;:—-]*", "", reste, flags=re.I)
             # « <nom> <nom> <nom>… » : Whisper répète parfois le nom sur du bruit -> simple réveil
             suite = detecter(reste, wake_word) if reste else None
             return Detection(True, suite.commande if suite and suite.reveil else reste)
@@ -100,7 +109,7 @@ class Reveil:
             return None
         return max(0.0, round(self._jusqu_a.get(conversation, 0) - time.monotonic(), 1))
 
-    def analyser(self, texte: str, wake_word: str, conversation: str) -> dict:
+    def analyser(self, texte: str, wake_word: str | list[str], conversation: str) -> dict:
         """Décide quoi faire d'un morceau de parole entendu en écoute continue.
 
         action : « ignorer » (pas pour l'assistant), « reveil » (nom seul : on écoute la suite),

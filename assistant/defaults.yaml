@@ -8,6 +8,8 @@ identite:
   # Vide = le wake word suit le nom (en minuscules).
   wake_word: ""
   langue: "fr"
+  # Apparence de la page : "orbe" (mot de réveil = le nom) ou "hal" (œil rouge, mot de réveil = « hal »).
+  theme: "orbe"
 
 serveur:
   hote: "0.0.0.0"

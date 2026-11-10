@@ -41,6 +41,9 @@ class Identite(BaseModel):
     nom: str = Field(min_length=1, max_length=40)
     wake_word: str = ""
     langue: str = "fr"
+    # Apparence et sons de la page : « orbe » (l'orbe vaporeuse, mot de réveil = le nom)
+    # ou « hal » (l'œil rouge façon HAL 9000, mot de réveil = « hal »).
+    theme: Literal["orbe", "hal"] = "orbe"
 
     @field_validator("nom")
     @classmethod
@@ -52,8 +55,17 @@ class Identite(BaseModel):
 
     @property
     def wake_word_effectif(self) -> str:
-        """Le wake word explicite, sinon le nom en minuscules."""
+        """Thème « hal » : « hal ». Sinon le wake word explicite, ou à défaut le nom en minuscules."""
+        if self.theme == "hal":
+            return "hal"
         return (self.wake_word or self.nom).strip().lower()
+
+    @property
+    def variantes_eveil(self) -> list[str]:
+        """Le wake word et ses transcriptions fréquentes (Whisper écrit « Hall » ou « Halle » pour « Hal »)."""
+        if self.theme == "hal":
+            return ["hal", "hall", "halle", "hale"]
+        return [self.wake_word_effectif]
 
 
 class Serveur(BaseModel):

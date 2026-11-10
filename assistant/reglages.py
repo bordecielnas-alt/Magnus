@@ -19,7 +19,7 @@ from .config import RACINE, Config, _fusion, _lire_yaml, chemin_config_utilisate
 
 # section -> champs modifiables (pour « fournisseurs », par fournisseur)
 MODIFIABLES: dict[str, set[str]] = {
-    "identite": {"nom", "wake_word"},
+    "identite": {"nom", "wake_word", "theme"},
     "home_assistant": {"url"},
     "roles": {"rapide", "raisonnement", "secours"},
     "voix": {"voix", "fenetre_s", "toujours_a_l_ecoute", "lenteur"},
@@ -133,7 +133,8 @@ def vue(cfg: Config) -> dict[str, Any]:
     """Réglages actuels, sans aucun secret."""
     return {
         "identite": {"nom": cfg.identite.nom, "wake_word": cfg.identite.wake_word,
-                     "wake_word_effectif": cfg.identite.wake_word_effectif},
+                     "wake_word_effectif": cfg.identite.wake_word_effectif,
+                     "theme": cfg.identite.theme},
         "home_assistant": {"url": cfg.home_assistant.url, "jeton_defini": secret_defini(cfg.home_assistant.jeton_env)},
         "fournisseurs": {i: {"type": f.type, "url": f.url, "modele": f.modele, "effort": f.effort}
                          for i, f in cfg.fournisseurs.items()},

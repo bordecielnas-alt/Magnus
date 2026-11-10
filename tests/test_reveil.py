@@ -103,3 +103,46 @@ def test_nom_repete_sur_du_bruit():
 def test_mot_repete_sur_un_bruit():
     assert est_hallucination("Cough, Cough, Cough, Cough")
     assert not est_hallucination("allume allume le globe")
+
+
+@pytest.mark.parametrize("texte,commande", [
+    ("Hal, allume le globe.", "allume le globe."),
+    ("Hall, quelle heure est-il ?", "quelle heure est-il ?"),
+    ("Dis HAL 9000, éteins tout", "éteins tout"),
+    ("Halle ?", "?"),
+])
+def test_theme_hal_variantes(texte, commande):
+    d = detecter(texte, ["hal", "hall", "halle", "hale"])
+    assert d.reveil and d.commande.strip(" ?") == commande.strip(" ?")
+
+
+def test_theme_hal_ignore_les_phrases_ordinaires():
+    assert not detecter("Allume le hall d'entrée", ["hal", "hall", "halle", "hale"]).reveil
+
+
+def test_theme_change_le_mot_de_reveil(monkeypatch):
+    import assistant.main as main
+    r, _ = routeur()
+    cfg = charger(env={"ASSISTANT_NOM": "Akatosh"}, fichier=Path("inexistant.yaml"))
+    assert cfg.identite.theme == "orbe"
+    ecrit = {}
+    monkeypatch.setattr(main, "enregistrer_reglages", lambda section, v: ecrit.update({section: v}))
+    monkeypatch.setattr(VoixConfig, "whisper_present", lambda self: True)
+    v = FausseVoix()
+    entendu_texte = ["Hall, allume le globe"]
+
+    async def entendu(audio, indices=""):
+        return Transcription(entendu_texte[0], "fr", 1.5, 200)
+    v.transcrire = entendu
+    c = TestClient(creer_app(cfg, r.registre, voix=v, persister=True))
+    assert c.get("/api/info").json()["wake_word"] == "akatosh"
+    assert c.post("/api/voix/ecoute?conversation=x", content=b"a" * 3000).json()["action"] == "ignorer"
+    rep = c.post("/api/theme", json={"theme": "hal"}).json()
+    assert rep == {"theme": "hal", "wake_word": "hal"} and ecrit == {"identite": {"theme": "hal"}}
+    info = c.get("/api/info").json()
+    assert info["theme"] == "hal" and info["wake_word"] == "hal"
+    rep = c.post("/api/voix/ecoute?conversation=y", content=b"a" * 3000).json()
+    assert rep["action"] == "commande" and rep["commande"] == "allume le globe"
+    c.post("/api/theme", json={"theme": "orbe"})
+    assert c.get("/api/info").json()["wake_word"] == "akatosh"
+    assert c.post("/api/theme", json={"theme": "autre"}).status_code == 422

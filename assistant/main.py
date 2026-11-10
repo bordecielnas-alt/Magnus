@@ -104,6 +104,11 @@ class ReglagesVoix(BaseModel):
     voix: str | None = Field(default=None, max_length=120)
 
 
+class Theme(BaseModel):
+    """Thème de la page : l'orbe (mot de réveil = le nom) ou l'œil rouge (mot de réveil « hal »)."""
+    theme: Literal["orbe", "hal"]
+
+
 class Connexion(BaseModel):
     identifiant: str = Field(default="", max_length=60)
     mot_de_passe: str = Field(min_length=1, max_length=200)
@@ -1008,6 +1013,7 @@ def creer_app(config: Config | None = None, registre: Registre | None = None,
         return {
             "nom": ident.nom,
             "wake_word": ident.wake_word_effectif,
+            "theme": ident.theme,
             "langue": ident.langue,
             "version": __version__,
         }
@@ -1518,7 +1524,7 @@ def creer_app(config: Config | None = None, registre: Registre | None = None,
     # --- Voix ------------------------------------------------------------------------------
     @app.get("/api/voix")
     def etat_voix() -> dict:
-        return {**voix.etat(), "wake_word": cfg.identite.wake_word_effectif,
+        return {**voix.etat(), "wake_word": cfg.identite.wake_word_effectif, "theme": cfg.identite.theme,
                 "fenetre_s": cfg.voix.fenetre_s, "toujours_a_l_ecoute": cfg.voix.toujours_a_l_ecoute,
                 "voix": cfg.voix.voix_actuelle(), "voix_disponibles": voix.disponibles()}
 
@@ -1559,10 +1565,11 @@ def creer_app(config: Config | None = None, registre: Registre | None = None,
         audio = await requete.body()
         if not audio or len(audio) > cfg.voix.max_audio_mo * 1e6:
             raise HTTPException(400, "audio vide ou trop long")
-        noms = [cfg.identite.nom] + sorted({e.nom for e in maison.inventaire.entites})[:60]
+        noms = [cfg.identite.nom] + (["HAL"] if cfg.identite.theme == "hal" else []) \
+            + sorted({e.nom for e in maison.inventaire.entites})[:60]
         async with verrou_transcription:
             t = await voix.transcrire(audio, ", ".join(noms))
-        r = reveil.analyser(t.texte, cfg.identite.wake_word_effectif, conversation)
+        r = reveil.analyser(t.texte, cfg.identite.variantes_eveil, conversation)
         qui = None
         if r["action"] != "ignorer":
             qui = await reconnaitre(audio, conversation)
@@ -1591,6 +1598,16 @@ def creer_app(config: Config | None = None, registre: Registre | None = None,
         journal.info("réglages voix : %s", valeurs)
         return {"fenetre_s": cfg.voix.fenetre_s, "toujours_a_l_ecoute": cfg.voix.toujours_a_l_ecoute,
                 "voix": cfg.voix.voix_actuelle()}
+
+    @app.post("/api/theme")
+    def regler_theme(t: Theme) -> dict:
+        """Thème de la page (⚙ Réglages) : « orbe » ou « hal ». Change aussi le mot de réveil,
+        tout de suite et dans config.yaml."""
+        cfg.identite.theme = t.theme
+        if persister:
+            enregistrer_reglages("identite", {"theme": t.theme})
+        journal.info("thème : %s (mot de réveil « %s »)", t.theme, cfg.identite.wake_word_effectif)
+        return {"theme": t.theme, "wake_word": cfg.identite.wake_word_effectif}
 
     # --- Page de configuration -------------------------------------------------------------
     etat_appli = {"redemarrage_necessaire": False, "telechargement": None}
@@ -1658,6 +1675,8 @@ def creer_app(config: Config | None = None, registre: Registre | None = None,
                 cfg.voix.voix = v["voix"]
             if "lenteur" in v:
                 cfg.voix.lenteur = float(v["lenteur"])
+        if "theme" in changements.get("identite", {}):
+            cfg.identite.theme = changements["identite"]["theme"]
         if set(changements) - {"voix"}:
             etat_appli["redemarrage_necessaire"] = True
         journal.info("réglages modifiés depuis la page : %s", sorted(changements))
