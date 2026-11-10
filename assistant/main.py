@@ -402,7 +402,7 @@ def creer_app(config: Config | None = None, registre: Registre | None = None,
         a = annonces.ajouter(texte, priorite, source, cle)
         if a and vers_telegram and telegram.configure:
             try:
-                await telegram.envoyer(f"{cfg.identite.nom} : {texte}")
+                await telegram.envoyer(f"{cfg.identite.nom_effectif} : {texte}")
             except Exception as e:  # noqa: BLE001
                 journal.info("Telegram : envoi impossible (%s)", e)
     memoire = Memoire(securite.fichier.parent)
@@ -720,7 +720,7 @@ def creer_app(config: Config | None = None, registre: Registre | None = None,
     def page_diagnostic(requete: Request, brut: bool = False, jours: float = 2) -> Response:
         """Tout le diagnostic (pages + serveur) des derniers jours, secrets masqués. ?brut=1 : texte seul."""
         exiger_admin(requete)
-        entete = (f"Diagnostic {cfg.identite.nom} v{__version__} · {time.strftime('%Y-%m-%d %H:%M:%S %z')} · "
+        entete = (f"Diagnostic {cfg.identite.nom_effectif} v{__version__} · {time.strftime('%Y-%m-%d %H:%M:%S %z')} · "
                   f"{'conteneur' if os.name != 'nt' and Path('/config').is_dir() else 'PC'} · voix {cfg.voix.moteur_effectif()}")
         texte = diag.rapport(max(0.1, min(jours, 7)), entete)
         if brut:
@@ -737,7 +737,7 @@ def creer_app(config: Config | None = None, registre: Registre | None = None,
         directe, ip = ip_de(requete)
         compte = compte_de(requete)
         info = securite.comptes.get(compte or "", {})
-        return {"nom": cfg.identite.nom, "mot_de_passe_defini": securite.mot_de_passe_defini,
+        return {"nom": cfg.identite.nom_effectif, "mot_de_passe_defini": securite.mot_de_passe_defini,
                 "locale": est_locale(ip), "ip": ip, "session_jours": cfg.securite.session_jours,
                 "connecte": compte is not None, "compte": compte, "compte_nom": info.get("nom", compte),
                 "admin": securite.est_admin(compte), "totp": bool(info.get("totp")),
@@ -1011,7 +1011,8 @@ def creer_app(config: Config | None = None, registre: Registre | None = None,
     def info() -> dict:
         ident = cfg.identite
         return {
-            "nom": ident.nom,
+            "nom": ident.nom_effectif,
+            "nom_configure": ident.nom,   # le nom du thème « orbe » (bouton de Réglages)
             "wake_word": ident.wake_word_effectif,
             "theme": ident.theme,
             "langue": ident.langue,
@@ -1159,9 +1160,9 @@ def creer_app(config: Config | None = None, registre: Registre | None = None,
                     raise HTTPException(404, "aucun message reçu : envoie « /start » à ton bot dans Telegram, puis réessaie")
                 telegram.chat_id = chat["id"]
                 await ecrire_reglages_telegram(chat["id"])
-                await telegram.envoyer(f"{cfg.identite.nom} est relié à ce chat. Les alertes arriveront ici.")
+                await telegram.envoyer(f"{cfg.identite.nom_effectif} est relié à ce chat. Les alertes arriveront ici.")
                 return {"ok": True, "chat_id": chat["id"], "nom": chat["nom"]}
-            await telegram.envoyer(f"{cfg.identite.nom} : message de test.")
+            await telegram.envoyer(f"{cfg.identite.nom_effectif} : message de test.")
             return {"ok": True}
         except RuntimeError as e:
             raise HTTPException(502, str(e)) from e
@@ -1275,7 +1276,7 @@ def creer_app(config: Config | None = None, registre: Registre | None = None,
     def souvenir_json(sv: dict) -> dict:
         """Un souvenir pour l'écran : qui l'a ajouté (nom du compte), d'où il vient, ce qu'il remplace."""
         c = securite.comptes.get(sv["compte"]) or {}
-        o = {**sv, "auteur": c.get("nom", sv["compte"]) if sv["compte"] != COMPTE_MACHINE else cfg.identite.nom,
+        o = {**sv, "auteur": c.get("nom", sv["compte"]) if sv["compte"] != COMPTE_MACHINE else cfg.identite.nom_effectif,
              "origine": "écran" if sv["source"] == "écran" else "conversation"}
         if sv.get("remplace"):
             try:
@@ -1353,7 +1354,7 @@ def creer_app(config: Config | None = None, registre: Registre | None = None,
     def historique_souvenir(ident: int, requete: Request) -> dict:
         compte = compte_memoire(requete)
         souvenir_a_moi(ident, compte)
-        noms = {c: v.get("nom", c) for c, v in securite.comptes.items()} | {COMPTE_MACHINE: cfg.identite.nom}
+        noms = {c: v.get("nom", c) for c, v in securite.comptes.items()} | {COMPTE_MACHINE: cfg.identite.nom_effectif}
         return {"historique": [{**h, "compte": noms.get(h["compte"], h["compte"])} for h in memoire.historique(ident)]}
 
     # --- habitudes et routines ------------------------------------------------------------------------
@@ -1540,7 +1541,7 @@ def creer_app(config: Config | None = None, registre: Registre | None = None,
         if len(audio) > cfg.voix.max_audio_mo * 1e6:
             raise HTTPException(413, "enregistrement trop long")
         # Mots probables : nom de l'assistant, appareils et pièces (aide Whisper sur « Globe », « L3 »…)
-        noms = [cfg.identite.nom] + sorted({e.nom for e in maison.inventaire.entites} |
+        noms = [cfg.identite.nom_effectif] + sorted({e.nom for e in maison.inventaire.entites} |
                                            {e.piece for e in maison.inventaire.entites if e.piece})[:60]
         if partiel and verrou_transcription.locked():
             return {"texte": "", "saute": True, "duree_audio_s": 0, "duree_ms": 0}
@@ -1565,7 +1566,7 @@ def creer_app(config: Config | None = None, registre: Registre | None = None,
         audio = await requete.body()
         if not audio or len(audio) > cfg.voix.max_audio_mo * 1e6:
             raise HTTPException(400, "audio vide ou trop long")
-        noms = [cfg.identite.nom] + (["HAL"] if cfg.identite.theme == "hal" else []) \
+        noms = [cfg.identite.nom_effectif] + (["HAL"] if cfg.identite.theme == "hal" else []) \
             + sorted({e.nom for e in maison.inventaire.entites})[:60]
         async with verrou_transcription:
             t = await voix.transcrire(audio, ", ".join(noms))
@@ -2084,7 +2085,7 @@ def creer_app(config: Config | None = None, registre: Registre | None = None,
     @app.get("/manifest.webmanifest", include_in_schema=False)
     def manifeste() -> JSONResponse:
         """Pour « Ajouter à l'écran d'accueil » : le nom suit la configuration."""
-        nom = cfg.identite.nom
+        nom = cfg.identite.nom_effectif
         icones = [{"src": f"/static/icones/icone-{t}.png", "sizes": f"{t}x{t}", "type": "image/png",
                    "purpose": "any maskable"} for t in (192, 512)]
         return JSONResponse({"name": nom, "short_name": nom, "start_url": "/", "display": "standalone",

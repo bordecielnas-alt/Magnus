@@ -61,6 +61,11 @@ class Identite(BaseModel):
         return (self.wake_word or self.nom).strip().lower()
 
     @property
+    def nom_effectif(self) -> str:
+        """Le nom sous lequel l'assistant se présente : « Hal » en thème « hal », sinon le nom configuré."""
+        return "Hal" if self.theme == "hal" else self.nom
+
+    @property
     def variantes_eveil(self) -> list[str]:
         """Le wake word et ses transcriptions fréquentes (Whisper écrit « Hall » ou « Halle » pour « Hal »)."""
         if self.theme == "hal":
@@ -381,7 +386,7 @@ class Config(BaseModel):
 
     @property
     def consigne_effective(self) -> str:
-        return self.consigne.replace("{nom}", self.identite.nom)
+        return self.consigne.replace("{nom}", self.identite.nom_effectif)
 
 
 def _lire_yaml(chemin: Path) -> dict[str, Any]:

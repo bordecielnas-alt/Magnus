@@ -134,7 +134,7 @@ def vue(cfg: Config) -> dict[str, Any]:
     return {
         "identite": {"nom": cfg.identite.nom, "wake_word": cfg.identite.wake_word,
                      "wake_word_effectif": cfg.identite.wake_word_effectif,
-                     "theme": cfg.identite.theme},
+                     "theme": cfg.identite.theme, "nom_effectif": cfg.identite.nom_effectif},
         "home_assistant": {"url": cfg.home_assistant.url, "jeton_defini": secret_defini(cfg.home_assistant.jeton_env)},
         "fournisseurs": {i: {"type": f.type, "url": f.url, "modele": f.modele, "effort": f.effort}
                          for i, f in cfg.fournisseurs.items()},

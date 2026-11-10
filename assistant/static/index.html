@@ -601,6 +601,7 @@ let enLigne = null;
 function verifierEnLigne() {
   fetch('/api/info', {cache: 'no-store'}).then(r => { if (!r.ok) throw new Error(r.status); return r.json(); }).then(i => {
     nom = i.nom;
+    nomOrbe = i.nom_configure || i.nom;
     window.appliquerTheme?.(i.theme || 'orbe');
     document.title = i.nom;
     $('nom').textContent = i.nom;
@@ -1790,7 +1791,7 @@ try { localStorage.removeItem('voix.continu'); } catch (e) {}
 <script>
 // ----- Thème : l'orbe (mot de réveil = le nom) ou l'œil rouge façon HAL 9000 (mot de réveil « hal ») -----
 // Le thème est gardé par le serveur (il change le mot de réveil) ; ses variantes, dans ce navigateur.
-let theme = 'orbe';
+let theme = 'orbe', nomOrbe = '';
 try { theme = localStorage.getItem('theme') === 'hal' ? 'hal' : 'orbe'; } catch (e) {}
 const HAL_DEFAUT = {couronne: true, eveil: sonsHal.defaut};
 let reglagesHal = {...HAL_DEFAUT};
@@ -1814,7 +1815,7 @@ function appliquerTheme(t) {
   if (t === 'hal') oeil.redimensionner(); else orbe.redimensionner?.();
   for (const b of $('themes').children) {
     b.setAttribute('aria-pressed', String(b.dataset.theme === t));
-    if (b.dataset.theme === 'orbe' && nom && nom !== 'l\'assistant') b.textContent = nom;
+    if (b.dataset.theme === 'orbe' && nomOrbe) b.textContent = nomOrbe;
   }
   for (const id of REGLAGES_ORBE) { const el = $(id); const bloc = el && (el.closest('.ligne') || el); if (bloc) bloc.style.display = t === 'hal' ? 'none' : ''; }
   $('variantesHal').hidden = t !== 'hal';
@@ -1833,6 +1834,7 @@ for (const b of $('themes').children) b.onclick = async () => {
     const o = await r.json();
     $('wake').textContent = o.wake_word; continu.wake = o.wake_word;
     appliquerTheme(o.theme);
+    verifierEnLigne();   // le nom affiché suit le thème
   } catch (e) { $('noteTheme').textContent = 'Thème non enregistré sur le serveur (' + e.message + ') : le mot de réveil n\'a pas changé.'; }
 };
 // variantes de l'œil

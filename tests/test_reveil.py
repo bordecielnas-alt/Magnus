@@ -141,8 +141,11 @@ def test_theme_change_le_mot_de_reveil(monkeypatch):
     assert rep == {"theme": "hal", "wake_word": "hal"} and ecrit == {"identite": {"theme": "hal"}}
     info = c.get("/api/info").json()
     assert info["theme"] == "hal" and info["wake_word"] == "hal"
+    assert info["nom"] == "Hal" and info["nom_configure"] == "Akatosh"
+    assert cfg.consigne_effective.startswith("Tu es Hal") or "Hal" in cfg.consigne_effective
     rep = c.post("/api/voix/ecoute?conversation=y", content=b"a" * 3000).json()
     assert rep["action"] == "commande" and rep["commande"] == "allume le globe"
     c.post("/api/theme", json={"theme": "orbe"})
-    assert c.get("/api/info").json()["wake_word"] == "akatosh"
+    info = c.get("/api/info").json()
+    assert info["wake_word"] == "akatosh" and info["nom"] == "Akatosh"
     assert c.post("/api/theme", json={"theme": "autre"}).status_code == 422
