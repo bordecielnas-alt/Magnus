@@ -348,6 +348,7 @@
   </form>
 </dialog>
 <script src="/static/orbe.js"></script>
+<script src="/static/cartes.js"></script>
 <script>
 const $ = id => document.getElementById(id);
 const ICONE_MICRO = '<svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3a3 3 0 0 0-3 3v6a3 3 0 0 0 6 0V6a3 3 0 0 0-3-3z"/><path d="M19 11a7 7 0 0 1-14 0"/><path d="M12 18v3"/></svg>';
@@ -753,6 +754,7 @@ async function traiter(message, vocal, role = 'auto') {
           corps.innerHTML = miseEnForme(texte);
           if (parole) { parole.ajouter(texte); if (!lectureFlux && parole.phrases.length) lectureFlux = direAVoixHaute(parole); }
         }
+        if (o.cartes && window.cartesChat) cartesChat.afficher(corps, o.cartes, conversation);
         if (o.erreur) throw new Error(o.erreur);
         if (o.fin) ajouterPied(corps, o, route, texte);
       }

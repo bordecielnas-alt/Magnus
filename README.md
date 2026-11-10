@@ -84,6 +84,12 @@ Avec un jeton d'utilisateur HA non administrateur, les registres (pièces, alias
 | `POST /api/maison/rafraichir` | Relire l'inventaire tout de suite |
 | `DELETE /api/maison/alias/{phrase}` | Oublier un alias appris |
 
+### Cartes dans le chat
+
+Quand une demande touche ou lit des appareils (règles, Assist ou outils de Claude), la réponse est suivie d'une **carte** : interrupteur, intensité, blanc chaud/froid et couleurs pour une lumière (selon ce que l'ampoule sait faire), ouverture pour un volet, interrupteur pour une prise. Plusieurs appareils : une carte « groupe », une ligne chacun, qu'on déplie pour les réglages.
+
+Les cartes sont construites par le serveur (`assistant/maison/cartes.py`) avec l'état lu dans Home Assistant : aucun modèle n'en écrit le contenu. Dans le flux NDJSON de `/api/chat`, elles arrivent dans une ligne `{"cartes": [...]}` avant `fin` (champ `cartes` sans flux). Un geste sur une carte appelle `POST /api/maison/carte` sans passer par un modèle : mêmes appareils autorisés, actions sensibles refusées, historique et « annule » comme à la voix (`POST /api/maison/carte/annuler`). Les appareils masqués (accès à distance, appareil partagé) n'ont pas de carte.
+
 ## Voix (locale)
 
 - **Transcription** : faster-whisper « small » en français (`POST /api/voix/transcrire`, corps = l'audio enregistré par le navigateur, webm/opus ou wav). Les noms de l'assistant, des appareils et des pièces sont donnés à Whisper comme indices.

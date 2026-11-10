@@ -23,6 +23,7 @@ from .config import Config, charger, charger_secrets, chemin_alias, dossier_etat
 from .fournisseurs import FournisseurIndisponible, Message, Registre, Reponse
 from .home_assistant import HomeAssistant
 from .maison import Maison, masques, piece_preferee
+from .maison.cartes import cartes_pour, regler as regler_carte
 from .maison.historique import Historique
 from .maison.historique import demande as demande_en_cours
 from .maison.alias import AliasAppris
@@ -83,6 +84,17 @@ class Action(BaseModel):
 
 class Conv(BaseModel):
     conversation: str = ""
+
+
+class ReglageCarte(BaseModel):
+    """Geste sur une carte du chat : un seul réglage à la fois (interrupteur, curseur ou couleur)."""
+    entity_id: str = Field(min_length=3, max_length=120)
+    allume: bool | None = None
+    intensite: float | None = Field(default=None, ge=0, le=100)
+    kelvin: int | None = Field(default=None, ge=1000, le=10000)
+    couleur: str | None = Field(default=None, max_length=30)
+    position: float | None = Field(default=None, ge=0, le=100)
+    conversation: str = Field(default="", max_length=64)
 
 
 class ReglagesVoix(BaseModel):
@@ -601,6 +613,7 @@ def creer_app(config: Config | None = None, registre: Registre | None = None,
 
     compte_conversation: dict[str, tuple[str, str]] = {}    # conversation -> (compte, ip)
     texte_conversation: dict[str, str] = {}                  # conversation -> dernière demande (historique)
+    cartes_conversation: dict[str, list[str]] = {}           # conversation -> appareils lus ou touchés par Claude
     agenda_recent: dict[str, float] = {}                     # conversation -> dernier échange sur l'agenda
     masques_conversation: dict[str, frozenset] = {}          # conversation -> ce qu'on ne révèle pas (outils de Claude)
 
@@ -1018,6 +1031,43 @@ def creer_app(config: Config | None = None, registre: Registre | None = None,
         await maison.inventaire.obtenir(forcer=True)
         return maison.inventaire.resume()
 
+    async def cartes_sures(entity_ids) -> list[dict]:
+        """Cartes des appareils d'une réponse ; une panne de Home Assistant ne casse jamais la réponse."""
+        if not entity_ids:
+            return []
+        try:
+            return await cartes_pour(maison, list(entity_ids))
+        except Exception as e:  # noqa: BLE001 - la carte est un bonus
+            journal.info("cartes impossibles : %s", e)
+            return []
+
+    @app.post("/api/maison/carte")
+    async def geste_carte(g: ReglageCarte, requete: Request) -> dict:
+        """Interrupteur, curseur ou couleur d'une carte : agit sans passer par un modèle."""
+        if not ha.configure:
+            raise HTTPException(503, "Home Assistant n'est pas configuré")
+        masques.set(frozenset(contexte_de(requete)["masques"]))
+        demande_en_cours.set(("carte", texte_conversation.get(g.conversation, "")))
+        champs = g.model_dump(exclude={"entity_id", "conversation"}, exclude_none=True)
+        try:
+            r, c = await regler_carte(maison, g.entity_id, g.conversation, **champs)
+        except ValueError as e:
+            raise HTTPException(400, str(e)) from e
+        if r is None:
+            raise HTTPException(404, "appareil inconnu ou non autorisé")
+        auditer(requete, "action_maison", par="carte", entites=[g.entity_id], resultat=r.texte[:200], **champs)
+        if r.detail.get("echecs") or r.detail.get("sensibles") or not r.texte.startswith("C'est"):
+            raise HTTPException(409, r.texte or "Rien n'a été fait.")
+        return {"ok": True, "texte": r.texte, "carte": c}
+
+    @app.post("/api/maison/carte/annuler")
+    async def annuler_carte(c: Conv, requete: Request) -> dict:
+        """Bouton « Annuler » d'une carte : comme dire « annule » dans la même conversation."""
+        masques.set(frozenset(contexte_de(requete)["masques"]))
+        r = await maison.annuler(c.conversation)
+        auditer(requete, "action_maison", par="carte", action="annuler", resultat=r.texte[:200])
+        return {"ok": r.traite, "texte": r.texte, "cartes": await cartes_sures(r.detail.get("entites"))}
+
     @app.delete("/api/maison/alias/{phrase}")
     def oublier_alias(phrase: str, requete: Request) -> dict:
         if not maison.alias.oublier(phrase):
@@ -1040,6 +1090,7 @@ def creer_app(config: Config | None = None, registre: Registre | None = None,
         e = await maison.etat_detaille(entity_id)
         if e is None:
             raise HTTPException(404, "appareil inconnu ou non autorisé")
+        cartes_conversation.setdefault(conversation, []).append(entity_id)
         return e
 
     @app.get("/api/actions")
@@ -1448,6 +1499,7 @@ def creer_app(config: Config | None = None, registre: Registre | None = None,
         verifier_jeton(x_jeton_interne)
         demande_en_cours.set(("claude", texte_conversation.get(a.conversation, "")))
         r = await maison.agir_ids(a.entity_ids, a.action, a.valeur, a.couleur, a.conversation)
+        cartes_conversation.setdefault(a.conversation, []).extend(r.detail.get("entites", []))
         journal.info("outil agir %s %s -> %s", a.action, a.entity_ids, r.texte[:120])
         compte, ip = compte_conversation.get(a.conversation, ("", ""))
         audit.noter("action_maison", compte, ip, par="claude", action=a.action, entites=a.entity_ids,
@@ -1785,6 +1837,7 @@ def creer_app(config: Config | None = None, registre: Registre | None = None,
         decision = None
         compte_conversation[d.conversation] = (compte_de(requete) or "", ip_de(requete)[1])
         texte_conversation[d.conversation] = d.message
+        cartes_conversation.pop(d.conversation, None)
         creer_routine = bool(RE_CREER_ROUTINE.search(d.message))
         # « mets un rappel », « rappelle-moi » : l'agenda, jamais une commande de maison ni Assist (minuteur HA)
         if RE_RAPPEL.search(d.message):
@@ -1823,7 +1876,8 @@ def creer_app(config: Config | None = None, registre: Registre | None = None,
                     auditer(requete, "action_maison", par="règles", demande=d.message[:200],
                             entites=rm.detail.get("entites"), resultat=rm.texte[:200])
                 _tracer(route, d.message)
-                return _reponse_ha(d.flux, rm.texte, route, "maison", "inventaire", rm.detail.get("duree_ms", 0))
+                return _reponse_ha(d.flux, rm.texte, route, "maison", "inventaire", rm.detail.get("duree_ms", 0),
+                                   await cartes_sures(rm.detail.get("entites")))
             if "commande" in rm.detail and cfg.maison.assist_en_secours and maison.mentionne_sensible(d.message):
                 # Assist pourrait ouvrir une serrure ou un portail : on refuse sans lui demander
                 route["maison"]["sensible"] = True
@@ -1844,7 +1898,8 @@ def creer_app(config: Config | None = None, registre: Registre | None = None,
                     if appris:
                         route["home_assistant"]["alias_appris"] = appris
                     _tracer(route, d.message)
-                    return _reponse_ha(d.flux, rha.texte or "C'est fait.", route, "home-assistant", "assist", duree)
+                    return _reponse_ha(d.flux, rha.texte or "C'est fait.", route, "home-assistant", "assist", duree,
+                                       await cartes_sures(rha.entites))
                 echec_ha = rha.code or rha.type
             if "commande" in rm.detail and rm.texte:
                 # Commande de maison comprise mais appareil introuvable : réponse factuelle,
@@ -1913,6 +1968,7 @@ def creer_app(config: Config | None = None, registre: Registre | None = None,
                 # le secours (qwen) n'a pas les outils : s'il dit « c'est fait », c'est inventé
                 journal.info("réponse inventée remplacée : %s", r.texte[:120])
                 r.texte = REPONSE_HONNETE
+            vus = cartes_conversation.pop(d.conversation, [])
             return {
                 "reponse": r.texte,
                 "fournisseur": r.fournisseur,
@@ -1920,6 +1976,7 @@ def creer_app(config: Config | None = None, registre: Registre | None = None,
                 "secours": r.secours,
                 "route": route,
                 "duree_ms": round((time.perf_counter() - debut) * 1000),
+                **({"cartes": c} if (c := await cartes_sures(vus)) else {}),
             }
 
         async def lignes():
@@ -1942,6 +1999,9 @@ def creer_app(config: Config | None = None, registre: Registre | None = None,
                 journal.info("réponse %s : %s", r.fournisseur, texte[:160].replace("\n", " "))
                 duree = round((time.perf_counter() - debut) * 1000)
                 yield _ndjson({"delta": texte})
+                cartes = await cartes_sures(cartes_conversation.pop(d.conversation, []))
+                if cartes:
+                    yield _ndjson({"cartes": cartes})
                 yield _ndjson({"fin": True, "fournisseur": r.fournisseur, "modele": r.modele, "secours": r.secours,
                                "premier_ms": duree, "duree_ms": duree})
                 return
@@ -2044,15 +2104,18 @@ def _tracer(route: dict, message: str) -> None:
     journal.info("route %s (%s) -> %s%s | « %s »", cat, route.get("raison", ""), route.get("role", ""), ha, message[:80])
 
 
-def _reponse_ha(flux: bool, texte: str, route: dict, fournisseur: str, modele: str, duree_ms: int):
+def _reponse_ha(flux: bool, texte: str, route: dict, fournisseur: str, modele: str, duree_ms: int,
+                cartes: list[dict] | None = None):
     journal.info("réponse %s : %s", fournisseur, texte[:160])
     fin = {"fournisseur": fournisseur, "modele": modele, "secours": False, "duree_ms": duree_ms}
     if not flux:
-        return {"reponse": texte, **fin, "route": route}
+        return {"reponse": texte, **fin, "route": route, **({"cartes": cartes} if cartes else {})}
 
     async def lignes():
         yield _ndjson({"route": route})
         yield _ndjson({"delta": texte})
+        if cartes:
+            yield _ndjson({"cartes": cartes})
         yield _ndjson({"fin": True, **fin, "premier_ms": fin["duree_ms"]})
 
     return StreamingResponse(lignes(), media_type="application/x-ndjson")
