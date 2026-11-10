@@ -314,7 +314,9 @@
     <label class="ligne" for="rgTrainees">Traînées (à gauche : particules nettes)<input type="range" id="rgTrainees" min="0" max="12" step="1"></label>
     <label class="ligne" for="rgBrume">Brume<input type="range" id="rgBrume" min="0" max="100"></label>
     <label class="case"><input type="checkbox" id="lireTout"> Lire aussi à voix haute les réponses aux messages écrits</label>
-    <label class="case"><input type="checkbox" id="sonAccueil"> Petit son d'éveil de l'orbe avant qu'il parle <button type="button" class="discret" id="essaiAccueil">Écouter</button></label>
+    <label class="case"><input type="checkbox" id="sonAccueil"> Son d'éveil de l'orbe avant qu'il parle</label>
+    <label class="ligne" for="choixAccueil">Son d'éveil<select id="choixAccueil"></select></label>
+    <p class="note" id="noteAccueil"><button type="button" class="discret" id="essaiAccueil">Écouter</button> <span></span></p>
     <fieldset>
       <legend>Écran</legend>
       <label class="ligne" for="rotation">Orientation
@@ -349,6 +351,7 @@
 </dialog>
 <script src="/static/orbe.js"></script>
 <script src="/static/cartes.js"></script>
+<script src="/static/sons.js"></script>
 <script>
 const $ = id => document.getElementById(id);
 const ICONE_MICRO = '<svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3a3 3 0 0 0-3 3v6a3 3 0 0 0 6 0V6a3 3 0 0 0-3-3z"/><path d="M19 11a7 7 0 0 1-14 0"/><path d="M12 18v3"/></svg>';
@@ -1283,45 +1286,42 @@ function contexteAccueil() {
   return ctxAccueil;
 }
 for (const ev of ['pointerdown', 'keydown']) document.addEventListener(ev, () => { if (sonAccueil) contexteAccueil(); }, true);
+let choixAccueil = 0;
+try { choixAccueil = +localStorage.getItem('voix.accueilSon') || 0; } catch (e) {}
 function jouerAccueil(force) {
   if ((!sonAccueil && !force) || muet) return;
+  if (!window.sonsEveil) { diag('son d\'éveil : sons.js absent, sauté'); return; }
   const c = contexteAccueil();
   if (!c || c.state !== 'running') { diag('son d\'éveil : contexte audio pas encore réveillé, sauté'); return; }
-  const t = c.currentTime + .02, D = 2.6;
-  const sortie = c.createGain(); sortie.gain.value = .7; sortie.connect(c.destination);
-  // enveloppe lente : monte pendant 1,4 s, tient un peu, puis s'éteint doucement
-  const env = (g, pic) => {
-    g.gain.setValueAtTime(.0001, t);
-    g.gain.exponentialRampToValueAtTime(pic * .25, t + .6);
-    g.gain.exponentialRampToValueAtTime(pic, t + 1.4);
-    g.gain.setValueAtTime(pic, t + 1.7);
-    g.gain.exponentialRampToValueAtTime(.0001, t + D);
-  };
-  // grondement : une fondamentale très grave qui monte lentement, et ses harmoniques
-  // (pour qu'on l'entende aussi sur un petit haut-parleur de téléphone), adoucis par un filtre qui s'ouvre
-  const filtre = c.createBiquadFilter(); filtre.type = 'lowpass'; filtre.Q.value = .7;
-  filtre.frequency.setValueAtTime(90, t); filtre.frequency.exponentialRampToValueAtTime(320, t + 1.6);
-  filtre.connect(sortie);
-  for (const [type, f0, f1, pic] of [['sine', 34, 48, .26], ['triangle', 68, 96, .1], ['sine', 102, 144, .035]]) {
-    const o = c.createOscillator(), g = c.createGain();
-    o.type = type; o.frequency.setValueAtTime(f0, t); o.frequency.exponentialRampToValueAtTime(f1, t + 1.8);
-    env(g, pic); o.connect(g).connect(filtre); o.start(t); o.stop(t + D + .05);
-  }
-  // léger battement lent pour que le grondement « respire »
-  const lfo = c.createOscillator(), lg = c.createGain();
-  lfo.frequency.value = 3.2; lg.gain.value = 1.5; lfo.connect(lg).connect(filtre.detune); lfo.start(t); lfo.stop(t + D);
-  // texture : bruit très grave (bruit brun) qui gonfle avec le grondement
-  const n = Math.floor(c.sampleRate * D), tampon = c.createBuffer(1, n, c.sampleRate), d = tampon.getChannelData(0);
-  let dernier = 0;
-  for (let i = 0; i < n; i++) { dernier = (dernier + .02 * (Math.random() * 2 - 1)) / 1.02; d[i] = dernier * 3.5; }
-  const bruit = c.createBufferSource(); bruit.buffer = tampon;
-  const lp = c.createBiquadFilter(); lp.type = 'lowpass';
-  lp.frequency.setValueAtTime(120, t); lp.frequency.exponentialRampToValueAtTime(420, t + 1.6);
-  const gb = c.createGain(); env(gb, .12);
-  bruit.connect(lp).connect(gb).connect(sortie); bruit.start(t); bruit.stop(t + D);
+  const n = choixAccueil || sonsEveil.defaut;
+  const sortie = c.createGain(); sortie.gain.value = .85; sortie.connect(c.destination);
+  try { sonsEveil.jouer(n, c, sortie, c.currentTime + .02); } catch (e) { diag('son d\'éveil : ERREUR ' + e.message); return; }
   orbe.impulsion(10);
-  diag('son d\'éveil joué');
+  diag('son d\'éveil n° ' + n + ' joué');
 }
+// liste des sons dans Réglages, rangés par famille, avec leur numéro de la page de démonstration
+function remplirChoixAccueil() {
+  const sel = $('choixAccueil');
+  if (!window.sonsEveil) { sel.closest('label').hidden = true; $('noteAccueil').hidden = true; return; }
+  const n = choixAccueil || sonsEveil.defaut;
+  for (const g of sonsEveil.ordreGroupes) {
+    const sons = sonsEveil.liste.filter(x => x.groupe === g);
+    if (!sons.length) continue;
+    const og = document.createElement('optgroup'); og.label = g;
+    for (const x of sons) { const o = new Option(x.numero + ' · ' + x.nom, String(x.numero)); o.title = x.texte; og.appendChild(o); }
+    sel.appendChild(og);
+  }
+  sel.value = String(n);
+  const decrire = () => { const x = sonsEveil.liste[+sel.value - 1]; $('noteAccueil').querySelector('span').textContent = x ? x.texte : ''; };
+  decrire();
+  sel.onchange = () => {
+    choixAccueil = +sel.value;
+    try { localStorage.setItem('voix.accueilSon', sel.value); } catch (e) {}
+    decrire();
+    contexteAccueil(); setTimeout(() => jouerAccueil(true), 60);   // on l'entend tout de suite
+  };
+}
+remplirChoixAccueil();
 $('sonAccueil').checked = sonAccueil;
 $('sonAccueil').onchange = () => {
   sonAccueil = $('sonAccueil').checked;
