@@ -20,5 +20,6 @@ diagnostic/
 config/annonces.json
 config/voix_comptes.json
 config/memoire.db
+config/fil.db
 config/routines.json
 config/habitudes_ignorees.json
