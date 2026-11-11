@@ -243,13 +243,13 @@ def appeler(nom: str, args: dict) -> str:
         elif nom == "lister_rappels":
             r = c.get("/interne/rappels", params={"conversation": conv})
         elif nom == "supprimer_rappel":
-            r = c.delete(f"/interne/rappels/{args['id']}")
+            r = c.delete(f"/interne/rappels/{args['id']}", params={"conversation": conv})
         elif nom == "creer_rappel":
             r = c.post("/interne/rappels", json={**args, "conversation": conv})
         elif nom == "lister_rappels":
             r = c.get("/interne/rappels", params={"conversation": conv})
         elif nom == "supprimer_rappel":
-            r = c.delete(f"/interne/rappels/{args['id']}")
+            r = c.delete(f"/interne/rappels/{args['id']}", params={"conversation": conv})
         elif nom == "annuler":
             r = c.post("/interne/maison/annuler", json={"conversation": conv})
         else:

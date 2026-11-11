@@ -19,6 +19,18 @@ piece_preferee: ContextVar[str] = ContextVar("piece_preferee", default="")
 # Catégories d'informations à ne pas révéler dans le contexte de la demande (distant, appareil partagé, enfant)
 masques: ContextVar[frozenset] = ContextVar("masques", default=frozenset())
 NON_REVELE = "information non donnée sur cet appareil"
+# Domaines que la personne qui parle n'a pas le droit de piloter (profil : « droits par personne »)
+interdits: ContextVar[frozenset] = ContextVar("interdits", default=frozenset())
+# Catégories proposées dans les profils -> domaines Home Assistant
+CATEGORIES_DROITS: dict[str, tuple[str, ...]] = {
+    "lumieres": ("light",), "prises": ("switch",), "volets": ("cover",), "chauffage": ("climate", "water_heater"),
+    "medias": ("media_player",), "ventilateurs": ("fan",),
+}
+REFUS_DROITS = "Tu n'as pas le droit de piloter {noms}."
+
+
+def domaines_interdits(categories) -> frozenset:
+    return frozenset(d for c in categories or () for d in CATEGORIES_DROITS.get(c, ()))
 from .commande import Commande, corriger_verbe, par_modele, par_regles
 from .inventaire import Entite, Inventaire
 from .resolution import resoudre
@@ -205,6 +217,10 @@ class Maison:
         if e.domaine == "cover" and re.search(r"\b(garage|porte)\b", nom, re.I):
             return True
         return bool(self.cfg.noms_sensibles and re.search(rf"\b({self.cfg.noms_sensibles})\b", nom, re.I))
+
+    def interdit(self, e: Entite) -> bool:
+        """Appareil que la personne qui parle n'a pas le droit de piloter (lecture de l'état permise)."""
+        return e.domaine in interdits.get()
 
     def masque(self, e: Entite) -> bool:
         return "etat_sensible" in masques.get() and self.sensible(e)
@@ -493,10 +509,14 @@ class Maison:
             self._contextes[conversation] = _Contexte(cmd, entites, [], time.monotonic())
             return ReponseMaison(True, " ".join(lignes), {"entites": ids})
         refuses = [e for e in entites if self.sensible(e)]
-        entites = [e for e in entites if not self.sensible(e)]
-        if refuses and not entites:
-            return ReponseMaison(True, REFUS_SENSIBLE.format(noms=_et(_noms_courts(refuses))),
-                                 {"entites": ids, "sensibles": [e.entity_id for e in refuses]})
+        sans_droit = [e for e in entites if not self.sensible(e) and self.interdit(e)]
+        entites = [e for e in entites if not self.sensible(e) and not self.interdit(e)]
+        if (refuses or sans_droit) and not entites:
+            texte = " ".join(t for t in (
+                REFUS_SENSIBLE.format(noms=_et(_noms_courts(refuses))) if refuses else "",
+                REFUS_DROITS.format(noms=_et(_noms_courts(sans_droit))) if sans_droit else "") if t)
+            return ReponseMaison(True, texte, {"entites": ids, "sensibles": [e.entity_id for e in refuses],
+                                               "interdits": [e.entity_id for e in sans_droit]})
         avant = [s for s in [await self.ha.etat_entite(e.entity_id) for e in entites] if s]
         faits, rates, impossibles = [], [], []
         for e in entites:
@@ -528,8 +548,11 @@ class Maison:
             morceaux.append(f"Impossible sur {_et(_noms_courts(impossibles))}.")
         if refuses:
             morceaux.append(f"Pas {_et(_noms_courts(refuses))} : action sensible.")
+        if sans_droit:
+            morceaux.append(f"Pas {_et(_noms_courts(sans_droit))} : tu n'as pas le droit.")
         return ReponseMaison(True, " ".join(morceaux), {"entites": ids, "echecs": [e.entity_id for e in rates],
-                                                       "sensibles": [e.entity_id for e in refuses]})
+                                                       "sensibles": [e.entity_id for e in refuses],
+                                                       "interdits": [e.entity_id for e in sans_droit]})
 
 
     async def _restaurer(self, ctx: _Contexte) -> ReponseMaison:
@@ -538,6 +561,9 @@ class Maison:
         faits, rates = [], []
         noms = {e.entity_id: e.libelle for e in ctx.entites}
         for s in ctx.avant:
+            if s["entity_id"].split(".")[0] in interdits.get():
+                rates.append(noms.get(s["entity_id"], s["entity_id"]))
+                continue
             svc = _restauration(s)
             if not svc:
                 continue
@@ -557,7 +583,7 @@ class Maison:
         avant = [await self.ha.etat_entite(e.entity_id) for e in ctx.entites]
         faits, impossibles = [], []
         for e, s in zip(ctx.entites, avant):
-            if self.sensible(e):
+            if self.sensible(e) or self.interdit(e):
                 impossibles.append(e)
                 continue
             svc = _relatif(e, s, sens)
@@ -601,6 +627,8 @@ class Maison:
             return False, "déjà annulée"
         if not a.get("annulable") or not a.get("avant"):
             return False, "cette action ne peut pas être annulée"
+        if a["appareil"].split(".")[0] in interdits.get():
+            return False, "tu n'as pas le droit de piloter cet appareil"
         avant = {"entity_id": a["appareil"], "state": a["avant"]["etat"], "attributes": a["avant"].get("attributs", {})}
         svc = _restauration(avant)
         if not svc:

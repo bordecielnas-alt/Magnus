@@ -114,6 +114,18 @@ Stockage : `fil.db` (SQLite) dans le dossier d'état, 1 000 échanges au plus pa
 | `GET /api/fil/flux` | Server-Sent Events : questions, réponses mot à mot, effacement (reprise après coupure par `Last-Event-ID`) |
 | `DELETE /api/fil` | Nouvelle conversation |
 
+## Un profil par personne
+
+Chaque compte a son profil (⚙ Mon compte) : ton, pièce habituelle, préférences. Quand la voix d'une personne est enregistrée, l'assistant la reconnaît (`assistant/locuteur.py`) et applique **son** profil, même sur l'appareil de quelqu'un d'autre :
+
+- **Préférences** : son ton, sa pièce par défaut, ses consignes et ses souvenirs privés.
+- **Rappels personnels** : « rappelle-moi de ranger ma chambre » appartient à la personne reconnue (sinon au compte connecté). Chacun ne voit et ne supprime que les siens ; à l'heure dite, l'annonce dit pour qui (« Rappel pour Léa : … ») dès qu'il y a plusieurs comptes.
+- **Droits** : un administrateur coche, pour chaque compte (⚙ Comptes), ce que la personne ne pilote pas : lumières, prises, volets, chauffage, télé et musique, ventilateurs. Un compte enfant ne touche pas au chauffage tant que rien d'autre n'a été choisi. Le refus vaut partout : commandes, outils de Claude, routines, cartes, « annule », « plus fort ». Pour une personne aux droits limités, l'agent Assist de Home Assistant n'est jamais appelé en secours (il ne connaît pas ces droits).
+
+La voix ne peut que **retirer** des droits, jamais en donner : les interdits du compte connecté et ceux de la voix reconnue s'additionnent. Si Léa (enfant) parle sur la tablette d'un parent et qu'elle est reconnue, ses limites s'appliquent ; si sa voix n'est pas reconnue, ce sont celles du compte connecté. Pour une limite garantie, l'enfant utilise son propre compte.
+
+Rappel : le chauffage, le portail ou le garage restent refusés à tout le monde par `maison.domaines_sensibles` et `maison.noms_sensibles`. Si tu ouvres le chauffage aux adultes en le retirant de cette liste, la limite par personne garde l'enfant à l'écart.
+
 ## Voix (locale)
 
 - **Transcription** : faster-whisper « small » en français (`POST /api/voix/transcrire`, corps = l'audio enregistré par le navigateur, webm/opus ou wav). Les noms de l'assistant, des appareils et des pièces sont donnés à Whisper comme indices.

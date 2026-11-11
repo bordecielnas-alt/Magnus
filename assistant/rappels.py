@@ -1,5 +1,7 @@
 """Rappels dans le chat (« rappelle-moi dans 10 minutes de sortir le linge ») : pas dans le calendrier.
 
+Chaque rappel appartient à une personne : celle reconnue à la voix si c'est le cas, sinon le compte
+connecté. Elle ne voit et ne supprime que les siens (et ceux sans propriétaire).
 Gardés dans <état>/rappels.json. À l'heure dite, le rappel devient une annonce (source « rappel »,
 priorité « urgent » : affiché et dit à voix haute, même pendant les heures calmes, puisque la personne l'a
 demandé). Les rendez-vous, eux, vont dans le calendrier (agenda.py).
@@ -53,9 +55,11 @@ class Rappels:
         return sorted((r for r in self.liste if not r["fait"] and (compte is None or r["compte"] in (compte, ""))),
                       key=lambda r: r["quand"])
 
-    def supprimer(self, ident: str) -> dict | None:
+    def supprimer(self, ident: str, compte: str | None = None) -> dict | None:
+        """Supprime un rappel à venir ; avec compte, seulement un des siens (ou un rappel commun)."""
         with self._verrou:
-            r = next((x for x in self.liste if x["id"] == ident and not x["fait"]), None)
+            r = next((x for x in self.liste if x["id"] == ident and not x["fait"]
+                      and (compte is None or x["compte"] in (compte, ""))), None)
             if r:
                 self.liste.remove(r)
                 self._ecrire()
