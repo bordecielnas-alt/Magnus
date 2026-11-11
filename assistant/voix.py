@@ -257,5 +257,7 @@ def sans_emoji(texte: str) -> str:
         import re
         EMOJI = re.compile(
             "[\U0001F000-\U0001FAFF\U00002600-\U000027BF\U0001F900-\U0001F9FF\U0000FE0F\U0000200D"
-            "\U00002190-\U000021FF\U00002B00-\U00002BFF]+" r"|[:;]-?[)(DPp]\B")
+            "\U00002190-\U000021FF\U00002B00-\U00002BFF]+"
+            # smiley isolé seulement : « [carte:meteo:Douai] » ou « 10:30 » ne perdent pas « :D »
+            r"|(?<![\w\]\[])[:;]-?[)(DPp](?!\w)")
     return EMOJI.sub("", texte).replace("  ", " ")

@@ -352,6 +352,7 @@
     <label class="ligne" for="rgBrume">Brume<input type="range" id="rgBrume" min="0" max="100"></label>
     <label class="case"><input type="checkbox" id="lireTout"> Lire aussi à voix haute les réponses aux messages écrits</label>
     <label class="case"><input type="checkbox" id="sonAccueil"> Son d'éveil de l'orbe avant qu'il parle</label>
+    <label class="ligne" for="quandAccueil">Quand<select id="quandAccueil"><option value="toujours">Avant chaque réponse, au rechargement et quand il parle seul</option><option value="seul">Seulement au rechargement et quand il parle seul</option></select></label>
     <label class="ligne" for="choixAccueil">Son d'éveil<select id="choixAccueil"></select></label>
     <p class="note" id="noteAccueil"><button type="button" class="discret" id="essaiAccueil">Écouter</button> <span></span></p>
     <fieldset>
@@ -951,7 +952,8 @@ async function traiterAnnonces() {
       diag('annonce ' + a.id + ' (' + (a.priorite || 'info') + (a.parler ? ', dite' : '') + ') : « ' + a.texte + ' »');
       fetch('/api/annonces/' + encodeURIComponent(a.id) + '/lue', {method: 'POST'})
         .then(r => { if (!r.ok) diag('annonce ' + a.id + ' : marquage lu HTTP ' + r.status); }).catch(() => {});
-      if (a.parler && !muet && a.texte) await direAVoixHaute(a.texte);   // le son d'éveil part au début
+      // il prend la parole de lui-même : le son d'éveil part au début, même pour une annonce écrite seulement
+      if (a.parler && !muet && a.texte) await direAVoixHaute(a.texte, true); else eveilAvantParole(true);
       estomper();
     }
   } finally { annoncesEnCours = false; }
@@ -1569,6 +1571,20 @@ function jouerAccueil(force) {
   orbe.impulsion(10);
   finAccueil = performance.now() + ((sonsEveil.liste[n - 1] || {}).duree || 2.5) * 1000 + 300;
   diag('son d\'éveil n° ' + n + ' joué');
+  return true;
+}
+// Quand le jouer : « toujours » (avant chaque réponse) ou « seul » (seulement quand il s'éveille : page
+// rechargée, ou prise de parole de lui-même : annonce, rappel, alerte, règle). Dans les deux cas, au
+// rechargement et quand il parle seul.
+let quandAccueil = 'toujours';
+try { quandAccueil = localStorage.getItem('voix.accueilQuand') === 'seul' ? 'seul' : 'toujours'; } catch (e) {}
+let eveilEnAttente = true;    // page (re)chargée : le prochain moment où le son peut partir est un éveil
+let dernierEveil = -1e9;
+function eveilAvantParole(spontane) {
+  if (!(spontane || eveilEnAttente || quandAccueil === 'toujours')) return;
+  // un son d'éveil vient de partir (au rechargement, puis une annonce aussitôt) : pas deux de suite
+  if (performance.now() - dernierEveil < 5000) { eveilEnAttente = false; return; }
+  if (jouerAccueil()) { eveilEnAttente = false; dernierEveil = performance.now(); }
 }
 // liste des sons dans Réglages, rangés par famille, avec leur numéro de la page de démonstration
 function remplirChoixAccueil() {
@@ -1594,6 +1610,11 @@ function remplirChoixAccueil() {
 }
 remplirChoixAccueil();
 $('sonAccueil').checked = sonAccueil;
+$('quandAccueil').value = quandAccueil;
+$('quandAccueil').onchange = () => {
+  quandAccueil = $('quandAccueil').value;
+  try { localStorage.setItem('voix.accueilQuand', quandAccueil); } catch (e) {}
+};
 $('sonAccueil').onchange = () => {
   sonAccueil = $('sonAccueil').checked;
   try { localStorage.setItem('voix.accueil', sonAccueil ? '1' : '0'); } catch (e) {}
@@ -1622,8 +1643,25 @@ majMuet();
 function couperLecture() {
   numeroLecture++;
   voixActive = false;
+  baisserVoix(false);
   const l = lecture; lecture = null;
   if (l) l.pause();
+}
+
+// Vérification d'une interruption (voir interruption.js) : on baisse sa voix ~0,4 s. Si ce que le
+// micro entend baisse avec elle, c'était son écho et il reprend ; sinon c'est toi et il se tait.
+// Sur iPhone le volume d'un lecteur ne se règle pas : on coupe alors le son le temps du test.
+let voixBaissee = false, muetPourVerif = false;
+function baisserVoix(oui) {
+  if (oui === voixBaissee) return;
+  voixBaissee = oui;
+  if (oui) {
+    try { lecteur.volume = 0.1; } catch (e) {}
+    if (lecteur.volume > 0.5) { lecteur.muted = true; muetPourVerif = true; }
+  } else {
+    try { lecteur.volume = 1; } catch (e) {}
+    if (muetPourVerif) { lecteur.muted = false; muetPourVerif = false; }
+  }
 }
 
 // ----- Interruption : tu parles, il se tait et t'écoute (le détecteur est dans interruption.js) -----
@@ -1682,7 +1720,7 @@ function surveillerInterruption(moi) {
     const fbuf = new Float32Array(an.fftSize), d = nouveauDetecteur();
     let rec = null, recus = [];
     diag('interruption : j\'écoute pendant qu\'il parle (gain d\'écho ' + d.gain.toFixed(2) + ')');
-    const finir = () => { if (rec && rec.state === 'recording') rec.stop(); rec = null; retenirGainEcho(d); ctx.close().catch(() => {}); };
+    const finir = () => { if (rec && rec.state === 'recording') rec.stop(); rec = null; baisserVoix(false); retenirGainEcho(d); ctx.close().catch(() => {}); };
     const tic = () => {
       if (etat.fini || moi !== numeroLecture || enregistreur || continu.actif || !microChaudPret()) { finir(); return; }
       if (ctx.state === 'running') {
@@ -1692,7 +1730,11 @@ function surveillerInterruption(moi) {
           recus = []; rec = new MediaRecorder(flux);
           rec.ondataavailable = ev => { if (ev.data.size) recus.push(ev.data); };
           rec.start(250);
-        } else if (r === 'abandon') {
+        } else if (r === 'verifier') {
+          diag('interruption : on dirait toi (' + d.raison + '), je baisse ma voix pour vérifier');
+          baisserVoix(true);
+        } else if (r === 'abandon' || r === 'echo') {
+          if (r === 'echo') { diag('interruption : fausse alerte, ' + d.raison); baisserVoix(false); retenirGainEcho(d); }
           if (rec && rec.state === 'recording') rec.stop(); rec = null;
         } else if (r === 'coupe') {
           diag('interruption : voix coupée, tu parles (' + d.raison + ')');
@@ -1736,7 +1778,7 @@ function nouvelleParole() {
   return f;
 }
 
-async function direAVoixHaute(source) {
+async function direAVoixHaute(source, spontane) {
   if (muet) return;
   let f = source;
   if (typeof source === 'string') { f = nouvelleParole(); f.ajouter(source, true); }
@@ -1745,7 +1787,7 @@ async function direAVoixHaute(source) {
   const moi = ++numeroLecture;
   voixActive = true;
   orbe.etat('parole');
-  jouerAccueil();   // pendant que la première phrase se prépare
+  eveilAvantParole(spontane);   // pendant que la première phrase se prépare
   const pulse = setInterval(() => orbe.impulsion(4), 180);
   const veille = surveillerInterruption(moi);
   try {
@@ -1804,7 +1846,7 @@ async function direAVoixHaute(source) {
     f.surAjout = null;
     clearInterval(pulse);
     if (veille) veille.arreter();
-    if (moi === numeroLecture) { lecture = null; voixActive = false; }
+    if (moi === numeroLecture) { lecture = null; voixActive = false; baisserVoix(false); }
     if (!occupe && !onTEcoute()) orbe.etat('repos');
   }
 }
@@ -2035,7 +2077,13 @@ function analyserContinu() {
       const r = interruption && det && ctx.state === 'running'
         ? (({rms, pic}) => det.image(rms, pic, niveauSortie(), t))(mesureMicro(an, fbufC)) : '';
       if (r === 'debut') { jeter(); lancer(); }   // on enregistre dès ta première syllabe, au cas où
-      else if (r === 'coupe') {
+      else if (r === 'verifier') {
+        diag('interruption : on dirait toi (' + det.raison + '), je baisse ma voix pour vérifier');
+        baisserVoix(true);
+      } else if (r === 'echo') {
+        diag('interruption : fausse alerte, ' + det.raison);
+        baisserVoix(false); retenirGainEcho(det); jeter();
+      } else if (r === 'coupe') {
         diag('interruption : voix coupée, tu parles (' + det.raison + ')');
         const depuis = det.debut;
         retenirGainEcho(det); det = null;
@@ -2046,7 +2094,7 @@ function analyserContinu() {
       } else if (!det || !det.candidat) jeter();
       requestAnimationFrame(tic); return;
     }
-    if (det) { retenirGainEcho(det); det = null; }
+    if (det) { retenirGainEcho(det); det = null; baisserVoix(false); }
     if (!continu.rec) lancer();
     const son = m > 12;
     $('veille').classList.toggle('son', son && (continu.toujours || continu.fin > Date.now()));
@@ -2249,7 +2297,31 @@ jouerAccueil = function (force) {
   try { sonsHal.eveil(reglagesHal.eveil, c, sortie, c.currentTime + .02); } catch (e) { diag('son d\'éveil : ERREUR ' + e.message); return; }
   oeil.eclair();
   diag('son d\'éveil de l\'œil (' + reglagesHal.eveil + ') joué');
+  return true;
 };
+// Au rechargement : le son d'éveil tout de suite si le navigateur laisse jouer un son sans geste
+// (lecture automatique autorisée pour le site), sinon au premier toucher de la page (pas sur le micro :
+// tu vas parler), ou au début de la première réponse dite, selon ce qui vient d'abord.
+function eveilAuChargement() {
+  if (!sonAccueil || muet) { eveilEnAttente = false; return; }
+  const c = contexteAccueil();
+  if (!c) return;
+  // une reprise refusée reste en suspens jusqu'au premier geste : passé ce délai, c'est le toucher qui décide
+  let delai = true;
+  const essai = () => { if (delai && eveilEnAttente && c.state === 'running') eveilAvantParole(false); };
+  if (c.state === 'running') return essai();
+  c.resume().then(essai).catch(() => {});
+  setTimeout(() => { delai = false; if (eveilEnAttente) diag('son d\'éveil : lecture automatique bloquée, il partira au premier toucher'); }, 800);
+}
+function eveilAuToucher(ev) {
+  if (!eveilEnAttente) return;
+  if (ev.target && ev.target.closest && ev.target.closest('#micro, dialog, #btnMuet')) return;
+  if (voixActive || occupe || (enregistreur && enregistreur.state === 'recording')) return;
+  const c = contexteAccueil();
+  if (c) (c.state === 'running' ? Promise.resolve() : c.resume()).then(() => { if (eveilEnAttente && !voixActive) eveilAvantParole(false); }).catch(() => {});
+}
+for (const ev of ['pointerdown', 'keydown']) document.addEventListener(ev, eveilAuToucher, true);
+setTimeout(eveilAuChargement, 400);
 const bipOrbe = bip;
 bip = function () {
   if (theme !== 'hal') return bipOrbe();

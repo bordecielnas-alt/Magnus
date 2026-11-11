@@ -24,7 +24,7 @@ import unicodedata
 from dataclasses import dataclass
 from datetime import date
 
-from .rapports import RE_ACTUS, RE_AGENDA, RE_DOCKER, RE_METEO, Demande, indice_de, lieu_de
+from .rapports import RE_ACTUS, RE_AGENDA, RE_DOCKER, RE_METEO, Demande, indice_de, lieu_de, periode_agenda
 
 SUITE_VALIDE_S = 600          # « et à Lyon ? » refait une carte jusqu'à 10 min après la précédente
 
@@ -115,7 +115,7 @@ def _sujet_carte(texte: str, message: str, rapide: bool) -> Demande | None:
     if RE_DOCKER.search(texte):
         return Demande("docker")
     if RE_AGENDA.search(texte):
-        return Demande("agenda")
+        return Demande("agenda", periode_agenda(message))
     if RE_ACTUS.search(texte) and not indice_de(texte):
         sujet = re.sub(r"^(?:les |des )?(?:actus?|actualit[ée]s?|news|infos?|nouvelles)\b\s*(?:du jour|de la journ[ée]e)?\s*"
                        r"(?:(?:sur|de|du|des|concernant)\s+(?:la |le |les |l')?)?", "", texte, flags=re.I)
@@ -143,7 +143,7 @@ def implicite(message: str, sans_action: bool = True) -> Demande | None:
     if i or RE_BOURSE_Q.search(m):
         return Demande("bourse", i[1] if i else "", rapide=True)
     if RE_AGENDA_Q.search(m) and not RE_AGENDA_PRECIS.search(m):
-        return Demande("agenda")
+        return Demande("agenda", periode_agenda(m))
     if RE_DOCKER_Q.search(m) and RE_ETAT_Q.search(m) and not re.search(r"\b(?:pourquoi|logs?)\b", m, re.I):
         return Demande("docker")
     return None
@@ -171,6 +171,8 @@ def suite(message: str, precedente: Demande) -> Demande | None:
     if t == "bourse":
         i = indice_de(reste)
         return Demande("bourse", i[1] if i else (precedente.sujet if temps else reste), rapide=precedente.rapide)
+    if t == "agenda" and (p := periode_agenda(message)):
+        return Demande("agenda", p)              # « et le mois prochain ? »
     if t in ("agenda", "docker"):
         return Demande(t) if temps or not cle else None
     if t in ("actus", "libre"):
@@ -273,16 +275,30 @@ données seront lues juste après. Marqueurs : [carte:meteo:Ville] (sans ville :
 [carte:agenda], [carte:docker]. Aucun marqueur pour une discussion, une explication, ou si une carte n'apporte rien."""
 
 NOTE_VOIR = """L'utilisateur veut VOIR la réponse sous forme de carte. Si un des marqueurs de carte convient, utilise-le. \
-Sinon, dis en une phrase que tu n'as pas de carte pour ça, puis réponds normalement."""
+Pour un appareil de la maison (lampe, prise, volet…), lis son état avec l'outil d'état : sa carte s'affiche alors \
+toute seule, ne dis jamais que tu n'as pas de carte pour un appareil. Sinon, dis en une phrase que tu n'as pas de \
+carte pour ça, puis réponds normalement."""
 
 RE_MARQUEUR = re.compile(r"^\s*\[\s*carte\s*:\s*(m[ée]t[ée]o|bourse|agenda|docker)\s*(?::\s*([^\]\n]{0,60}))?\]\s*", re.I)
+
+
+RE_MARQUEUR_ABIME = re.compile(r"^\s*\[\s*carte\s*:?([^\]\n]{0,80})\]\s*", re.I)
 
 
 def lire_marqueur(texte: str) -> tuple[Demande | None, str]:
     """« [carte:meteo:Lyon] Voici… » -> (Demande("meteo", "Lyon"), « Voici… »)."""
     m = RE_MARQUEUR.match(texte)
     if not m:
-        return None, texte
+        # marqueur abîmé (« [carte:meteoouai] ») : jamais affiché ni lu ; la carte est refaite si le type se lit
+        b = RE_MARQUEUR_ABIME.match(texte)
+        if not b:
+            return None, texte
+        brut = _sa(b.group(1))
+        for t in ("meteo", "bourse", "agenda", "docker"):
+            if brut.startswith(t):
+                reste = texte[b.end():]
+                return Demande(t, lieu_de(reste) if t == "meteo" else "", rapide=t == "bourse"), reste
+        return None, texte[b.end():]
     t = _sa(m.group(1))
     return Demande(t, (m.group(2) or "").strip(), rapide=t == "bourse"), texte[m.end():]
 

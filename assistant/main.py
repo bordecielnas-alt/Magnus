@@ -11,6 +11,7 @@ import secrets
 import sys
 import time
 from contextlib import asynccontextmanager
+from datetime import datetime
 from pathlib import Path
 from typing import Literal
 
@@ -443,8 +444,41 @@ NOTE_OUTILS_MAISON = (
 )
 
 
+JOURS_FR = ["lundi", "mardi", "mercredi", "jeudi", "vendredi", "samedi", "dimanche"]
+MOIS_FR = ["janvier", "février", "mars", "avril", "mai", "juin", "juillet", "août", "septembre", "octobre",
+           "novembre", "décembre"]
+RE_HEURE = re.compile(r"^\s*(?:[\w-]+\s*,\s*)?(?:(?:dis[- ]moi|tu (?:peux|sais) me dire|tu sais)\s+)?(?:quelle heure (?:est[- ]il|il est|"
+                      r"c'est)|il est quelle heure|l'heure qu'il est|t'as l'heure|tu as l'heure)\b[^\w]*$", re.I)
+RE_DATE = re.compile(r"^\s*(?:[\w-]+\s*,\s*)?(?:(?:dis[- ]moi|tu (?:peux|sais) me dire|tu sais)\s+)?(?:on est (?:quel|le combien)(?: jour)?|"
+                     r"quel jour (?:on est|sommes[- ]nous|est[- ]on|nous sommes|c'est)(?: aujourd'hui)?|"
+                     r"(?:c'est |quelle est )?(?:la date d'aujourd'hui|quelle date)(?: on est| sommes[- ]nous)?)\b[^\w]*$",
+                     re.I)
+
+
+def heure_dite(maintenant: datetime | None = None) -> str:
+    m = maintenant or datetime.now().astimezone()
+    return f"{m.hour} h {m.minute:02d}" if m.minute else f"{m.hour} h"
+
+
+def date_dite(maintenant: datetime | None = None) -> str:
+    m = maintenant or datetime.now().astimezone()
+    return f"{JOURS_FR[m.weekday()]} {'1er' if m.day == 1 else m.day} {MOIS_FR[m.month - 1]} {m.year}"
+
+
+def reponse_horloge(message: str) -> str | None:
+    """« quelle heure est-il ? », « on est quel jour ? » : l'horloge du serveur, jamais un modèle (il devinerait)."""
+    if RE_HEURE.match(message):
+        return f"Il est {heure_dite()}."
+    if RE_DATE.match(message):
+        return f"Nous sommes {date_dite()}."
+    return None
+
+
 def _messages(cfg: Config, d: DemandeChat, outils: bool = False, profil: str = "") -> list[Message]:
-    msgs = [Message("system", cfg.consigne_effective + "\n\n" + NOTE_STYLE + ("\n\n" + profil if profil else ""))]
+    # la date et l'heure : sans elles, un modèle invente (« 17:30 » à 17 h 38)
+    quand = f"Nous sommes le {date_dite()}, il est {heure_dite()}."
+    msgs = [Message("system", cfg.consigne_effective + "\n\n" + NOTE_STYLE + "\n\n" + quand
+                    + ("\n\n" + profil if profil else ""))]
     if cfg.home_assistant.url and not outils:
         msgs.append(Message("system", NOTE_MAISON))
     msgs += [Message(t.role, t.content) for t in d.historique[-HISTORIQUE_MAX:]]
@@ -515,7 +549,8 @@ def creer_app(config: Config | None = None, registre: Registre | None = None,
         mots = [normaliser_nom(m) for m in re.findall(r"[\w'-]+", message)]
         candidats = {m for m in mots if len(m) >= 5} | {a + b for a, b in zip(mots, mots[1:]) if len(a + b) >= 5}
         for n in noms_conteneurs["noms"]:
-            if len(n) >= 5 and any(difflib.SequenceMatcher(None, c, n).ratio() >= 0.85 for c in candidats):
+            # 0,8 : une lettre de travers sur six (« MiTube » -> metube)
+            if len(n) >= 5 and any(difflib.SequenceMatcher(None, c, n).ratio() >= 0.8 for c in candidats):
                 return n
         return ""
 
@@ -571,7 +606,8 @@ def creer_app(config: Config | None = None, registre: Registre | None = None,
             texte, carte = await rapports.faire(dem)
             return texte, [carte]
         except RapportIndisponible as e:
-            return f"Pas de rapport {MODELES_RAPPORT.get(dem.type, '').lower()} : {e}".replace("  ", " "), []
+            quoi = "" if dem.type == "libre" else MODELES_RAPPORT.get(dem.type, "").lower()
+            return f"Pas de rapport {quoi} : {e}".replace("  ", " "), []
         except Exception as e:  # noqa: BLE001 - service injoignable, réponse inattendue
             journal.info("rapport %s impossible : %s : %s", dem.type, e.__class__.__name__, str(e)[:200])
             return f"Je n'arrive pas à faire ce rapport pour le moment ({e.__class__.__name__}).", []
@@ -1290,12 +1326,12 @@ def creer_app(config: Config | None = None, registre: Registre | None = None,
         await maison.inventaire.obtenir(forcer=True)
         return maison.inventaire.resume()
 
-    async def cartes_sures(entity_ids) -> list[dict]:
+    async def cartes_sures(entity_ids, action: str | None = None) -> list[dict]:
         """Cartes des appareils d'une réponse ; une panne de Home Assistant ne casse jamais la réponse."""
         if not entity_ids:
             return []
         try:
-            return await cartes_pour(maison, list(entity_ids))
+            return await cartes_pour(maison, list(entity_ids), action)
         except Exception as e:  # noqa: BLE001 - la carte est un bonus
             journal.info("cartes impossibles : %s", e)
             return []
@@ -2140,6 +2176,8 @@ def creer_app(config: Config | None = None, registre: Registre | None = None,
                 cfg.voix.voix = v["voix"]
             if "lenteur" in v:
                 cfg.voix.lenteur = float(v["lenteur"])
+        if "ville" in changements.get("proactif", {}):     # météo sans ville : prise tout de suite
+            cfg.proactif.ville = rapports.ville = str(changements["proactif"]["ville"] or "").strip()
         if "theme" in changements.get("identite", {}):
             cfg.identite.theme = changements["identite"]["theme"]
         if set(changements) - {"voix"}:
@@ -2492,6 +2530,10 @@ def creer_app(config: Config | None = None, registre: Registre | None = None,
                 consigne_profil = (consigne_profil + "\n\nCe que tu sais (souvenirs validés par la famille) :\n"
                                    + "\n".join(f"- [{x['id']}] {x['texte']}" for x in utiles)).strip()
             consigne_profil = (consigne_profil + "\n\n" + NOTE_MEMOIRE).strip()
+        if (horloge := reponse_horloge(d.message)) is not None:
+            route_h = {"role": "horloge", "raison": "heure ou date, lue sur le serveur"}
+            _tracer(route_h, d.message)
+            return _reponse_ha(d.flux, horloge, route_h, "horloge", "serveur", 0)
         routine = routines.trouver(d.message) if ha.configure and routines.liste and len(d.message) < 80 else None
         if routine:
             texte_r = await lancer_routine(routine, d.conversation)
@@ -2512,11 +2554,29 @@ def creer_app(config: Config | None = None, registre: Registre | None = None,
                     and not (ha.configure and await maison.evoque(d.message))):
                 # « montre-moi un point sur la Fed » : pas de carte toute faite, la carte libre (Claude et le web)
                 choix.demande = Demande("libre", sujet_rapport("point " + choix.reste) or choix.reste)
+        if choix.voir and choix.demande is None and choix.reste and ha.configure:
+            # « montre-moi la lampe du bureau » : la carte de l'appareil, lue dans Home Assistant, sans modèle
+            debut_r = time.perf_counter()
+            try:
+                ids = await maison.a_montrer(choix.reste)
+            except Exception as e:  # noqa: BLE001 - Home Assistant injoignable : Claude répondra
+                journal.info("appareil à montrer introuvable : %s", e)
+                ids = []
+            cartes_d = await cartes_sures(ids)
+            if cartes_d:
+                c0 = cartes_d[0]
+                quoi = c0.get("titre") if c0.get("type") == "groupe" else c0.get("nom")
+                route_d = {"role": "maison", "raison": f"carte d'appareil « {choix.reste} » (règle 1)"}
+                _tracer(route_d, d.message)
+                return _reponse_ha(d.flux, f"Voici {quoi}." if quoi else "Voici.", route_d, "maison", "carte",
+                                   round((time.perf_counter() - debut_r) * 1000), cartes_d)
         if choix.demande:
             debut_r = time.perf_counter()
             texte_r, cartes_r = await faire_rapport(choix.demande, compte, ctx_revel)
-            if cartes_r or choix.regle == 1:
+            libre_rate = choix.demande.type == "libre" and "illisible" in texte_r
+            if cartes_r or (choix.regle == 1 and not libre_rate):
                 # demandée (règle 1) : la carte, ou pourquoi il n'y en a pas ; sinon, faute de carte, on continue
+                # (carte libre ratée, « les planètes » : Claude répond quand même, en texte)
                 if cartes_r:
                     derniere_carte[d.conversation] = (choix.demande, time.monotonic())
                     texte_r = phrase_carte(d.message, cartes_r[0], texte_r, choix.repliee)
@@ -2580,7 +2640,8 @@ def creer_app(config: Config | None = None, registre: Registre | None = None,
                             entites=rm.detail.get("entites"), resultat=rm.texte[:200])
                 _tracer(route, d.message)
                 return _reponse_ha(d.flux, rm.texte, route, "maison", "inventaire", rm.detail.get("duree_ms", 0),
-                                   await cartes_sures(rm.detail.get("entites")))
+                                   await cartes_sures(rm.detail.get("entites"),
+                                                      (rm.detail.get("commande") or {}).get("action")))
             if ("commande" in rm.detail and docker.configure and securite.est_admin(compte)
                     and conteneur_approchant(d.message)):
                 # rien dans la maison, mais un conteneur au nom proche : Claude avec les outils Docker
@@ -2696,7 +2757,7 @@ def creer_app(config: Config | None = None, registre: Registre | None = None,
             """« [carte:meteo:Lyon] Voici la météo. » -> (« Voici la météo. » + la phrase de la carte, [carte])."""
             dem, reste = lire_marqueur(texte) if actif else (None, texte)
             if not dem:
-                return texte, []
+                return reste, []        # un marqueur abîmé et inconnu est retiré quand même
             phrase_r, cartes_r = await carte_marqueur(dem)
             return (reste.strip() + " " + phrase_r).strip(), cartes_r
 
@@ -2717,6 +2778,10 @@ def creer_app(config: Config | None = None, registre: Registre | None = None,
                         apres, cartes_m = await carte_marqueur(dem)
                         if cartes_m:
                             yield {"cartes": cartes_m, "masquer_texte": True}
+                        if reste.strip():
+                            yield reste.lstrip()
+                    elif reste != debut_txt:      # marqueur abîmé et inconnu : retiré, pas de carte
+                        decide = True
                         if reste.strip():
                             yield reste.lstrip()
                     elif not marqueur_possible(debut_txt):
