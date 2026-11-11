@@ -22,8 +22,11 @@ def test_mcp_initialize_et_liste():
     r = mcp_maison.traiter({"jsonrpc": "2.0", "id": 1, "method": "initialize",
                             "params": {"protocolVersion": "2025-06-18"}})
     assert r["result"]["protocolVersion"] == "2025-06-18" and "tools" in r["result"]["capabilities"]
-    noms = {o["name"] for o in mcp_maison.traiter({"jsonrpc": "2.0", "id": 2, "method": "tools/list"})["result"]["tools"]}
-    assert noms == {"lister_appareils", "lire_etat", "agir", "annuler", "creer_routine", "lister_routines", "proposer_souvenir", "creer_rappel", "lister_rappels", "supprimer_rappel"}
+    liste = [o["name"] for o in mcp_maison.traiter({"jsonrpc": "2.0", "id": 2, "method": "tools/list"})["result"]["tools"]]
+    noms = set(liste)
+    assert len(liste) == len(noms)                      # pas d'outil en double
+    assert noms == {"lister_appareils", "lire_etat", "agir", "annuler", "creer_routine", "lister_routines", "proposer_souvenir", "creer_rappel", "lister_rappels", "supprimer_rappel",
+                    "lister_capteurs", "proposer_regle", "lister_regles", "changer_regle"}
     assert mcp_maison.traiter({"jsonrpc": "2.0", "method": "notifications/initialized"}) is None
 
 

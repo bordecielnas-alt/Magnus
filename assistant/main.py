@@ -36,6 +36,7 @@ from .audit import Audit
 from .rappels import Rappels
 from .telegram import Telegram
 from .habitudes import Routines, automatisation, detecter
+from .regles import Regles, decrire as decrire_regle, normaliser as normaliser_regle
 from .memoire import Memoire
 from .fil import Fil
 from .proactif import Annonces, MisesAJourIgnorees
@@ -166,6 +167,26 @@ RE_CORRECTION = re.compile(r"^\s*non\s*[,!.]?\s*(?:en fait|plut[ôo]t|je pr[ée]
                            r"ce n.est pas [çc]a|la prochaine fois|d[ée]sormais|[àa] l.avenir)\s*[,:]?\s*(?P<fait>.{3,300})$", re.I)
 RE_CREER_ROUTINE = re.compile(r"\b(cr[ée]+[ers]?|fais|faire|ajoute[rz]?|enregistre[rz]?|programme[rz]?|"
                               r"modifie[rz]?|change[rz]?)\b.{0,20}\broutines?\b", re.I)
+_VERBES_REGLE = (r"(?:allume[rz]?|[ée]tein[st]|[ée]teindre|ouvre|ferme|r[èe]gle|mets|monte|baisse|coupe|lance|"
+                 r"pr[ée]viens(?:[- ]moi)?|avertis(?:[- ]moi)?|dis(?:[- ]moi)?|annonce|signale|envoie)")
+RE_CREER_REGLE = re.compile(
+    r"^\s*(?:\w+,\s*)?(?:"
+    r"(?:cr[ée]+[ers]?|ajoute[rz]?|fais|programme[rz]?|enregistre[rz]?)\b.{0,15}\b(?:une|la|les|des|cette|nouvelle)\s+r[èe]gles?\b"
+    r"|(?:si(?!\s+(?:tu\s+(?:peux|veux|le\s+veux)|possible|besoin|[çc]a\s+te|vous))|s.il(?!\s+(?:te|vous)\s+pla)|s.ils|quand|lorsque?|lorsqu.|d[èe]s que?|d[èe]s qu.|(?:[àa] )?chaque fois que?|(?:[àa] )?chaque fois qu.)"
+    r"\b.{4,200}?(?:,|\balors\b)\s*(?:alors\s+)?(?:tu\s+)?" + _VERBES_REGLE + r"\b"
+    r"|" + _VERBES_REGLE + r"\b.{2,150}?\b(?:d[èe]s que?|d[èe]s qu.|(?:[àa] )?chaque fois que?|lorsque?|lorsqu.|quand)\b"
+    r"|(?:pr[ée]viens|avertis)[- ]moi\b.{0,40}?\bsi\b)", re.I)
+RE_GERER_REGLE = re.compile(r"\b(?:la|les|une|des|mes|ma|ta|tes|cette|ces|nouvelles?|quelles?)\s+r[èe]gles?\b", re.I)
+NOTE_REGLES = (
+    "Règles « si… alors… » : quand la personne veut que quelque chose se fasse tout seul quand une condition arrive "
+    "(présence, seuil d'un capteur, état d'un appareil, éventuellement dans un créneau horaire), cherche les capteurs "
+    "avec lister_capteurs et les appareils avec lister_appareils, puis appelle proposer_regle. Rien n'est enregistré "
+    "tant que la personne n'a pas dit oui : termine ta réponse par la phrase « a_dire » renvoyée, mot pour mot, sans "
+    "rien ajouter. Conditions possibles : présence (quelqu'un arrive, tout le monde part, une personne arrive ou part), "
+    "seuil (passe sous / au-dessus d'une valeur), état (devient X, ou reste X plus de N minutes). Si la condition n'entre "
+    "pas dans ces cas (météo, heure seule, coucher du soleil…), dis-le simplement. Pour mettre une règle en pause ou la "
+    "reprendre : lister_regles puis changer_regle. Tu ne supprimes pas de règle : c'est dans Réglages > Règles."
+)
 RE_SUJET_MEMOIRE = re.compile(r"\b(retien[st]?|retenir|souviens|rappelle-toi|oublie|m[ée]moire|souvenir|corrige|"
                               r"en fait|plus que|n.est plus|maintenant j|j.ai (vendu|achet[ée]|perdu|chang[ée])|"
                               r"je n.ai plus|d[ée]sormais)\b", re.I)
@@ -238,6 +259,18 @@ class EtapeRoutine(BaseModel):
 class NouvelleRoutine(BaseModel):
     nom: str = Field(min_length=2, max_length=60)
     etapes: list[EtapeRoutine] = Field(min_length=1, max_length=20)
+
+
+class PropositionRegle(BaseModel):
+    condition: dict
+    actions: list[EtapeRoutine] = Field(default_factory=list, max_length=10)
+    annonce: str = Field(default="", max_length=200)
+    plage: str = Field(default="", max_length=20)
+    conversation: str = Field(default="", max_length=64)
+
+
+class ChangementRegle(BaseModel):
+    active: bool
 
 
 class ChoixHabitude(BaseModel):
@@ -474,6 +507,8 @@ def creer_app(config: Config | None = None, registre: Registre | None = None,
     memoire = Memoire(securite.fichier.parent)
     fil = Fil(securite.fichier.parent)
     routines = Routines(securite.fichier.parent)
+    regles = Regles(securite.fichier.parent)
+    regle_attente: dict[str, tuple[dict, str, float]] = {}   # conversation -> (règle proposée, compte, instant)
     fichier_ignorees = securite.fichier.parent / "habitudes_ignorees.json"
 
     def habitudes_ignorees() -> set[str]:
@@ -644,6 +679,62 @@ def creer_app(config: Config | None = None, registre: Registre | None = None,
             except Exception:  # noqa: BLE001 - la surveillance ne doit jamais s'arrêter
                 journal.exception("surveillance : erreur")
             await aio.sleep(cfg.proactif.intervalle_s)
+    async def etats_ha() -> dict[str, dict]:
+        from .maison.inventaire import CMD_ETATS
+        return {x.get("entity_id"): x for x in (await ha.ws([CMD_ETATS])).get(CMD_ETATS) or [] if x.get("entity_id")}
+
+    async def noms_regle(r: dict, etats: dict[str, dict] | None = None) -> tuple[dict[str, str], dict[str, str]]:
+        """Noms lisibles et unités des entités d'une règle, pour la relire à voix haute."""
+        ids = {r["condition"].get("entity_id", "")} | {i for e in r.get("actions", []) for i in e["entity_ids"]}
+        noms, unites = {}, {}
+        for i in filter(None, ids):
+            x = (etats or {}).get(i) or await ha.etat_entite(i)
+            if not x:
+                continue
+            a = x.get("attributes") or {}
+            noms[i] = a.get("friendly_name") or i
+            if r["condition"].get("entity_id") == i:
+                unites[i] = "°C" if r["condition"].get("attribut") in ("current_temperature", "temperature") \
+                    else a.get("unit_of_measurement", "")
+        return noms, unites
+
+    async def executer_regle(r: dict) -> str:
+        """Une règle vient de se déclencher : ses actions (mêmes garde-fous que les routines), puis son annonce."""
+        faits = []
+        for e in r.get("actions", []):
+            res = await maison.agir_ids(e["entity_ids"], e["action"], e.get("valeur"), e.get("couleur"), f"regle:{r['id']}")
+            faits.append(res.texte or "Rien n'a été fait.")
+        if r.get("annonce"):
+            await signaler(r["annonce"], "important", "regle", f"regle:{r['id']}")
+            faits.append("Annonce faite.")
+        resultat = " ".join(faits)
+        regles.noter(r["id"], resultat)
+        audit.noter("règle_déclenchée", r.get("compte", ""), "", par="règle", regle=r["texte"][:200], resultat=resultat[:200])
+        journal.info("règle %s déclenchée : %s", r["id"], resultat[:160])
+        return resultat
+
+    async def evaluer_regles_une_fois(etats: dict[str, dict] | None = None) -> list[str]:
+        """Un passage : lit les états de Home Assistant et déclenche les règles dont la condition vient de devenir vraie."""
+        if not any(r.get("active", True) for r in regles.liste):
+            return []
+        if etats is None:
+            try:
+                etats = await etats_ha()
+            except Exception:  # noqa: BLE001 - Home Assistant injoignable : on réessaiera
+                return []
+        fronts, retombees = regles.a_declencher(etats)
+        for r in retombees:
+            annonces.resoudre(f"regle:{r['id']}")
+        return [await executer_regle(r) for r in fronts]
+
+    async def boucle_regles() -> None:
+        import asyncio as aio
+        while True:
+            try:
+                await evaluer_regles_une_fois()
+            except Exception:  # noqa: BLE001 - les règles ne doivent jamais arrêter l'assistant
+                journal.exception("règles : erreur")
+            await aio.sleep(15)
     locuteurs = Locuteurs(cfg.voix.chemin_locuteur(), securite.fichier.parent, cfg.voix.seuil_locuteur)
     locuteur_conversation: dict[str, tuple[str, float]] = {}   # conversation -> (compte reconnu, instant)
 
@@ -696,12 +787,15 @@ def creer_app(config: Config | None = None, registre: Registre | None = None,
         if cfg.voix.active and cfg.voix.whisper_present() and cfg.voix.synthese_presente():
             app.state.prechauffage = asyncio.create_task(voix.prechauffer())
         app.state.rappels = asyncio.create_task(boucle_rappels())
+        app.state.boucle_regles = asyncio.create_task(boucle_regles()) if ha.configure else None
         if (cfg.proactif.active and (ha.configure or docker.configure or cfg.proactif.briefing_heure)) or telegram.configure                 or agenda.configure:
             app.state.surveillance = asyncio.create_task(boucle_surveillance())
         yield
         if getattr(app.state, "surveillance", None):
             app.state.surveillance.cancel()
         app.state.rappels.cancel()
+        if app.state.boucle_regles:
+            app.state.boucle_regles.cancel()
         await reg.fermer()
         await ha.fermer()
 
@@ -717,6 +811,8 @@ def creer_app(config: Config | None = None, registre: Registre | None = None,
     app.state.annonces = annonces
     app.state.fil = fil
     app.state.surveiller_une_fois = surveiller_une_fois     # pour les tests
+    app.state.evaluer_regles_une_fois = evaluer_regles_une_fois
+    app.state.regles = regles
 
     def ip_de(requete: Request) -> tuple[str, str]:
         """(IP directe, IP réelle du client). « testclient » = client de test de Starlette, traité comme local."""
@@ -1612,6 +1708,99 @@ def creer_app(config: Config | None = None, registre: Registre | None = None,
         auditer(requete, "routine_supprimée", nom=nom)
         return {"ok": True}
 
+    # --- règles « si… alors… » ---------------------------------------------------------------------
+    @app.get("/interne/capteurs", include_in_schema=False)
+    async def interne_capteurs(filtre: str = "", x_jeton_interne: str | None = Header(None)) -> list[dict]:
+        """Capteurs et personnes utilisables dans une condition (température, humidité, porte, présence…)."""
+        verifier_jeton(x_jeton_interne)
+        from .maison.texte import normaliser
+        try:
+            etats = await etats_ha()
+        except Exception as e:  # noqa: BLE001
+            raise HTTPException(502, "Home Assistant injoignable") from e
+        f = set(normaliser(filtre).split())
+        sortie = []
+        for eid, x in etats.items():
+            if eid.split(".", 1)[0] not in ("sensor", "binary_sensor", "person", "climate", "device_tracker", "weather"):
+                continue
+            a = x.get("attributes") or {}
+            nom = a.get("friendly_name") or eid
+            score = len(f & set(normaliser(f"{nom} {eid.replace('.', ' ').replace('_', ' ')} {a.get('device_class', '')}").split()))
+            if f and not score:
+                continue
+            sortie.append({"score": score, "entity_id": eid, "nom": nom, "etat": x.get("state"),
+                           **({"unite": a["unit_of_measurement"]} if a.get("unit_of_measurement") else {}),
+                           **({"type": a["device_class"]} if a.get("device_class") else {}),
+                           **({"current_temperature": a["current_temperature"]} if "current_temperature" in a else {})})
+        sortie.sort(key=lambda x: -x["score"])          # les plus proches du filtre d'abord
+        return [{k: v for k, v in x.items() if k != "score"} for x in sortie[:80]]
+
+    @app.post("/interne/regles", include_in_schema=False)
+    async def interne_proposer_regle(p: PropositionRegle, x_jeton_interne: str | None = Header(None)) -> dict:
+        """Prépare une règle : rien n'est enregistré avant le « oui » de la personne."""
+        verifier_jeton(x_jeton_interne)
+        try:
+            c, actions, annonce, plage = normaliser_regle(p.condition, [e.model_dump(exclude_none=True) for e in p.actions],
+                                                          p.annonce, p.plage)
+        except ValueError as e:
+            raise HTTPException(422, str(e)) from e
+        if c.get("entity_id") and not await ha.etat_entite(c["entity_id"]):
+            raise HTTPException(422, f"capteur inconnu : {c['entity_id']} (cherche-le avec lister_capteurs)")
+        connus = {e.entity_id: e for e in await maison.inventaire.obtenir()} if actions else {}
+        for e in actions:
+            inconnus = [i for i in e["entity_ids"] if i not in connus]
+            if inconnus:
+                raise HTTPException(422, f"appareils inconnus ou non autorisés : {', '.join(inconnus)}")
+            sensibles = [connus[i].libelle for i in e["entity_ids"] if maison.sensible(connus[i])]
+            if sensibles:
+                raise HTTPException(422, f"action sensible, refusée même dans une règle : {', '.join(sensibles)}")
+        r = {"condition": c, "actions": actions, "annonce": annonce, "plage": plage}
+        r["texte"] = decrire_regle(r, *(await noms_regle(r)))
+        compte = compte_conversation.get(p.conversation, ("", ""))[0]
+        regle_attente[p.conversation] = (r, compte, time.monotonic())
+        return {"en_attente": "rien n'est enregistré avant le oui de la personne",
+                "a_dire": f"Je crée cette règle : {r['texte']} D'accord ?"}
+
+    @app.get("/interne/regles", include_in_schema=False)
+    def interne_regles(x_jeton_interne: str | None = Header(None)) -> list[dict]:
+        verifier_jeton(x_jeton_interne)
+        return [{"id": r["id"], "texte": r["texte"], "active": r.get("active", True)} for r in regles.liste]
+
+    @app.post("/interne/regles/{ident}", include_in_schema=False)
+    def interne_changer_regle(ident: str, c: ChangementRegle, conversation: str = "",
+                              x_jeton_interne: str | None = Header(None)) -> dict:
+        verifier_jeton(x_jeton_interne)
+        r = regles.activer(ident, c.active)
+        if not r:
+            raise HTTPException(404, "règle inconnue")
+        compte, ip = compte_conversation.get(conversation, ("", ""))
+        audit.noter("règle_reprise" if c.active else "règle_en_pause", compte, ip, par="claude", regle=r["texte"][:200])
+        return {"ok": True, "texte": r["texte"], "active": r["active"]}
+
+    @app.get("/api/regles")
+    def lister_regles(requete: Request) -> dict:
+        compte_memoire(requete)
+        return {"regles": [{k: r.get(k) for k in ("id", "texte", "active", "creee", "derniere", "resultat")}
+                           for r in regles.liste]}
+
+    @app.post("/api/regles/{ident}")
+    def changer_regle(ident: str, c: ChangementRegle, requete: Request) -> dict:
+        compte_memoire(requete)
+        r = regles.activer(ident, c.active)
+        if not r:
+            raise HTTPException(404, "règle inconnue")
+        auditer(requete, "règle_reprise" if c.active else "règle_en_pause", regle=r["texte"][:200])
+        return {"ok": True, "active": r["active"]}
+
+    @app.delete("/api/regles/{ident}")
+    def supprimer_regle(ident: str, requete: Request) -> dict:
+        compte_memoire(requete)
+        r = regles.supprimer(ident)
+        if not r:
+            raise HTTPException(404, "règle inconnue")
+        auditer(requete, "règle_supprimée", regle=r["texte"][:200])
+        return {"ok": True}
+
     @app.get("/api/habitudes")
     def lister_habitudes(requete: Request) -> dict:
         compte_memoire(requete)
@@ -2173,6 +2362,23 @@ def creer_app(config: Config | None = None, registre: Registre | None = None,
                 journal.info("%s de %s impossible : %s", action_c, nom_c, e)
             return _reponse_ha(d.flux, texte_r, {"role": "docker", "raison": f"{action_c} confirmé"}, "docker", "unraid", 0)
 
+        # --- règle « si… alors… » proposée, en attente de « oui » ---------------------------------------
+        attente_regle = regle_attente.get(d.conversation)
+        if (attente_regle and time.monotonic() - attente_regle[2] < 300
+                and (RE_OUI.match(d.message) or RE_NON.match(d.message))):
+            regle_attente.pop(d.conversation, None)
+            if RE_NON.match(d.message) or attente_regle[1] != (compte or ""):
+                return _reponse_ha(d.flux, "D'accord, je n'enregistre pas cette règle.",
+                                   {"role": "maison", "raison": "règle refusée"}, "maison", "règles", 0)
+            try:
+                rg = regles.enregistrer(attente_regle[0], compte or "")
+            except ValueError as e:
+                return _reponse_ha(d.flux, f"Je n'ai pas pu l'enregistrer : {e}.",
+                                   {"role": "maison", "raison": "règle refusée"}, "maison", "règles", 0)
+            auditer(requete, "règle_créée", regle=rg["texte"][:200])
+            return _reponse_ha(d.flux, "C'est enregistré. Tu peux la mettre en pause quand tu veux, ici ou dans "
+                               "Réglages, Règles.", {"role": "maison", "raison": "règle enregistrée"}, "maison", "règles", 0)
+
         # --- mémoire : réponse à une proposition, « retiens que… », souvenirs utiles à la réponse ---------
         qui = ((voix_de[0] if route_locuteur else compte) or "")
         personne_conversation[d.conversation] = qui
@@ -2236,9 +2442,10 @@ def creer_app(config: Config | None = None, registre: Registre | None = None,
         compte_conversation[d.conversation] = (compte_de(requete) or "", ip_de(requete)[1])
         texte_conversation[d.conversation] = d.message
         cartes_conversation.pop(d.conversation, None)
-        creer_routine = bool(RE_CREER_ROUTINE.search(d.message))
+        creer_regle = ha.configure and bool(RE_CREER_REGLE.search(d.message) or RE_GERER_REGLE.search(d.message))
+        creer_routine = bool(RE_CREER_ROUTINE.search(d.message)) or creer_regle
         # « mets un rappel », « rappelle-moi » : l'agenda, jamais une commande de maison ni Assist (minuteur HA)
-        if RE_RAPPEL.search(d.message):
+        if RE_RAPPEL.search(d.message) and not creer_regle:
             d = d.model_copy(update={"role": cfg.routeur.role_complexe})
             pour_agenda = True
         else:
@@ -2325,6 +2532,10 @@ def creer_app(config: Config | None = None, registre: Registre | None = None,
             route["outils"] = "Claude avec rappels et agenda"
             agenda_recent[d.conversation] = time.monotonic()
             outils = outils_maison(d.conversation)
+        elif claude_outille and creer_regle:
+            route["outils"] = "Claude prépare une règle « si… alors… »"
+            outils = outils_maison(d.conversation)
+            outils["note"] += "\n\n" + NOTE_REGLES
         elif claude_outille and ha.configure and creer_routine:
             route["outils"] = "Claude crée une routine"
             outils = outils_maison(d.conversation)
