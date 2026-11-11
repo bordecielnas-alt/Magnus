@@ -85,6 +85,11 @@
       <div id="cRoutinesListe"></div>
       <p class="aide" data-msg="habitudes"></p>
     </details>
+    <details id="cfgRegles" hidden><summary>Règles « si… alors… » <span class="etat" id="eRegles"></span></summary>
+      <p class="aide">Dis par exemple « si la porte du garage reste ouverte plus de 10 minutes, préviens-moi » ou « quand tout le monde part, éteins les lumières ». L'assistant relit la règle et ne l'enregistre qu'après ton « oui ». Une règle en pause ne se déclenche plus, sans être perdue.</p>
+      <div id="cReglesListe"></div>
+      <p class="aide" data-msg="regles"></p>
+    </details>
     <details id="cfgAssistant"><summary>Assistant <span class="etat" id="eAssistant"></span></summary>
       <label class="champ">Nom<input id="cNom" maxlength="40"></label>
       <label class="champ">Mot de réveil (vide = le nom)<input id="cWake" maxlength="40"></label>
@@ -253,6 +258,7 @@
     chargerComptes();
     chargerMemoire();
     chargerHabitudes();
+    chargerRegles();
   }
 
   // --- comptes ---------------------------------------------------------------------------------
@@ -321,6 +327,40 @@
     }
   }
 
+
+  async function chargerRegles() {
+    let r;
+    try { r = await api('/api/regles'); } catch (e) { $('cfgRegles').hidden = true; return; }
+    $('cfgRegles').hidden = false;
+    const actives = r.regles.filter(x => x.active).length;
+    etat('eRegles', r.regles.length ? `${actives} active(s)` + (actives < r.regles.length ? ` · ${r.regles.length - actives} en pause` : '') : 'aucune');
+    const l = $('cReglesListe'); l.replaceChildren();
+    if (!r.regles.length) l.appendChild(texte('p', 'Aucune règle pour l\'instant.')).className = 'aide';
+    for (const x of r.regles) {
+      const ligne = document.createElement('div'); ligne.className = 'compte';
+      const t = texte('div', x.texte);
+      if (!x.active) t.style.opacity = '.55';
+      t.appendChild(texte('small', (x.active ? '' : 'En pause · ') + 'Dernier déclenchement : ' + quand(x.derniere)
+        + (x.resultat ? ' (' + x.resultat + ')' : '')));
+      const b = document.createElement('div'); b.className = 'rangee'; b.style.marginTop = '0';
+      const pause = texte('button', x.active ? 'Mettre en pause' : 'Reprendre'); pause.type = 'button';
+      pause.className = 'bouton' + (x.active ? '' : ' principal');
+      pause.onclick = async () => {
+        try { await api(`/api/regles/${encodeURIComponent(x.id)}`, {active: !x.active}); msg('regles', x.active ? 'Règle en pause.' : 'Règle reprise.', true); }
+        catch (e) { msg('regles', e.message, false); }
+        chargerRegles();
+      };
+      const sup = texte('button', 'Supprimer'); sup.type = 'button'; sup.className = 'bouton';
+      sup.onclick = async () => {
+        if (!confirm(`Supprimer la règle « ${x.texte} » ?`)) return;
+        const rep = await fetch(`/api/regles/${encodeURIComponent(x.id)}`, {method: 'DELETE'});
+        msg('regles', rep.ok ? 'Règle supprimée.' : 'Suppression impossible.', rep.ok);
+        chargerRegles();
+      };
+      b.append(pause, sup);
+      ligne.append(t, b); l.appendChild(ligne);
+    }
+  }
 
   async function chargerComptes() {
     let s;

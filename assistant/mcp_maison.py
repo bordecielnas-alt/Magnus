@@ -167,30 +167,53 @@ OUTILS_RAPPELS = [
 ]
 
 
-OUTILS_RAPPELS = [
+OUTILS_REGLES = [
     {
-        "name": "creer_rappel",
-        "description": "Rappel dans le chat (pas dans le calendrier) : « rappelle-moi dans 10 min de… », « mets un rappel "
-                       "à 18 h pour… ». quand : date-heure ISO locale (ex. 2026-11-09T18:00). Un rendez-vous (médecin, "
-                       "réunion…) va plutôt dans l'agenda ; si ce n'est pas clair, demande. Confirme en une phrase courte.",
-        "inputSchema": {"type": "object", "properties": {"quand": {"type": "string"}, "texte": {"type": "string"}},
-                        "required": ["quand", "texte"]},
+        "name": "lister_capteurs",
+        "description": "Capteurs utilisables dans une règle : températures, humidité, portes, mouvement, personnes "
+                       "(présence)… avec leur état et leur unité. Filtre facultatif : mots d'une pièce ou d'un type.",
+        "inputSchema": {"type": "object", "properties": {"filtre": {"type": "string"}}},
     },
     {
-        "name": "lister_rappels",
-        "description": "Rappels à venir (id, heure, texte).",
+        "name": "proposer_regle",
+        "description": "Prépare une règle « si… alors… » ; rien n'est enregistré avant le « oui » de la personne. "
+                       "condition : {type: presence, evenement: arrive|part, entity_id?: person.x (sans = quelqu'un "
+                       "arrive / tout le monde est parti)} ou {type: seuil, entity_id, comparaison: < ou >, valeur, "
+                       "attribut?: current_temperature pour un thermostat} ou {type: etat, entity_id, etat: on|off|open|"
+                       "closed…, minutes?: durée minimale}. actions : étapes comme agir {entity_ids, action, valeur?, "
+                       "couleur?}. annonce : phrase que l'assistant dira (pour « préviens-moi »). plage : créneau facultatif "
+                       "« 22:00-07:00 ». Termine ta réponse par le « a_dire » renvoyé, mot pour mot.",
+        "inputSchema": {"type": "object", "properties": {
+            "condition": {"type": "object", "properties": {
+                "type": {"type": "string", "enum": ["presence", "seuil", "etat"]},
+                "entity_id": {"type": "string"}, "evenement": {"type": "string", "enum": ["arrive", "part"]},
+                "comparaison": {"type": "string", "enum": ["<", ">"]}, "valeur": {"type": "number"},
+                "attribut": {"type": "string"}, "etat": {"type": "string"}, "minutes": {"type": "number"}},
+                "required": ["type"]},
+            "actions": {"type": "array", "items": {"type": "object", "properties": {
+                "entity_ids": {"type": "array", "items": {"type": "string"}},
+                "action": {"type": "string", "enum": ["allumer", "eteindre", "ouvrir", "fermer", "regler"]},
+                "valeur": {"type": "number"}, "couleur": {"type": "string"}}, "required": ["entity_ids", "action"]}},
+            "annonce": {"type": "string"}, "plage": {"type": "string"}},
+            "required": ["condition"]},
+    },
+    {
+        "name": "lister_regles",
+        "description": "Règles « si… alors… » enregistrées (id, texte, active ou en pause).",
         "inputSchema": {"type": "object", "properties": {}},
     },
     {
-        "name": "supprimer_rappel",
-        "description": "Supprime un rappel à venir par son id (lu avec lister_rappels).",
-        "inputSchema": {"type": "object", "properties": {"id": {"type": "string"}}, "required": ["id"]},
+        "name": "changer_regle",
+        "description": "Met une règle en pause (active=false) ou la reprend (active=true), par son id (lu avec "
+                       "lister_regles). Dis ensuite en une phrase ce qui a changé.",
+        "inputSchema": {"type": "object", "properties": {"id": {"type": "string"}, "active": {"type": "boolean"}},
+                        "required": ["id", "active"]},
     },
 ]
 
 
 def outils() -> list[dict]:
-    return (OUTILS + OUTILS_ROUTINES + OUTILS_RAPPELS + OUTILS_RAPPELS + OUTILS_MEMOIRE + (OUTILS_DOCKER if os.environ.get("ASSISTANT_DOCKER") == "1" else [])
+    return (OUTILS + OUTILS_ROUTINES + OUTILS_RAPPELS + OUTILS_REGLES + OUTILS_MEMOIRE + (OUTILS_DOCKER if os.environ.get("ASSISTANT_DOCKER") == "1" else [])
             + (OUTILS_AGENDA if os.environ.get("ASSISTANT_AGENDA") == "1" else []))
 
 
@@ -237,12 +260,15 @@ def appeler(nom: str, args: dict) -> str:
             r = c.get("/interne/rappels", params={"conversation": conv})
         elif nom == "supprimer_rappel":
             r = c.delete(f"/interne/rappels/{args['id']}")
-        elif nom == "creer_rappel":
-            r = c.post("/interne/rappels", json={**args, "conversation": conv})
-        elif nom == "lister_rappels":
-            r = c.get("/interne/rappels", params={"conversation": conv})
-        elif nom == "supprimer_rappel":
-            r = c.delete(f"/interne/rappels/{args['id']}")
+        elif nom == "lister_capteurs":
+            r = c.get("/interne/capteurs", params={"filtre": args.get("filtre", "")})
+        elif nom == "proposer_regle":
+            r = c.post("/interne/regles", json={**args, "conversation": conv})
+        elif nom == "lister_regles":
+            r = c.get("/interne/regles")
+        elif nom == "changer_regle":
+            r = c.post(f"/interne/regles/{args['id']}", params={"conversation": conv},
+                       json={"active": bool(args["active"])})
         elif nom == "annuler":
             r = c.post("/interne/maison/annuler", json={"conversation": conv})
         else:

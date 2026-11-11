@@ -92,6 +92,21 @@ Les cartes arrivent **repliées** (nom et état) : un toucher sur l'en-tête les
 
 Les cartes sont construites par le serveur (`assistant/maison/cartes.py`) avec l'état lu dans Home Assistant : aucun modèle n'en écrit le contenu. Dans le flux NDJSON de `/api/chat`, elles arrivent dans une ligne `{"cartes": [...]}` avant `fin` (champ `cartes` sans flux). Un geste sur une carte appelle `POST /api/maison/carte` sans passer par un modèle : mêmes appareils autorisés, actions sensibles refusées, historique et « annule » comme à la voix (`POST /api/maison/carte/annuler`). Les appareils masqués (accès à distance, appareil partagé) n'ont pas de carte.
 
+### Règles « si… alors… »
+
+On les dicte en phrase normale : « si la température du salon passe sous 19, préviens-moi », « quand tout le monde part, éteins les lumières », « allume l'entrée dès que Léa arrive, entre 18 h et 23 h », « préviens-moi si la porte du garage reste ouverte plus de 10 minutes ». Claude cherche le capteur (`lister_capteurs`) et les appareils, puis appelle `proposer_regle` ; l'assistant relit alors la règle **construite par le serveur à partir de ce qui sera vraiment enregistré** (« Je crée cette règle : Quand Température salon passe sous 19 °C, j'allume Plafonnier. D'accord ? ») et ne l'enregistre qu'après un « oui » de la même personne (5 minutes pour répondre).
+
+- Conditions : présence (quelqu'un arrive, tout le monde est parti, une personne `person.*` arrive ou part), seuil d'un capteur (sous / au-dessus d'une valeur ; `current_temperature` pour un thermostat), état d'un appareil (devient X, ou reste X plus de N minutes), avec un créneau horaire facultatif.
+- Actions : les mêmes que les routines (allumer, éteindre, ouvrir, fermer, régler), avec les mêmes garde-fous (appareils autorisés, actions sensibles refusées dès la proposition), et/ou une annonce dite par l'assistant (heures calmes et absence respectées, Telegram si configuré).
+- Déclenchement sur front : quand la condition **devient** vraie, pas tant qu'elle l'est ; marge de 0,5 sur les seuils pour ne pas répéter quand la valeur oscille ; rien ne se déclenche au démarrage ou à la reprise sur un état déjà vrai. États lus dans Home Assistant toutes les 15 s.
+- Pause : « mets la règle du garage en pause », « reprends-la », ou dans Réglages > Règles (mettre en pause, reprendre, supprimer, dernier déclenchement). Gardées dans `<état>/regles.json`, déclenchements notés au journal.
+
+| Point d'accès | Rôle |
+| --- | --- |
+| `GET /api/regles` | Règles (texte, active, dernier déclenchement) |
+| `POST /api/regles/{id}` | `{"active": false}` met en pause, `true` reprend |
+| `DELETE /api/regles/{id}` | Supprimer une règle |
+
 ## Un seul assistant par compte (fil partagé)
 
 La conversation n'appartient plus à une page mais au compte : tous les appareils connectés au même compte parlent au même assistant.
