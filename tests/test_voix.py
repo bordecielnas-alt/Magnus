@@ -8,7 +8,7 @@ from fastapi.testclient import TestClient
 
 from assistant.config import VoixConfig, charger
 from assistant.main import creer_app
-from assistant.voix import Transcription, decoder_audio, texte_pour_la_voix
+from assistant.voix import Transcription, decoder_audio, heures_en_toutes_lettres, texte_pour_la_voix
 from tests.test_routeur import routeur
 
 
@@ -32,6 +32,20 @@ def test_decodage_reechantillonne_en_16k_mono():
 def test_texte_pour_la_voix():
     t = texte_pour_la_voix("**C'est fait** : Globe — allumé à 50 %\n- light.globe\n- 20 °C")
     assert "*" not in t and "light.globe" not in t and "pour cent" in t and "degrés" in t
+
+
+
+def test_heures_dites_en_toutes_lettres():
+    h = heures_en_toutes_lettres
+    assert h("Il est 21h36.") == "Il est vingt et une heures trente-six."
+    assert h("à 1h") == "à une heure" and h("1h01") == "une heure une"
+    assert h("de 14h à 16h30") == "de quatorze heures à seize heures trente"
+    assert h("21:36") == h("21 h 36") == h("21:36:05") == "vingt et une heures trente-six"
+    assert h("9h05") == "neuf heures cinq" and h("12h") == "douze heures" and h("0h00") == "minuit"
+    assert h("23h59") == "vingt-trois heures cinquante-neuf" and h("0h21") == "zéro heure vingt et une"
+    for intact in ("5ha", "ratio 3:2", "[carte:meteo:Douai]", "24h/24", "v1.21h", "25h"):
+        assert h(intact) == intact
+    assert "vingt et une heures" in texte_pour_la_voix("**Rendez-vous** à 21h")
 
 
 def test_chemins_par_defaut():

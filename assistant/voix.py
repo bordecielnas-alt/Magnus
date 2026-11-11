@@ -225,12 +225,46 @@ def decoder_audio(audio: bytes, frequence: int = 16000):
 
 def texte_pour_la_voix(texte: str) -> str:
     """Retire ce qui se lit mal : markdown, listes, symboles, identifiants techniques."""
-    t = re.sub(r"[*_`#>]+", "", texte)
+    t = heures_en_toutes_lettres(re.sub(r"[*_`#>]+", "", texte))
     t = re.sub(r"^\s*[-•]\s+", "", t, flags=re.M)
     t = re.sub(r"\b[a-z_]+\.[a-z0-9_]+\b", "", t)          # light.plafonnier
     t = t.replace("—", ",").replace("%", " pour cent").replace("°C", " degrés")
     t = re.sub(r"\s*\n+\s*", ". ", t)
     return re.sub(r"\s{2,}", " ", t).strip()
+
+
+UNITES = ["zéro", "un", "deux", "trois", "quatre", "cinq", "six", "sept", "huit", "neuf", "dix", "onze",
+          "douze", "treize", "quatorze", "quinze", "seize", "dix-sept", "dix-huit", "dix-neuf"]
+DIZAINES = {2: "vingt", 3: "trente", 4: "quarante", 5: "cinquante"}
+
+
+def nombre_en_lettres(n: int, feminin: bool = False) -> str:
+    """0 à 59, au féminin pour les heures et les minutes : 21 -> « vingt et une »."""
+    if n < 20:
+        mot = UNITES[n]
+    else:
+        d, u = divmod(n, 10)
+        mot = DIZAINES[d] + ("" if u == 0 else " et un" if u == 1 else "-" + UNITES[u])
+    return mot[:-2] + "une" if feminin and mot.endswith("un") else mot
+
+
+# 21h36, 21 h 36, 9h, 21:36 (secondes éventuelles ignorées) ; pas 5ha, 3:2, ni [carte:meteo:Douai]
+HEURE = re.compile(r"(?<![\w:.,])([01]?\d|2[0-3])(?:\s?[hH]\s?([0-5]\d)?|:([0-5]\d)(?::[0-5]\d)?)(?![\w:])")
+
+
+def heure_parlee(h: int, m: int) -> str:
+    """(21, 36) -> « vingt et une heures trente-six » ; (0, 0) -> « minuit ».
+
+    Pas de « midi » : « pendant 12h » est une durée."""
+    if h == m == 0:
+        return "minuit"
+    heures = nombre_en_lettres(h, feminin=True) + (" heure" if h <= 1 else " heures")
+    return heures if m == 0 else f"{heures} {nombre_en_lettres(m, feminin=True)}"
+
+
+def heures_en_toutes_lettres(texte: str) -> str:
+    """Les synthèses lisent « 21h36 » « vingt et un h trente-six » : on écrit l'heure comme on la dit."""
+    return HEURE.sub(lambda r: heure_parlee(int(r[1]), int(r[2] or r[3] or 0)), texte)
 
 
 # Voix Kokoro françaises (le modèle v1.0 n'en a qu'une)
