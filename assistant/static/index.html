@@ -340,6 +340,7 @@
     <div class="ligne">Thème<div class="ecoles" id="themes"><button type="button" data-theme="orbe">Orbe</button><button type="button" data-theme="hal">HAL 9000</button></div></div>
     <p class="note" id="noteTheme"></p>
     <div id="variantesHal" hidden>
+      <label class="ligne" for="halStyle">Style de l'œil<select id="halStyle"><option value="classique">Classique (proche du film)</option><option value="moderne">Moderne (pulse, couronne de graduations)</option></select></label>
       <label class="case"><input type="checkbox" id="halCouronne"> Couronne de graduations dans le verre</label>
       <label class="ligne" for="halEveil">Son d'éveil de l'œil<select id="halEveil"></select></label>
     </div>
@@ -2008,10 +2009,10 @@ try { localStorage.removeItem('voix.continu'); } catch (e) {}
 // Le thème est gardé par le serveur (il change le mot de réveil) ; ses variantes, dans ce navigateur.
 let theme = 'orbe', nomOrbe = '';
 try { theme = localStorage.getItem('theme') === 'hal' ? 'hal' : 'orbe'; } catch (e) {}
-const HAL_DEFAUT = {couronne: true, eveil: sonsHal.defaut};
+const HAL_DEFAUT = {style: 'classique', couronne: true, eveil: sonsHal.defaut};
 let reglagesHal = {...HAL_DEFAUT};
 try { Object.assign(reglagesHal, JSON.parse(localStorage.getItem('hal.reglages') || '{}')); } catch (e) {}
-const oeil = creerOeil($('oeil'), {couronne: reglagesHal.couronne, pause: theme !== 'hal'});
+const oeil = creerOeil($('oeil'), {style: reglagesHal.style, couronne: reglagesHal.couronne, pause: theme !== 'hal'});
 // l'œil suit tout ce que fait l'orbe
 for (const m of ['etat', 'impulsion', 'son']) {
   const orig = orbe[m]?.bind(orbe);
@@ -2055,6 +2056,9 @@ for (const b of $('themes').children) b.onclick = async () => {
 // variantes de l'œil
 function enregistrerHal() { try { localStorage.setItem('hal.reglages', JSON.stringify(reglagesHal)); } catch (e) {} }
 $('halCouronne').checked = reglagesHal.couronne;
+const majStyleHal = () => { $('halStyle').value = reglagesHal.style; $('halCouronne').closest('label').style.display = reglagesHal.style === 'moderne' ? '' : 'none'; };
+majStyleHal();
+$('halStyle').onchange = () => { reglagesHal.style = $('halStyle').value; oeil.reglages({style: reglagesHal.style}); majStyleHal(); enregistrerHal(); };
 $('halCouronne').onchange = () => { reglagesHal.couronne = $('halCouronne').checked; oeil.reglages({couronne: reglagesHal.couronne}); enregistrerHal(); };
 for (const [cle, x] of Object.entries(sonsHal.eveils)) { const o = new Option(x.nom, cle); o.title = x.texte; $('halEveil').appendChild(o); }
 $('halEveil').value = sonsHal.eveils[reglagesHal.eveil] ? reglagesHal.eveil : sonsHal.defaut;
@@ -2065,7 +2069,7 @@ $('halEveil').onchange = () => {
 $('orbeDefaut').addEventListener('click', () => {
   if (theme !== 'hal') return;
   reglagesHal = {...HAL_DEFAUT}; enregistrerHal();
-  $('halCouronne').checked = reglagesHal.couronne; $('halEveil').value = reglagesHal.eveil; oeil.reglages(reglagesHal);
+  $('halCouronne').checked = reglagesHal.couronne; $('halEveil').value = reglagesHal.eveil; oeil.reglages(reglagesHal); majStyleHal();
 });
 // sons : en thème « hal », ceux de l'œil remplacent le son d'éveil et le bip du mot de réveil
 const jouerAccueilOrbe = jouerAccueil;
