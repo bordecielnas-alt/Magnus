@@ -36,6 +36,7 @@ from .rappels import Rappels
 from .telegram import Telegram
 from .habitudes import Routines, automatisation, detecter
 from .memoire import Memoire
+from .fil import Fil
 from .proactif import Annonces
 from .docker_diag import Docker, UnraidDocker
 from .locuteur import Locuteurs
@@ -71,6 +72,7 @@ class DemandeChat(BaseModel):
     flux: bool = False
     conversation: str = Field(default="", max_length=64)   # identifiant choisi par la page
     source: Literal["voix", "texte", "page"] = "texte"       # pour l'historique des actions
+    appareil: str = Field(default="", max_length=40)         # page qui pose la question (fil partagé)
 
 
 class Action(BaseModel):
@@ -406,6 +408,7 @@ def creer_app(config: Config | None = None, registre: Registre | None = None,
             except Exception as e:  # noqa: BLE001
                 journal.info("Telegram : envoi impossible (%s)", e)
     memoire = Memoire(securite.fichier.parent)
+    fil = Fil(securite.fichier.parent)
     routines = Routines(securite.fichier.parent)
     fichier_ignorees = securite.fichier.parent / "habitudes_ignorees.json"
 
@@ -595,6 +598,7 @@ def creer_app(config: Config | None = None, registre: Registre | None = None,
     app.state.securite = securite
     app.state.audit = audit
     app.state.annonces = annonces
+    app.state.fil = fil
     app.state.surveiller_une_fois = surveiller_une_fois     # pour les tests
 
     def ip_de(requete: Request) -> tuple[str, str]:
@@ -1767,8 +1771,130 @@ def creer_app(config: Config | None = None, registre: Registre | None = None,
         precedent = next((t.content for t in reversed(d.historique) if t.role == "user"), "")
         return await routeur.decider(d.message, precedent)
 
+    def fil_du_compte(requete: Request) -> str | None:
+        """Compte dont la page partage le fil, ou None (appareil partagé, enfant, à distance : rien n'est relu)."""
+        compte = compte_de(requete)
+        if not compte or "historique" in contexte_de(requete)["masques"]:
+            return None
+        return compte
+
+    def note_actions_recentes() -> str:
+        """Dernières actions sur la maison (toutes pages et voix confondues), pour que le modèle s'en souvienne."""
+        if not maison.historique:
+            return ""
+        from datetime import datetime, timedelta
+        limite = (datetime.now().astimezone() - timedelta(hours=3)).isoformat(timespec="seconds")
+        recentes = [a for a in maison.historique.liste(8) if a.get("heure", "") >= limite]
+        if not recentes:
+            return ""
+        lignes = [f"- {a['heure'][11:16]} {a.get('nom') or a.get('appareil')} : {a.get('action')}"
+                  f"{' (annulée)' if a.get('annulee') else ''}" for a in reversed(recentes)]
+        return "Dernières actions sur la maison (tous appareils confondus) :\n" + "\n".join(lignes)
+
     @app.post("/api/chat")
     async def chat(d: DemandeChat, requete: Request):
+        """Fil partagé : avec l'identifiant de conversation du compte, la question et la réponse sont gardées
+        et envoyées en direct aux autres pages ouvertes ; le modèle reçoit l'historique du compte."""
+        compte = fil_du_compte(requete)
+        proprietaire = fil.compte_de(d.conversation) if d.conversation.startswith("fil-") else None
+        if proprietaire and proprietaire != compte_de(requete):
+            raise HTTPException(403, "conversation d'un autre compte")
+        if not (compte and proprietaire == compte):
+            return await chat_interne(d, requete)
+        d = d.model_copy(update={"historique": [Tour(**t) for t in fil.contexte(compte, HISTORIQUE_MAX)]})
+        nom_app = nom_appareil(requete.headers.get("user-agent", ""))
+        q = fil.ajouter(compte, "user", d.message, d.appareil, d.source, extra={"appareil_nom": nom_app})
+        try:
+            rep_ = await chat_interne(d, requete, note_fil=note_actions_recentes())
+        except HTTPException as e:
+            fil.ajouter(compte, "assistant", "", d.appareil, question=q["id"], extra={"erreur": str(e.detail)})
+            raise
+        extra_de = lambda o: {k: o[k] for k in ("cartes", "fournisseur", "modele", "duree_ms", "erreur") if o.get(k)}
+        if isinstance(rep_, dict):
+            fil.ajouter(compte, "assistant", rep_.get("reponse", ""), d.appareil, question=q["id"], extra=extra_de(rep_))
+            return rep_
+        corps = rep_.body_iterator
+
+        async def suivre():
+            texte, extra = "", {}
+            try:
+                async for ligne in corps:
+                    yield ligne
+                    try:
+                        o = json.loads(ligne)
+                    except (TypeError, ValueError):
+                        continue
+                    if o.get("delta"):
+                        texte += o["delta"]
+                        fil.publier(compte, {"type": "delta", "question": q["id"], "delta": o["delta"],
+                                             "appareil": d.appareil})
+                    extra.update(extra_de(o))
+            finally:
+                fil.ajouter(compte, "assistant", texte, d.appareil, question=q["id"], extra=extra)
+        rep_.body_iterator = suivre()
+        return rep_
+
+    @app.get("/api/fil")
+    def lire_fil(requete: Request, depuis: int = 0, n: int = 60) -> dict:
+        """Conversation du compte : son identifiant et ses derniers échanges (pour une page qui s'ouvre)."""
+        compte = fil_du_compte(requete)
+        if not compte:
+            return {"actif": False}
+        return {"actif": True, "conversation": fil.conversation(compte),
+                "tours": fil.tours(compte, depuis, max(1, min(n, 200))), "ouverts": fil.ouverts(compte)}
+
+    @app.delete("/api/fil")
+    async def effacer_fil(requete: Request, appareil: str = "") -> dict:
+        """« Nouvelle conversation » : sur tous les appareils du compte (les souvenirs validés restent)."""
+        compte = fil_du_compte(requete)
+        if not compte:
+            raise HTTPException(403, "information non donnée sur cet appareil")
+        fil.effacer(compte, appareil[:40])
+        auditer(requete, "conversation_effacée")
+        return {"ok": True}
+
+    @app.get("/api/fil/flux")
+    async def flux_fil(requete: Request, depuis: int = 0):
+        """Server-Sent Events : chaque question, chaque morceau de réponse et chaque réponse du compte,
+        quel que soit l'appareil. À la reconnexion (Last-Event-ID), les échanges manqués sont renvoyés."""
+        import asyncio as aio
+        compte = fil_du_compte(requete)
+        if not compte:
+            raise HTTPException(403, "information non donnée sur cet appareil")
+        try:
+            depuis = max(depuis, int(requete.headers.get("last-event-id", "0")))
+        except ValueError:
+            pass
+        q = fil.abonner(compte)
+
+        def sse(o: dict) -> str:
+            ident = f"id: {o['tour']['id']}\n" if o.get("type") == "tour" else ""
+            return f"{ident}data: {json.dumps(o, ensure_ascii=False)}\n\n"
+
+        async def evenements():
+            try:
+                yield "retry: 3000\n\n"
+                if depuis:
+                    for t in fil.tours(compte, depuis, 200):
+                        yield sse({"type": "tour", "tour": t})
+                while True:
+                    try:
+                        o = await aio.wait_for(q.get(), 20)
+                    except aio.TimeoutError:
+                        if await requete.is_disconnected():
+                            return
+                        yield ": ping\n\n"      # garde la connexion ouverte (proxy, Cloudflare)
+                        continue
+                    if o is None:
+                        return
+                    yield sse(o)
+            finally:
+                fil.desabonner(compte, q)
+
+        return StreamingResponse(evenements(), media_type="text/event-stream",
+                                 headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
+
+    async def chat_interne(d: DemandeChat, requete: Request, note_fil: str = ""):
         if RE_BRIEFING.search(d.message):
             d = d.model_copy(update={"message": consigne_briefing(), "role": cfg.routeur.role_complexe})
         demande_en_cours.set((d.source, d.message))
@@ -1971,6 +2097,8 @@ def creer_app(config: Config | None = None, registre: Registre | None = None,
                 echec_ha = ""
         _tracer(route, d.message)
 
+        if note_fil:
+            consigne_profil = (consigne_profil + "\n\n" + note_fil).strip()
         msgs = _messages(cfg, d, outils=bool(outils), profil=consigne_profil)
         # garde-fou : le modèle rapide ne doit pas prétendre avoir agi sur la maison
         garde = ha.configure and role == cfg.routeur.role_simple
@@ -2102,6 +2230,15 @@ def creer_app(config: Config | None = None, registre: Registre | None = None,
 
     app.mount("/static", StaticFiles(directory=STATIC), name="static")
     return app
+
+
+def nom_appareil(ua: str) -> str:
+    """Nom lisible de l'appareil d'après le navigateur (« iPhone », « Android », « Windows »…)."""
+    for motif, nom in (("iPhone", "iPhone"), ("iPad", "iPad"), ("Android", "Android"), ("Windows", "Windows"),
+                       ("Macintosh", "Mac"), ("Linux", "Linux")):
+        if motif in ua:
+            return nom
+    return "un autre appareil"
 
 
 def _tracer(route: dict, message: str) -> None:

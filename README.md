@@ -92,6 +92,24 @@ Les cartes arrivent **repliées** (nom et état) : un toucher sur l'en-tête les
 
 Les cartes sont construites par le serveur (`assistant/maison/cartes.py`) avec l'état lu dans Home Assistant : aucun modèle n'en écrit le contenu. Dans le flux NDJSON de `/api/chat`, elles arrivent dans une ligne `{"cartes": [...]}` avant `fin` (champ `cartes` sans flux). Un geste sur une carte appelle `POST /api/maison/carte` sans passer par un modèle : mêmes appareils autorisés, actions sensibles refusées, historique et « annule » comme à la voix (`POST /api/maison/carte/annuler`). Les appareils masqués (accès à distance, appareil partagé) n'ont pas de carte.
 
+## Un seul assistant par compte (fil partagé)
+
+La conversation n'appartient plus à une page mais au compte : tous les appareils connectés au même compte parlent au même assistant.
+
+- **En direct** : une question posée sur le téléphone s'affiche sur le PC (« depuis iPhone »), puis la réponse arrive mot à mot sur les deux. Seul l'appareil qui a posé la question lit la réponse à voix haute.
+- **Reprise** : un appareil qui s'ouvre retrouve les derniers échanges (affichés en vue Conversation, discrets en mode orbe). Le modèle reçoit le contexte du compte (échanges des dernières 24 h, au plus 20) et les dernières actions sur la maison (3 h), d'où qu'elles viennent.
+- **Suite d'une question** : « oui » à une proposition de souvenir, la réponse à « Lequel ? » ou la confirmation d'un redémarrage peuvent venir d'un autre appareil du compte.
+- **Nouvelle conversation** (menu ⋯) : efface le fil sur tous les appareils ; les souvenirs validés restent.
+- Ni sur un appareil partagé, ni pour un compte enfant, ni à distance si l'historique y est masqué : la page garde alors une conversation à elle, rien n'est relu.
+
+Stockage : `fil.db` (SQLite) dans le dossier d'état, 1 000 échanges au plus par compte.
+
+| Point d'accès | Rôle |
+| --- | --- |
+| `GET /api/fil` | Identifiant de conversation du compte et derniers échanges |
+| `GET /api/fil/flux` | Server-Sent Events : questions, réponses mot à mot, effacement (reprise après coupure par `Last-Event-ID`) |
+| `DELETE /api/fil` | Nouvelle conversation |
+
 ## Voix (locale)
 
 - **Transcription** : faster-whisper « small » en français (`POST /api/voix/transcrire`, corps = l'audio enregistré par le navigateur, webm/opus ou wav). Les noms de l'assistant, des appareils et des pièces sont donnés à Whisper comme indices.
