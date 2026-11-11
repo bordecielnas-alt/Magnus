@@ -23,7 +23,7 @@ from .config import Config, charger, charger_secrets, chemin_alias, dossier_etat
 from .fournisseurs import FournisseurIndisponible, Message, Registre, Reponse
 from .home_assistant import HomeAssistant
 from .maison import Maison, masques, piece_preferee
-from .maison.cartes import cartes_pour, regler as regler_carte
+from .maison.cartes import MAX_GROUPE, cartes_pour, regler as regler_carte, regler_plusieurs
 from .maison.historique import Historique
 from .maison.historique import demande as demande_en_cours
 from .maison.alias import AliasAppris
@@ -94,7 +94,15 @@ class ReglageCarte(BaseModel):
     kelvin: int | None = Field(default=None, ge=1000, le=10000)
     couleur: str | None = Field(default=None, max_length=30)
     position: float | None = Field(default=None, ge=0, le=100)
+    teinte: float | None = Field(default=None, ge=0, le=360)          # cercle chromatique (degrés)
+    saturation: float | None = Field(default=None, ge=0, le=100)
     conversation: str = Field(default="", max_length=64)
+
+
+class ReglageGroupe(ReglageCarte):
+    """Le même geste sur plusieurs appareils d'une carte « groupe » : seuls les compatibles sont réglés."""
+    entity_id: str = ""
+    entity_ids: list[str] = Field(min_length=1, max_length=MAX_GROUPE)
 
 
 class ReglagesVoix(BaseModel):
@@ -1066,6 +1074,27 @@ def creer_app(config: Config | None = None, registre: Registre | None = None,
         if r.detail.get("echecs") or r.detail.get("sensibles") or not r.texte.startswith("C'est"):
             raise HTTPException(409, r.texte or "Rien n'a été fait.")
         return {"ok": True, "texte": r.texte, "carte": c}
+
+    @app.post("/api/maison/carte/groupe")
+    async def geste_groupe(g: ReglageGroupe, requete: Request) -> dict:
+        """Carte « groupe » : la même couleur (ou intensité, blanc…) pour les appareils choisis, en une action."""
+        if not ha.configure:
+            raise HTTPException(503, "Home Assistant n'est pas configuré")
+        masques.set(frozenset(contexte_de(requete)["masques"]))
+        demande_en_cours.set(("carte", texte_conversation.get(g.conversation, "")))
+        champs = g.model_dump(exclude={"entity_id", "entity_ids", "conversation"}, exclude_none=True)
+        try:
+            r, cartes, ecartes = await regler_plusieurs(maison, g.entity_ids, g.conversation, **champs)
+        except ValueError as e:
+            raise HTTPException(400, str(e)) from e
+        if r is None:
+            raise HTTPException(404 if not ecartes else 409,
+                                "Aucun de ces appareils n'accepte ce réglage." if ecartes else "appareils inconnus ou non autorisés")
+        auditer(requete, "action_maison", par="carte", entites=[c["entity_id"] for c in cartes],
+                resultat=r.texte[:200], **champs)
+        if r.detail.get("echecs") or r.detail.get("sensibles") or not r.texte.startswith("C'est"):
+            raise HTTPException(409, r.texte or "Rien n'a été fait.")
+        return {"ok": True, "texte": r.texte, "cartes": cartes, "ecartes": ecartes}
 
     @app.post("/api/maison/carte/annuler")
     async def annuler_carte(c: Conv, requete: Request) -> dict:

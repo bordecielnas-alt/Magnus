@@ -171,7 +171,9 @@
   .tech .puce.route { display:none; }
   .tech .ecoute { align-self:flex-end; }
   /* hors vue technique : seul le dernier échange reste visible */
-  main:not(.tech):not(.tout) #fil > .msg:not(.dernier):not(.avant-dernier) { display:none; }
+  main:not(.tech):not(.tout) #fil > .msg:not(.dernier):not(.avant-dernier):not(.garde) { display:none; }
+  /* une réponse dont on se sert (carte dépliée, réglage, défilement) ne s'efface pas et reste affichée */
+  #fil > .msg.garde { opacity:1 !important; transition:opacity .3s !important; }
   .tout .orbe-cadre { width:90px; height:90px; }
 
   /* ===== Vue orbe plein écran ===== */
@@ -188,7 +190,7 @@
   .plein #fil > .efface { opacity:0; transition:opacity 60s linear; }   /* en mode orbe : ni heure, ni route, ni durée */
   .plein #fil { justify-content:flex-end; pointer-events:none; }
   .plein #fil > * { pointer-events:auto; }
-  .plein #fil > .msg:not(.dernier):not(.avant-dernier) { display:none !important; }
+  .plein #fil > .msg:not(.dernier):not(.avant-dernier):not(.garde) { display:none !important; }
   .plein .lui { max-height:34vh; overflow-y:auto; font-size:1.1rem; text-shadow:0 1px 3px rgba(0,0,0,.9), 0 0 18px rgba(0,0,0,.8); }
   .plein .ecoute { text-shadow:0 1px 3px rgba(0,0,0,.9); }
   .plein .astuce-plein { display:inline; }
@@ -643,6 +645,26 @@ function estomper() {
   const els = [...$('fil').children];
   requestAnimationFrame(() => requestAnimationFrame(() => { for (const e of els) e.classList.add('efface'); }));
 }
+// Une réponse qu'on est en train d'utiliser ne disparaît pas : ni effacée (mode orbe), ni masquée par
+// l'échange suivant. « En usage » : touchée il y a moins de 30 s, survolée à la souris, ou une de ses
+// cartes dépliée et touchée il y a moins de 3 min. Ensuite elle s'efface comme les autres.
+const GARDE_MS = 30000, GARDE_CARTE_MS = 180000;
+function majGarde(m) {
+  const depuis = Date.now() - (+m.dataset.touche || 0);
+  const garde = m.isConnected && (depuis < GARDE_MS || m.matches(':hover') && !matchMedia('(pointer: coarse)').matches
+    || (depuis < GARDE_CARTE_MS && !!m.querySelector('.cartes > .carte:not(.repliee)')));
+  m.classList.toggle('garde', garde);
+  clearTimeout(m._garde);
+  if (garde) m._garde = setTimeout(() => majGarde(m), 2000);
+}
+function toucherBulle(e) {
+  const m = e.target.closest?.('#fil > .msg');
+  if (!m || (e.type === 'pointerover' && e.pointerType !== 'mouse')) return;
+  m.dataset.touche = Date.now();
+  majGarde(m);
+}
+for (const t of ['pointerdown', 'pointerover', 'input', 'change', 'keydown', 'wheel', 'scroll'])
+  $('fil').addEventListener(t, toucherBulle, {capture: true, passive: true});
 function bulle(classe, texte) {
   $('accueil')?.remove();
   const d = document.createElement('div');
