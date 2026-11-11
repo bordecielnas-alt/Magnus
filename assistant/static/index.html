@@ -1622,8 +1622,25 @@ majMuet();
 function couperLecture() {
   numeroLecture++;
   voixActive = false;
+  baisserVoix(false);
   const l = lecture; lecture = null;
   if (l) l.pause();
+}
+
+// Vérification d'une interruption (voir interruption.js) : on baisse sa voix ~0,4 s. Si ce que le
+// micro entend baisse avec elle, c'était son écho et il reprend ; sinon c'est toi et il se tait.
+// Sur iPhone le volume d'un lecteur ne se règle pas : on coupe alors le son le temps du test.
+let voixBaissee = false, muetPourVerif = false;
+function baisserVoix(oui) {
+  if (oui === voixBaissee) return;
+  voixBaissee = oui;
+  if (oui) {
+    try { lecteur.volume = 0.1; } catch (e) {}
+    if (lecteur.volume > 0.5) { lecteur.muted = true; muetPourVerif = true; }
+  } else {
+    try { lecteur.volume = 1; } catch (e) {}
+    if (muetPourVerif) { lecteur.muted = false; muetPourVerif = false; }
+  }
 }
 
 // ----- Interruption : tu parles, il se tait et t'écoute (le détecteur est dans interruption.js) -----
@@ -1682,7 +1699,7 @@ function surveillerInterruption(moi) {
     const fbuf = new Float32Array(an.fftSize), d = nouveauDetecteur();
     let rec = null, recus = [];
     diag('interruption : j\'écoute pendant qu\'il parle (gain d\'écho ' + d.gain.toFixed(2) + ')');
-    const finir = () => { if (rec && rec.state === 'recording') rec.stop(); rec = null; retenirGainEcho(d); ctx.close().catch(() => {}); };
+    const finir = () => { if (rec && rec.state === 'recording') rec.stop(); rec = null; baisserVoix(false); retenirGainEcho(d); ctx.close().catch(() => {}); };
     const tic = () => {
       if (etat.fini || moi !== numeroLecture || enregistreur || continu.actif || !microChaudPret()) { finir(); return; }
       if (ctx.state === 'running') {
@@ -1692,7 +1709,11 @@ function surveillerInterruption(moi) {
           recus = []; rec = new MediaRecorder(flux);
           rec.ondataavailable = ev => { if (ev.data.size) recus.push(ev.data); };
           rec.start(250);
-        } else if (r === 'abandon') {
+        } else if (r === 'verifier') {
+          diag('interruption : on dirait toi (' + d.raison + '), je baisse ma voix pour vérifier');
+          baisserVoix(true);
+        } else if (r === 'abandon' || r === 'echo') {
+          if (r === 'echo') { diag('interruption : fausse alerte, ' + d.raison); baisserVoix(false); retenirGainEcho(d); }
           if (rec && rec.state === 'recording') rec.stop(); rec = null;
         } else if (r === 'coupe') {
           diag('interruption : voix coupée, tu parles (' + d.raison + ')');
@@ -1804,7 +1825,7 @@ async function direAVoixHaute(source) {
     f.surAjout = null;
     clearInterval(pulse);
     if (veille) veille.arreter();
-    if (moi === numeroLecture) { lecture = null; voixActive = false; }
+    if (moi === numeroLecture) { lecture = null; voixActive = false; baisserVoix(false); }
     if (!occupe && !onTEcoute()) orbe.etat('repos');
   }
 }
@@ -2035,7 +2056,13 @@ function analyserContinu() {
       const r = interruption && det && ctx.state === 'running'
         ? (({rms, pic}) => det.image(rms, pic, niveauSortie(), t))(mesureMicro(an, fbufC)) : '';
       if (r === 'debut') { jeter(); lancer(); }   // on enregistre dès ta première syllabe, au cas où
-      else if (r === 'coupe') {
+      else if (r === 'verifier') {
+        diag('interruption : on dirait toi (' + det.raison + '), je baisse ma voix pour vérifier');
+        baisserVoix(true);
+      } else if (r === 'echo') {
+        diag('interruption : fausse alerte, ' + det.raison);
+        baisserVoix(false); retenirGainEcho(det); jeter();
+      } else if (r === 'coupe') {
         diag('interruption : voix coupée, tu parles (' + det.raison + ')');
         const depuis = det.debut;
         retenirGainEcho(det); det = null;
@@ -2046,7 +2073,7 @@ function analyserContinu() {
       } else if (!det || !det.candidat) jeter();
       requestAnimationFrame(tic); return;
     }
-    if (det) { retenirGainEcho(det); det = null; }
+    if (det) { retenirGainEcho(det); det = null; baisserVoix(false); }
     if (!continu.rec) lancer();
     const son = m > 12;
     $('veille').classList.toggle('son', son && (continu.toujours || continu.fin > Date.now()));
