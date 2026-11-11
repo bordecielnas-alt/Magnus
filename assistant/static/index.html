@@ -369,6 +369,7 @@
       <label class="case" for="fenetre">Après le mot de réveil, écouter encore <input type="number" id="fenetre" min="0" max="3600" step="5"> s</label>
       <p class="note">0 = dire le mot de réveil avant chaque phrase.</p>
       <label class="case"><input type="checkbox" id="toujours"> Toujours à l'écoute, sans mot de réveil</label>
+      <label class="case"><input type="checkbox" id="interruption"> Il se tait dès que je parle (je peux lui couper la parole, même sans écoute continue)</label>
       <label class="case"><input type="checkbox" id="prechauffe"> Préparer le micro dès le premier toucher (premier enregistrement plus fiable ; l'icône micro du téléphone reste allumée)</label>
       <p class="note" id="noteEcoute"></p>
     </fieldset>
@@ -389,6 +390,7 @@
 <script src="/static/cartes.js"></script>
 <script src="/static/rapports.js"></script>
 <script src="/static/sons.js"></script>
+<script src="/static/interruption.js"></script>
 <script>
 const $ = id => document.getElementById(id);
 const ICONE_MICRO = '<svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3a3 3 0 0 0-3 3v6a3 3 0 0 0 6 0V6a3 3 0 0 0-3-3z"/><path d="M19 11a7 7 0 0 1-14 0"/><path d="M12 18v3"/></svg>';
@@ -873,7 +875,7 @@ async function traiter(message, vocal, role = 'auto') {
     minuteurErreur = setTimeout(() => { if (!occupe) orbe.etat('repos'); }, 4000);
   } finally {
     occupe = false;
-    if (orbe.etatCourant !== 'erreur' && !enregistreur) orbe.etat('repos');
+    if (orbe.etatCourant !== 'erreur' && !onTEcoute()) orbe.etat('repos');
     marquerDerniers(); defiler();
     if (!matchMedia('(pointer: coarse)').matches) $('saisie').focus();
     estomper();
@@ -1292,11 +1294,20 @@ $('micro').onclick = async () => {
 let fluxChaud = null, prechauffe = true;
 try { prechauffe = localStorage.getItem('micro.prechauffe') !== '0'; } catch (e) {}
 function microChaudPret() { const p = fluxChaud && fluxChaud.getAudioTracks()[0]; return !!(p && p.readyState === 'live' && !p.muted); }
-function lacherMicroChaud() { if (fluxChaud) { fluxChaud.getTracks().forEach(t => t.stop()); fluxChaud = null; diag('micro préparé : libéré'); } }
-async function prechaufferMicro() {
-  if (!prechauffe || microChaudPret() || enregistreur || continu.actif) return;
-  try { fluxChaud = await ouvrirMicro('micro préparé'); }
-  catch (e) { fluxChaud = null; }
+function lacherMicroChaud() { generationChaud++; if (fluxChaud) { fluxChaud.getTracks().forEach(t => t.stop()); fluxChaud = null; diag('micro préparé : libéré'); } }
+// une seule demande à la fois : deux demandes en même temps ouvriraient deux micros (et l'un resterait pris)
+// (et un micro rendu pendant qu'on l'ouvrait est refermé dès qu'il arrive)
+let demandeMicroChaud = null, generationChaud = 0;
+function prechaufferMicro() {
+  if (demandeMicroChaud) return demandeMicroChaud;
+  if (!prechauffe || microChaudPret() || enregistreur || continu.actif) return Promise.resolve();
+  const gen = generationChaud;
+  demandeMicroChaud = ouvrirMicro('micro préparé').then(f => {
+    if (gen !== generationChaud) { f.getTracks().forEach(t => t.stop()); diag('micro préparé : rendu aussitôt (plus utile)'); return; }
+    fluxChaud = f;
+  }, () => { fluxChaud = null; })
+    .finally(() => { demandeMicroChaud = null; });
+  return demandeMicroChaud;
 }
 const auPremierToucher = ev => {
   if (ev.target.closest && ev.target.closest('#micro')) return;   // l'appui sur le micro ouvre déjà le micro
@@ -1310,21 +1321,23 @@ document.addEventListener('visibilitychange', () => {
 });
 
 let dicteeAnnulee = false, apresAnnulation = null;
-async function demarrerDictee(reessai) {
+// deja : {rec, morceaux} quand l'interruption a commencé à t'enregistrer pendant qu'il parlait
+async function demarrerDictee(reessai, deja) {
+  if (deja && !(deja.rec && deja.rec.state === 'recording')) deja = null;
   try {
-    fluxMicro = microChaudPret() ? fluxChaud : await ouvrirMicro('dictée');
-    if (fluxMicro === fluxChaud) diag('dictée : micro déjà prêt, réutilisé');
+    fluxMicro = deja ? fluxChaud : microChaudPret() ? fluxChaud : await ouvrirMicro('dictée');
+    if (fluxMicro === fluxChaud) diag('dictée : micro déjà prêt, réutilisé' + (deja ? ' (enregistrement commencé à ta première syllabe)' : ''));
   } catch (e) {
     erreurMicro(e);
     return;
   }
-  morceaux = [];
-  enregistreur = new MediaRecorder(fluxMicro);
+  morceaux = deja ? deja.morceaux : [];
+  enregistreur = deja ? deja.rec : new MediaRecorder(fluxMicro);
   diag('dictée : enregistreur ' + (enregistreur.mimeType || 'type ?'));
   enregistreur.onerror = ev => diag('dictée : erreur enregistreur ' + (ev.error && ev.error.name));
   enregistreur.ondataavailable = ev => { if (ev.data.size) morceaux.push(ev.data); };
   enregistreur.onstop = transcrireEtEnvoyer;
-  enregistreur.start(500);   // un morceau toutes les 0,5 s : sert aux mots en direct
+  if (!deja) enregistreur.start(500);   // un morceau toutes les 0,5 s : sert aux mots en direct
   $('micro').classList.add('actif'); $('micro').innerHTML = ICONE_STOP;
   $('page').classList.remove('zen');
   $('accueil')?.remove();
@@ -1333,7 +1346,7 @@ async function demarrerDictee(reessai) {
   bulleEcoute.innerHTML = '<div class="tete"><span class="point"></span><span class="temps">0 s</span><span class="niveau"><span></span></span></div><div class="mots"></div>';
   $('fil').appendChild(bulleEcoute); defiler();
   orbe.etat('ecoute');
-  suivreVolume(fluxMicro, reessai);
+  suivreVolume(fluxMicro, reessai, !!deja);
   minuteurPartiel = setInterval(transcriptionPartielle, 1200);
 }
 function micMortDictee(reessai) {
@@ -1374,12 +1387,12 @@ function mesureVolume() {
 
 // Pause tolérée avant de considérer que tu as fini ta phrase (on peut respirer, chercher un mot)
 const SILENCE_DICTEE = 2000, SILENCE_CONTINU = 1500;
-function suivreVolume(flux, reessai) {
+function suivreVolume(flux, reessai, dejaParle) {
   // niveau du micro, minuteur, et arrêt automatique : 1,2 s de silence après avoir parlé (ou 6 s sans rien)
   try {
     const {ctx, an} = analyseurMicro(flux);
     const buf = new Uint8Array(an.fftSize), debut = performance.now();
-    let aParle = false, dernierSon = debut, picDiag = 0, dernierDiag = debut, vivant = false, debutAnalyse = 0;
+    let aParle = !!dejaParle, dernierSon = debut, picDiag = 0, dernierDiag = debut, vivant = false, debutAnalyse = 0;
     const fbuf = new Float32Array(an.fftSize), vol = mesureVolume();
     const tic = () => {
       if (!enregistreur || enregistreur.state !== 'recording') { if (vol.n) diag('dictée : volume ' + vol.bilan()); ctx.close(); return; }
@@ -1524,8 +1537,11 @@ function jouerAccueil(force) {
   if (!c || c.state !== 'running') { diag('son d\'éveil : contexte audio pas encore réveillé, sauté'); return; }
   const n = choixAccueil || sonsEveil.defaut;
   const sortie = c.createGain(); sortie.gain.value = .85; sortie.connect(c.destination);
+  // son niveau en direct, pour ne pas prendre son écho dans le micro pour ta voix (interruption)
+  try { analyseAccueil = c.createAnalyser(); analyseAccueil.fftSize = 512; sortie.connect(analyseAccueil); } catch (e) { analyseAccueil = null; }
   try { sonsEveil.jouer(n, c, sortie, c.currentTime + .02); } catch (e) { diag('son d\'éveil : ERREUR ' + e.message); return; }
   orbe.impulsion(10);
+  finAccueil = performance.now() + ((sonsEveil.liste[n - 1] || {}).duree || 2.5) * 1000 + 300;
   diag('son d\'éveil n° ' + n + ' joué');
 }
 // liste des sons dans Réglages, rangés par famille, avec leur numéro de la page de démonstration
@@ -1579,8 +1595,93 @@ $('btnMuet').onclick = () => {
 majMuet();
 function couperLecture() {
   numeroLecture++;
+  voixActive = false;
   const l = lecture; lecture = null;
   if (l) l.pause();
+}
+
+// ----- Interruption : tu parles, il se tait et t'écoute (le détecteur est dans interruption.js) -----
+// On compare le micro à ce que l'assistant est en train de dire, pour ne pas se couper sur sa propre voix.
+// Le « gain d'écho » appris (part de sa voix qui revient dans le micro) est gardé d'une visite à l'autre.
+let interruption = true, gainEcho = 0.5, finAccueil = 0, analyseAccueil = null, tamponAccueil = null;
+try { interruption = localStorage.getItem('voix.interruption') !== '0'; gainEcho = +localStorage.getItem('voix.gainEcho') || 0.5; } catch (e) {}
+const sortieVoix = {env: null, url: ''};   // enveloppe (volume toutes les 10 ms) de la phrase en cours
+// niveau attendu de la voix de l'assistant maintenant : 0 s'il se tait, null si on ne le connaît pas
+function niveauSortie() {
+  let n = 0;
+  if (lecture && !lecteur.paused) {
+    if (!sortieVoix.env || sortieVoix.url !== lecteur.src) return null;
+    n = Interruption.niveauA(sortieVoix.env, lecteur.currentTime || 0) * (lecteur.muted ? 0 : lecteur.volume);
+  }
+  // son d'éveil en cours : on ajoute son niveau, mesuré en direct
+  if (performance.now() < finAccueil) {
+    if (!analyseAccueil) return null;
+    if (!tamponAccueil || tamponAccueil.length !== analyseAccueil.fftSize) tamponAccueil = new Float32Array(analyseAccueil.fftSize);
+    n = Math.max(n, mesureMicro(analyseAccueil, tamponAccueil).rms);
+  }
+  return n;
+}
+// tu es en train de parler (dictée, ou morceau en cours en écoute continue) : l'orbe reste en écoute
+function onTEcoute() { return !!enregistreur || !!(continu.actif && continu.parle && continu.parle()); }
+function nouveauDetecteur() { return window.Interruption ? Interruption.creerDetecteur({gain: gainEcho}) : null; }
+function retenirGainEcho(d) {
+  if (!d) return;
+  gainEcho = d.gain;
+  try { localStorage.setItem('voix.gainEcho', d.gain.toFixed(3)); } catch (e) {}
+}
+function mesureMicro(an, fbuf) {
+  an.getFloatTimeDomainData(fbuf);
+  let q = 0, pic = 0;
+  for (let i = 0; i < fbuf.length; i++) { const a = Math.abs(fbuf[i]); if (a > pic) pic = a; q += fbuf[i] * fbuf[i]; }
+  return {rms: Math.sqrt(q / fbuf.length), pic};
+}
+// Sans écoute continue : pendant qu'il parle, on écoute quand même le micro préparé. Dès que tu
+// prends la parole il se tait, et ta phrase, enregistrée depuis son tout début, part comme une dictée.
+// On n'ouvre jamais le micro sans permission déjà donnée (pas de fenêtre d'autorisation en pleine réponse).
+function surveillerInterruption(moi) {
+  if (!interruption || continu.actif || enregistreur || !window.Interruption || !window.MediaRecorder) return null;
+  const etat = {fini: false};
+  (async () => {
+    if (!microChaudPret()) {
+      const p = await navigator.permissions?.query({name: 'microphone'}).catch(() => null);
+      if (!p || p.state !== 'granted' || etat.fini) return;
+      await prechaufferMicro();
+      if (!microChaudPret()) return;
+    }
+    if (etat.fini || moi !== numeroLecture || enregistreur || continu.actif) return;
+    const flux = fluxChaud;
+    let ctx, an;
+    try { ({ctx, an} = analyseurMicro(flux)); }
+    catch (e) { diag('interruption : analyse du micro impossible ' + (e.name || e.message)); return; }
+    const fbuf = new Float32Array(an.fftSize), d = nouveauDetecteur();
+    let rec = null, recus = [];
+    diag('interruption : j\'écoute pendant qu\'il parle (gain d\'écho ' + d.gain.toFixed(2) + ')');
+    const finir = () => { if (rec && rec.state === 'recording') rec.stop(); rec = null; retenirGainEcho(d); ctx.close().catch(() => {}); };
+    const tic = () => {
+      if (etat.fini || moi !== numeroLecture || enregistreur || continu.actif || !microChaudPret()) { finir(); return; }
+      if (ctx.state === 'running') {
+        const {rms, pic} = mesureMicro(an, fbuf);
+        const r = d.image(rms, pic, niveauSortie(), performance.now());
+        if (r === 'debut') {
+          recus = []; rec = new MediaRecorder(flux);
+          rec.ondataavailable = ev => { if (ev.data.size) recus.push(ev.data); };
+          rec.start(250);
+        } else if (r === 'abandon') {
+          if (rec && rec.state === 'recording') rec.stop(); rec = null;
+        } else if (r === 'coupe') {
+          diag('interruption : voix coupée, tu parles (' + d.raison + ')');
+          const deja = rec ? {rec, morceaux: recus} : null;
+          rec = null; finir();
+          couperLecture();
+          demarrerDictee(false, deja);
+          return;
+        }
+      }
+      requestAnimationFrame(tic);
+    };
+    tic();
+  })();
+  return {arreter() { etat.fini = true; }};
 }
 
 // Parole au fil de l'eau : la réponse est lue phrase par phrase PENDANT qu'elle arrive,
@@ -1620,10 +1721,19 @@ async function direAVoixHaute(source) {
   orbe.etat('parole');
   jouerAccueil();   // pendant que la première phrase se prépare
   const pulse = setInterval(() => orbe.impulsion(4), 180);
+  const veille = surveillerInterruption(moi);
   try {
     // deux phrases d'avance : avec un réseau lent, la suivante est prête quand la précédente finit
     const prets = [], depart = [];
-    const preparer = k => { if (k < phrases.length && !prets[k]) { depart[k] = performance.now(); prets[k] = synthetiser(phrases[k]); } };
+    const preparer = k => {
+      if (k >= phrases.length || prets[k]) return;
+      depart[k] = performance.now();
+      prets[k] = synthetiser(phrases[k]).then(b => {
+        // son volume dans le temps, pour reconnaître sa propre voix dans le micro (interruption)
+        if (b && interruption && window.Interruption) b.enveloppe = Interruption.enveloppeBlob(b).catch(() => null);
+        return b;
+      });
+    };
     let enCours = 0;
     f.surAjout = () => { preparer(enCours); preparer(enCours + 1); preparer(enCours + 2); };
     preparer(0); preparer(1);
@@ -1643,6 +1753,8 @@ async function direAVoixHaute(source) {
       const url = URL.createObjectURL(blob);
       lecture = lecteur;
       lecteur.src = url;
+      sortieVoix.env = null; sortieVoix.url = lecteur.src;
+      if (blob.enveloppe) blob.enveloppe.then(e => { if (sortieVoix.url === lecteur.src) sortieVoix.env = e; });
       const interrompu = await new Promise(res => {
         lecteur.onended = () => res(false);
         lecteur.onerror = () => res(false);
@@ -1665,9 +1777,9 @@ async function direAVoixHaute(source) {
   } finally {
     f.surAjout = null;
     clearInterval(pulse);
-    if (moi === numeroLecture) lecture = null;
-    voixActive = false;
-    if (!occupe) orbe.etat('repos');
+    if (veille) veille.arreter();
+    if (moi === numeroLecture) { lecture = null; voixActive = false; }
+    if (!occupe && !onTEcoute()) orbe.etat('repos');
   }
 }
 
@@ -1749,6 +1861,11 @@ async function ecrireReglagesVoix() {
 $('fenetre').onchange = ecrireReglagesVoix;
 $('toujours').onchange = ecrireReglagesVoix;
 $('continu').onchange = () => basculerContinu($('continu').checked);
+$('interruption').checked = interruption;
+$('interruption').onchange = () => {
+  interruption = $('interruption').checked;
+  try { localStorage.setItem('voix.interruption', interruption ? '1' : '0'); } catch (e) {}
+};
 $('prechauffe').checked = prechauffe;
 $('prechauffe').onchange = () => {
   prechauffe = $('prechauffe').checked;
@@ -1838,7 +1955,7 @@ function analyserContinu() {
     continu.rec = rec; depart = performance.now();
   };
   const jeter = () => { if (continu.rec) { const r = continu.rec; continu.rec = null; if (r.state === 'recording') r.stop(); } };
-  let bargeDebut = 0, sonVisible = false, finSonVisible = 0;
+  let det = null, sonVisible = false, finSonVisible = 0;
   const tic = () => {
     if (!continu.actif) { jeter(); return; }
     const t = performance.now();
@@ -1867,20 +1984,25 @@ function analyserContinu() {
     if (t - dernierC > 5000) { diag('écoute continue : niveau max ' + picC + ' (contexte ' + ctx.state + ')'); picC = 0; dernierC = t; }
     if (enMorceau && ctx.state === 'running') { an.getFloatTimeDomainData(fbufC); volC.ajouter(fbufC); }
     if (voixActive) {
-      // L'assistant parle : on n'enregistre pas sa voix, mais si TU parles plus de 0,3 s
-      // (seuil plus haut, l'annulation d'écho retire l'essentiel de sa voix), il se tait.
-      jeter(); enMorceau = false;
-      // seuil relevé : sur un haut-parleur de téléphone, l'écho de sa propre voix le coupait trop vite
-      if (m > 40) { bargeDebut = bargeDebut || t; } else if (t - bargeDebut > 200) bargeDebut = 0;
-      if (bargeDebut && t - bargeDebut > 500) {
-        bargeDebut = 0;
-        diag('son : voix coupée car tu parles (niveau ' + m + ')');
+      // L'assistant parle : on n'enregistre pas sa voix, mais si TU parles, il se tait et t'écoute.
+      // Le détecteur compare le micro à ce qu'il dit (son écho), voir interruption.js.
+      enMorceau = false;
+      det = det || nouveauDetecteur();
+      const r = interruption && det && ctx.state === 'running'
+        ? (({rms, pic}) => det.image(rms, pic, niveauSortie(), t))(mesureMicro(an, fbufC)) : '';
+      if (r === 'debut') { jeter(); lancer(); }   // on enregistre dès ta première syllabe, au cas où
+      else if (r === 'coupe') {
+        diag('interruption : voix coupée, tu parles (' + det.raison + ')');
+        const depuis = det.debut;
+        retenirGainEcho(det); det = null;
         couperLecture();
-        lancer(); enMorceau = true; debut = dernierSon = t;
+        if (!continu.rec) lancer();
+        enMorceau = true; debut = depuis || t; dernierSon = t;
         orbe.etat('ecoute');
-      }
+      } else if (!det || !det.candidat) jeter();
       requestAnimationFrame(tic); return;
     }
+    if (det) { retenirGainEcho(det); det = null; }
     if (!continu.rec) lancer();
     const son = m > 12;
     $('veille').classList.toggle('son', son && (continu.toujours || continu.fin > Date.now()));
