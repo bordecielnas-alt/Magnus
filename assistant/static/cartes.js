@@ -41,6 +41,26 @@
   .carte .pastilles { display:flex; gap:7px; flex-wrap:wrap; }
   .carte .pastilles button { width:28px; height:28px; border-radius:50%; border:2px solid var(--bord); background:var(--c); cursor:pointer; padding:0; }
   .carte .pastilles button:hover { border-color:var(--fg); }
+  .carte .pastilles button.roue-bouton { background:conic-gradient(hsl(0 100% 55%), hsl(60 100% 55%), hsl(120 100% 55%), hsl(180 100% 55%), hsl(240 100% 55%), hsl(300 100% 55%), hsl(360 100% 55%)); }
+  .carte .pastilles button[aria-expanded=true] { border-color:var(--fg); box-shadow:0 0 0 2px var(--accent); }
+  .carte .roue-zone { display:flex; align-items:center; gap:14px; padding-left:78px; }
+  .carte .roue-zone[hidden] { display:none; }
+  .carte .roue { position:relative; width:150px; height:150px; flex:none; border-radius:50%; cursor:crosshair; touch-action:none;
+    background:radial-gradient(circle closest-side, #fff, rgba(255,255,255,0)), conic-gradient(hsl(0 100% 50%), hsl(30 100% 50%), hsl(60 100% 50%),
+      hsl(90 100% 50%), hsl(120 100% 50%), hsl(150 100% 50%), hsl(180 100% 50%), hsl(210 100% 50%), hsl(240 100% 50%),
+      hsl(270 100% 50%), hsl(300 100% 50%), hsl(330 100% 50%), hsl(360 100% 50%)); box-shadow:0 0 0 1px var(--bord); }
+  .carte .roue .repere { position:absolute; width:18px; height:18px; margin:-9px 0 0 -9px; border-radius:50%; border:3px solid #fff;
+    box-shadow:0 0 0 1px rgba(0,0,0,.6), 0 1px 4px rgba(0,0,0,.5); pointer-events:none; }
+  .carte .roue[aria-disabled=true] { opacity:.4; cursor:default; }
+  .carte .roue-zone output { color:var(--muted); font-size:.82rem; }
+  .cartes.verrouillee .carte .roue { pointer-events:none; opacity:.5; }
+  .carte .tous { display:grid; gap:8px; padding:8px 10px; border:1px dashed var(--bord); border-radius:12px; }
+  .carte .tous > strong { font-size:.85rem; font-weight:600; }
+  .carte .choix { display:flex; flex-wrap:wrap; gap:6px; }
+  .carte .choix button { background:none; border:1px solid var(--bord); border-radius:99px; padding:3px 10px; font-size:.8rem; color:var(--muted); cursor:pointer; }
+  .carte .choix button[aria-pressed=true] { border-color:var(--accent); color:var(--fg); background:color-mix(in srgb, var(--accent) 18%, transparent); }
+  .cartes.verrouillee .carte .choix button { pointer-events:none; opacity:.5; }
+  @media (max-width:420px) { .carte .roue-zone { padding-left:0; justify-content:center; } }
   .inter { position:relative; width:46px; height:26px; flex:none; display:inline-block; }
   .inter input { position:absolute; inset:0; opacity:0; margin:0; cursor:pointer; width:100%; height:100%; }
   .inter span { position:absolute; inset:0; border-radius:99px; background:var(--bord); transition:background .2s; pointer-events:none; }
@@ -83,6 +103,81 @@
     if (c.kelvin) return kelvinEnCouleur(c.kelvin);
     return '#f5e6c4';
   }
+  // Cercle chromatique : 12 teintes en pastilles, et la roue pour toutes les autres (teinte + saturation)
+  const TEINTES = [[0, 'rouge'], [30, 'orange'], [50, 'jaune'], [85, 'vert anis'], [120, 'vert'], [155, "vert d'eau"],
+    [185, 'cyan'], [210, 'bleu ciel'], [235, 'bleu'], [265, 'violet'], [295, 'magenta'], [330, 'rose']];
+  function nomTeinte(t, sat = 100) {
+    const ecart = x => Math.min(Math.abs(t - x), 360 - Math.abs(t - x));
+    const nom = TEINTES.reduce((a, b) => ecart(b[0]) < ecart(a[0]) ? b : a)[1];
+    return sat < 12 ? 'blanc' : sat < 45 ? nom + ' pâle' : nom;
+  }
+  const hsl = (t, sat = 100) => `hsl(${Math.round(t)} ${Math.round(sat)}% ${Math.round(100 - sat / 2)}%)`;
+  function rgbEnHs([r, g, b]) {
+    r /= 255; g /= 255; b /= 255;
+    const max = Math.max(r, g, b), min = Math.min(r, g, b), d = max - min;
+    let h = 0;
+    if (d) h = max === r ? ((g - b) / d) % 6 : max === g ? (b - r) / d + 2 : (r - g) / d + 4;
+    return [(h * 60 + 360) % 360, max ? d / max * 100 : 0];
+  }
+
+  // Ligne « Couleur » : pastilles + bouton roue ; envoi({teinte, saturation}) au choix
+  function selecteurCouleur(palette, actuel, ok, envoi) {
+    const frag = document.createDocumentFragment();
+    const l = document.createElement('div');
+    l.className = 'ligne';
+    l.innerHTML = '<span>Couleur</span><div class="pastilles"></div>';
+    const pastilles = l.lastChild;
+    for (const p of palette) {
+      const b = document.createElement('button');
+      b.type = 'button'; b.style.setProperty('--c', hsl(p.teinte)); b.title = p.nom; b.setAttribute('aria-label', p.nom); b.disabled = !ok;
+      b.onclick = () => envoi({teinte: p.teinte, saturation: 100});
+      pastilles.appendChild(b);
+    }
+    const bRoue = document.createElement('button');
+    bRoue.type = 'button'; bRoue.className = 'roue-bouton'; bRoue.disabled = !ok;
+    bRoue.title = 'Toutes les couleurs'; bRoue.setAttribute('aria-label', 'Toutes les couleurs (cercle chromatique)');
+    bRoue.setAttribute('aria-expanded', 'false');
+    pastilles.appendChild(bRoue);
+    const zone = document.createElement('div');
+    zone.className = 'roue-zone'; zone.hidden = true;
+    zone.innerHTML = '<div class="roue" role="slider" aria-label="Cercle chromatique" aria-valuemin="0" aria-valuemax="359" tabindex="0">'
+      + '<span class="repere"></span></div><output></output>';
+    const roue = zone.firstChild, repere = roue.firstChild, out = zone.lastChild;
+    let [t, sat] = actuel || [30, 0];
+    const placer = () => {
+      const a = t * Math.PI / 180, r = sat / 100 * 50;
+      repere.style.left = (50 + r * Math.sin(a)) + '%'; repere.style.top = (50 - r * Math.cos(a)) + '%';
+      repere.style.background = hsl(t, sat);
+      out.textContent = actuel || sat ? nomTeinte(t, sat) : '';
+      roue.setAttribute('aria-valuenow', String(Math.round(t))); roue.setAttribute('aria-valuetext', nomTeinte(t, sat));
+    };
+    const lire = e => {
+      const b = roue.getBoundingClientRect(), x = e.clientX - b.left - b.width / 2, y = e.clientY - b.top - b.height / 2;
+      t = (Math.atan2(x, -y) * 180 / Math.PI + 360) % 360;
+      sat = Math.min(100, Math.hypot(x, y) / (b.width / 2) * 100);
+      placer();
+    };
+    let tire = false;
+    if (ok) {
+      roue.addEventListener('pointerdown', e => { tire = true; roue.setPointerCapture(e.pointerId); lire(e); e.preventDefault(); });
+      roue.addEventListener('pointermove', e => { if (tire) lire(e); });
+      roue.addEventListener('pointerup', e => { if (!tire) return; tire = false; lire(e); envoi({teinte: Math.round(t), saturation: Math.round(sat)}); });
+      roue.addEventListener('pointercancel', () => { tire = false; });
+      roue.addEventListener('keydown', e => {
+        const pas = {ArrowRight: [15, 0], ArrowLeft: [-15, 0], ArrowUp: [0, 10], ArrowDown: [0, -10]}[e.key];
+        if (pas) { e.preventDefault(); t = (t + pas[0] + 360) % 360; sat = Math.max(0, Math.min(100, (sat || 100) + pas[1])); placer(); }
+        else if (e.key === 'Enter') { e.preventDefault(); envoi({teinte: Math.round(t), saturation: Math.round(sat || 100)}); }
+      });
+    } else roue.setAttribute('aria-disabled', 'true');
+    bRoue.onclick = () => {
+      zone.hidden = !zone.hidden;
+      bRoue.setAttribute('aria-expanded', String(!zone.hidden));
+    };
+    placer();
+    frag.append(l, zone);
+    return frag;
+  }
+
   function resume(c) {
     if (!c.disponible) return 'injoignable';
     if (c.type === 'volet') return c.position != null ? c.position + ' %' : (c.ouvert ? 'ouvert' : 'fermé');
@@ -182,18 +277,8 @@
       if (reg.blanc) el.appendChild(curseur(el, 'r-blanc', 'Blanc', reg.blanc[0], reg.blanc[1], 100,
         c.kelvin ?? Math.round((reg.blanc[0] + reg.blanc[1]) / 200) * 100, v => v + ' K',
         v => envoyer(el, conv, {entity_id: c.entity_id, kelvin: v}), ok));
-      if (reg.couleurs) {
-        const l = document.createElement('div');
-        l.className = 'ligne';
-        l.innerHTML = '<span>Couleur</span><div class="pastilles"></div>';
-        for (const [nom, hex] of Object.entries(reg.couleurs)) {
-          const b = document.createElement('button');
-          b.type = 'button'; b.style.setProperty('--c', hex); b.title = nom; b.setAttribute('aria-label', nom); b.disabled = !ok;
-          b.onclick = () => envoyer(el, conv, {entity_id: c.entity_id, couleur: nom});
-          l.lastChild.appendChild(b);
-        }
-        el.appendChild(l);
-      }
+      if (reg.couleurs) el.appendChild(selecteurCouleur(reg.couleurs, c.hs || (c.rgb ? rgbEnHs(c.rgb) : null), ok,
+        hs => envoyer(el, conv, {entity_id: c.entity_id, ...hs})));
     } else if (c.type === 'volet' && reg.position) {
       el.appendChild(curseur(el, 'r-pos', 'Ouverture', 0, 100, 5, c.position ?? 0, v => v + ' %',
         v => envoyer(el, conv, {entity_id: c.entity_id, position: v}), ok));
@@ -212,6 +297,8 @@
     const allumes = g.elements.filter(c => c.allume || c.ouvert).length;
     el.innerHTML = `<div class="carte-tete"><div class="titre"><strong>${echap(g.titre)}</strong>`
       + `<small>${g.elements.length} appareils · <span class="compte">${allumes}</span> allumés</small></div></div><ul class="rangs"></ul>`;
+    const tous = sectionTous(g, el, conv);
+    if (tous) el.querySelector('.rangs').before(tous);
     for (const c of g.elements) {
       const li = document.createElement('li');
       li.dataset.rang = c.entity_id;
@@ -236,6 +323,61 @@
     }
     el.appendChild(piedCarte(el, conv));
     return el;
+  }
+
+  // Carte « groupe » : régler plusieurs lampes d'un coup (couleur, blanc, intensité). On choisit lesquelles
+  // (toutes par défaut) ; le serveur ne règle que celles qui le peuvent et dit lesquelles il a laissées.
+  function sectionTous(g, el, conv) {
+    const lampes = g.elements.filter(c => c.type === 'lumiere' && c.disponible && Object.values(c.reglages || {}).some(Boolean));
+    if (lampes.length < 2) return null;
+    const sec = document.createElement('div');
+    sec.className = 'tous';
+    sec.innerHTML = '<strong>Régler plusieurs lampes</strong><div class="choix" role="group" aria-label="Lampes à régler"></div>';
+    const choisis = new Set(lampes.map(c => c.entity_id));
+    for (const c of lampes) {
+      const b = document.createElement('button');
+      b.type = 'button'; b.textContent = c.nom; b.setAttribute('aria-pressed', 'true');
+      b.onclick = () => {
+        const on = !choisis.has(c.entity_id);
+        on ? choisis.add(c.entity_id) : choisis.delete(c.entity_id);
+        b.setAttribute('aria-pressed', String(on));
+      };
+      sec.lastChild.appendChild(b);
+    }
+    const envoi = champs => envoyerGroupe(el, conv, [...choisis], champs);
+    const avec = k => lampes.filter(c => c.reglages[k]);
+    if (avec('intensite').length) sec.appendChild(curseur(el, 'r-int', 'Intensité', 1, 100, 1, 60, v => v + ' %', v => envoi({intensite: v}), true));
+    const blancs = avec('blanc');
+    if (blancs.length) {
+      const kmin = Math.min(...blancs.map(c => c.reglages.blanc[0])), kmax = Math.max(...blancs.map(c => c.reglages.blanc[1]));
+      sec.appendChild(curseur(el, 'r-blanc', 'Blanc', kmin, kmax, 100, Math.round((kmin + kmax) / 200) * 100, v => v + ' K', v => envoi({kelvin: v}), true));
+    }
+    const couleurs = avec('couleurs');
+    if (couleurs.length) sec.appendChild(selecteurCouleur(couleurs[0].reglages.couleurs, null, true, envoi));
+    return sec;
+  }
+
+  async function envoyerGroupe(el, conv, ids, champs) {
+    const note = el.querySelector(':scope > .pied-carte .note');
+    if (!ids.length) { note.textContent = 'Choisissez au moins une lampe.'; note.classList.add('ko'); return; }
+    el.classList.add('occupee');
+    try {
+      const r = await fetch('/api/maison/carte/groupe', {method: 'POST', headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({conversation: conv, entity_ids: ids, ...champs})});
+      const o = await r.json().catch(() => ({}));
+      if (!r.ok) throw new Error(typeof o.detail === 'string' ? o.detail : 'HTTP ' + r.status);
+      for (const c of o.cartes || []) {
+        el.querySelectorAll(`li[data-rang="${CSS.escape(c.entity_id)}"] > .carte`).forEach(x => {
+          const neuve = dessiner(c, conv);
+          x.replaceWith(neuve); majRang(neuve, c);
+        });
+      }
+      const noms = (o.ecartes || []).map(id => el.querySelector(`li[data-rang="${CSS.escape(id)}"] .nom`)?.textContent).filter(Boolean);
+      note.textContent = (o.texte || '') + (noms.length ? ` (pas ${noms.join(', ')} : réglage impossible)` : '');
+      note.classList.remove('ko');
+    } catch (e) {
+      note.textContent = 'Pas fait : ' + e.message; note.classList.add('ko');
+    } finally { el.classList.remove('occupee'); }
   }
 
   // Dans un groupe, la ligne résumée suit la carte détaillée

@@ -18,7 +18,8 @@ LAMPE_COULEUR = {"entity_id": "light.lampe_pied", "state": "on", "attributes": {
 def test_carte_lumiere_couleur():
     c = carte(Entite("light.lampe_pied", "Lampe sur pied", "Salon"), LAMPE_COULEUR)
     assert c["type"] == "lumiere" and c["allume"] and c["intensite"] == 40 and c["kelvin"] == 2700
-    assert c["reglages"]["blanc"] == [2000, 6500] and "rouge" in c["reglages"]["couleurs"]
+    assert c["reglages"]["blanc"] == [2000, 6500] and len(c["reglages"]["couleurs"]) == 12
+    assert {"nom": "rouge", "teinte": 0} in c["reglages"]["couleurs"]
 
 
 def test_carte_lumiere_simple_et_eteinte():
@@ -82,3 +83,66 @@ def test_commande_par_les_regles_renvoie_une_carte(tmp_path):
     cles = [next(iter(x)) for x in lignes]
     assert cles == ["route", "delta", "cartes", "fin"]
     assert lignes[2]["cartes"][0]["entity_id"] == "light.plafonnier"
+
+
+# --- cercle chromatique et réglage de plusieurs appareils ------------------------------
+
+def test_teinte_du_cercle_chromatique(tmp_path):
+    app, faux = _app(tmp_path)
+    c = TestClient(app)
+    r = c.post("/api/maison/carte", json={"entity_id": "light.plafonnier", "teinte": 200, "saturation": 80, "conversation": "t"})
+    assert r.status_code == 200 and "bleu ciel" in r.json()["texte"]
+    assert faux.appels[-1] == ("light", "turn_on", {"entity_id": "light.plafonnier", "hs_color": [200, 80]})
+    r = c.post("/api/maison/carte", json={"entity_id": "light.plafonnier", "teinte": 10, "conversation": "t"})
+    assert faux.appels[-1][2]["hs_color"] == [10, 100] and "rouge" in r.json()["texte"]
+    assert c.post("/api/maison/carte", json={"entity_id": "light.plafonnier", "teinte": 400}).status_code == 422
+
+
+def test_nom_teinte():
+    from assistant.maison import nom_teinte
+    assert nom_teinte(355) == "rouge" and nom_teinte(120) == "vert" and nom_teinte(240, 30) == "bleu pâle"
+    assert nom_teinte(60, 5) == "blanc"
+
+
+def _couleur(monkeypatch, *eids):
+    """Donne la couleur à ces lampes du faux Home Assistant (le temps du test)."""
+    from tests import test_maison
+    etats = [dict(s, attributes={**s["attributes"], "supported_color_modes": ["hs", "color_temp"]})
+             if s["entity_id"] in eids else s for s in test_maison.ETATS]
+    monkeypatch.setattr(test_maison, "ETATS", etats)
+
+
+def test_couleur_pour_tous_seulement_les_compatibles(tmp_path, monkeypatch):
+    _couleur(monkeypatch, "light.plafonnier", "light.lampe_pied")
+    app, faux = _app(tmp_path)
+    c = TestClient(app)
+    r = c.post("/api/maison/carte/groupe", json={
+        "entity_ids": ["light.plafonnier", "light.lampe_pied", "light.cuisine", "switch.prise_tv", "lock.porte"],
+        "teinte": 270, "conversation": "g"})
+    assert r.status_code == 200, r.text
+    o = r.json()
+    assert [x["entity_id"] for x in o["cartes"]] == ["light.plafonnier", "light.lampe_pied"]
+    assert set(o["ecartes"]) == {"light.cuisine", "switch.prise_tv"}       # la serrure n'est même pas citée
+    assert [a[2] for a in faux.appels] == [{"entity_id": "light.plafonnier", "hs_color": [270, 100]},
+                                           {"entity_id": "light.lampe_pied", "hs_color": [270, 100]}]
+    # un seul « annule » remet les deux lampes
+    a = c.post("/api/maison/carte/annuler", json={"conversation": "g"}).json()
+    assert a["ok"] and {x["entity_id"] for x in a["cartes"][0]["elements"]} == {"light.plafonnier", "light.lampe_pied"}
+
+
+def test_groupe_un_choix_et_refus(tmp_path, monkeypatch):
+    _couleur(monkeypatch, "light.lampe_pied")
+    app, faux = _app(tmp_path)
+    c = TestClient(app)
+    # un seul appareil choisi dans le groupe
+    assert c.post("/api/maison/carte/groupe", json={"entity_ids": ["light.lampe_pied"], "couleur": "bleu"}).status_code == 200
+    assert faux.appels == [("light", "turn_on", {"entity_id": "light.lampe_pied", "color_name": "blue"})]
+    # aucun compatible : refus clair, rien d'envoyé
+    r = c.post("/api/maison/carte/groupe", json={"entity_ids": ["switch.prise_tv"], "teinte": 30})
+    assert r.status_code == 409 and "accepte" in r.json()["detail"]
+    assert c.post("/api/maison/carte/groupe", json={"entity_ids": ["lock.porte"], "allume": True}).status_code == 404
+    assert c.post("/api/maison/carte/groupe", json={"entity_ids": [], "allume": True}).status_code == 422
+    # allumer pour tous : tout appareil joignable
+    c.post("/api/maison/carte/groupe", json={"entity_ids": ["light.cuisine", "switch.prise_tv"], "allume": True})
+    assert [a[:2] for a in faux.appels[-2:]] == [("light", "turn_on"), ("switch", "turn_on")]
+    assert len(faux.appels) == 3
