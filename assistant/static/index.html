@@ -94,6 +94,8 @@
   .moi { align-self:center; max-width:90%; color:var(--muted); font-style:italic; text-align:center; white-space:pre-wrap; }
   .lui { align-self:center; width:100%; max-width:60ch; font-size:1.1rem; }
   .lui .corps { min-width:0; flex:1; }
+  .corps.carte-seule > .texte { display:none; }   /* une carte : la phrase est dite, pas écrite */
+  .corps.carte-seule > .texte + .rapports, .corps.carte-seule > .texte + .cartes { margin-top:0; }
   .avatar { display:none; flex:none; width:24px; height:24px; margin-top:3px; border-radius:50%;
             background:radial-gradient(circle at 45% 40%, #f0fcff 0 12%, var(--givre) 30%, #2878d2 62%, var(--nuit) 74%); box-shadow:0 0 10px rgba(127,214,255,.45); }
   .corps p { margin:0 0 .55em; } .corps p:last-child { margin-bottom:0; }
@@ -750,6 +752,22 @@ function miseEnForme(t) {
     return '<p>' + lignes.map(enLigne).join('<br>') + '</p>';
   }).join('');
 }
+// Le texte d'une réponse vit dans son propre bloc : une carte arrivée avant lui n'est jamais effacée.
+function ecrireTexte(corps, texte) {
+  let z = corps.querySelector(':scope > .texte');
+  if (!z) {
+    corps.querySelector(':scope > .reflechit')?.remove();
+    z = document.createElement('div'); z.className = 'texte';
+    corps.prepend(z);
+  }
+  z.innerHTML = miseEnForme(texte);
+}
+// Cartes d'une réponse ; masquer : la bulle ne montre que la carte (la phrase reste lue à voix haute).
+function montrerCartes(corps, cartes, masquer) {
+  corps.querySelector(':scope > .reflechit')?.remove();
+  if (window.cartesChat) cartesChat.afficher(corps, cartes, conversation);
+  if (masquer) corps.classList.add('carte-seule');
+}
 function duree(ms) { return ms >= 1000 ? (ms / 1000).toFixed(1).replace('.', ',') + ' s' : Math.round(ms) + ' ms'; }
 
 
@@ -849,10 +867,10 @@ async function traiter(message, vocal, role = 'auto') {
           orbe.impulsion(o.delta.length);
           if (!texte) diag('réponse : premier mot après ' + Math.round(performance.now() - t0Reponse) + ' ms');
           texte += o.delta;
-          corps.innerHTML = miseEnForme(texte);
+          ecrireTexte(corps, texte);
           if (parole) { parole.ajouter(texte); if (!lectureFlux && parole.phrases.length) lectureFlux = direAVoixHaute(parole); }
         }
-        if (o.cartes && window.cartesChat) cartesChat.afficher(corps, o.cartes, conversation);
+        if (o.cartes) montrerCartes(corps, o.cartes, o.masquer_texte);
         if (o.erreur) throw new Error(o.erreur);
         if (o.fin) ajouterPied(corps, o, route, texte);
       }
@@ -1002,8 +1020,9 @@ function afficherTour(t, ancien) {
       el.remove();
       if (!ancien && t.extra && t.extra.erreur) el = bulle('erreur', 'Erreur : ' + t.extra.erreur); else return;
     } else {
-      corps.innerHTML = miseEnForme(t.texte);
-      if (t.extra && t.extra.cartes && window.cartesChat) cartesChat.afficher(corps, t.extra.cartes, conversation);
+      corps.innerHTML = '';
+      ecrireTexte(corps, t.texte);
+      if (t.extra && t.extra.cartes) montrerCartes(corps, t.extra.cartes, t.extra.masquer_texte);
       const pied = document.createElement('div'); pied.className = 'pied';
       pied.innerHTML = '<span></span>'; pied.firstChild.textContent = heureDe(t.quand);
       corps.appendChild(pied);
@@ -1026,7 +1045,7 @@ function recevoirFil(o) {
     const e = enCoursAilleurs.get(o.question);
     if (!e) return;
     e.texte += o.delta;
-    e.corps.innerHTML = miseEnForme(e.texte);
+    ecrireTexte(e.corps, e.texte);
     if (!occupe) { if (orbe.etatCourant !== 'parole') orbe.etat('parole'); orbe.impulsion(o.delta.length); }
     defiler();
   } else if (o.type === 'efface' && o.appareil !== idPage) {

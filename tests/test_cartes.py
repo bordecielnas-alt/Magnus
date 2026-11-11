@@ -81,8 +81,8 @@ def test_commande_par_les_regles_renvoie_une_carte(tmp_path):
     lignes = [json.loads(x) for x in c.post("/api/chat", json={
         "message": "éteins le plafonnier", "conversation": "r", "flux": True}).text.splitlines()]
     cles = [next(iter(x)) for x in lignes]
-    assert cles == ["route", "delta", "cartes", "fin"]
-    assert lignes[2]["cartes"][0]["entity_id"] == "light.plafonnier"
+    assert cles == ["route", "cartes", "delta", "fin"]
+    assert lignes[1]["cartes"][0]["entity_id"] == "light.plafonnier"
 
 
 # --- cercle chromatique et réglage de plusieurs appareils ------------------------------
