@@ -10,6 +10,8 @@ appareils autorisés, mêmes refus des actions sensibles, même historique, mêm
 
 from __future__ import annotations
 
+import asyncio
+
 from typing import TYPE_CHECKING
 
 from . import TEINTES
@@ -64,8 +66,26 @@ def carte(e: Entite, s: dict | None) -> dict | None:
     return None
 
 
-async def cartes_pour(maison: Maison, entity_ids: list[str]) -> list[dict]:
-    """Cartes des appareils touchés par une demande. Plusieurs : une carte « groupe »."""
+# état attendu juste après une action : Home Assistant met parfois plus d'une seconde à le montrer
+ATTENDU = {"allumer": ("on", "open", "opening", "playing", "idle", "paused", "heat", "cool", "auto"),
+           "eteindre": ("off", "closed", "closing", "standby"), "ouvrir": ("open", "opening"),
+           "fermer": ("closed", "closing")}
+
+
+async def _etat_apres(maison: Maison, eid: str, action: str | None) -> dict | None:
+    s = await maison.ha.etat_entite(eid)
+    attendu = ATTENDU.get(action or "")
+    for _ in range(8):           # 2 s au plus, seulement si l'état n'a pas encore suivi
+        if not attendu or not s or s.get("state") in attendu:
+            break
+        await asyncio.sleep(0.25)
+        s = await maison.ha.etat_entite(eid)
+    return s
+
+
+async def cartes_pour(maison: Maison, entity_ids: list[str], action: str | None = None) -> list[dict]:
+    """Cartes des appareils touchés par une demande. Plusieurs : une carte « groupe ». `action` : celle qui
+    vient d'être faite (« eteindre »…), pour ne pas dessiner l'état d'avant."""
     if not entity_ids:
         return []
     connus = {e.entity_id: e for e in await maison.inventaire.obtenir()}
@@ -75,7 +95,7 @@ async def cartes_pour(maison: Maison, entity_ids: list[str]) -> list[dict]:
         if not e or eid in vus or maison.masque(e) or maison.sensible(e) or maison.interdit(e):
             continue          # appareil caché en ce moment, ou à piloter depuis Home Assistant
         vus.add(eid)
-        c = carte(e, await maison.ha.etat_entite(eid))
+        c = carte(e, await _etat_apres(maison, eid, action))
         if c:
             cartes.append(c)
         if len(cartes) >= MAX_CARTES:

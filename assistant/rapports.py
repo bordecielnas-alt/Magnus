@@ -84,6 +84,55 @@ def _sans_accents(s: str) -> str:
     return "".join(c for c in unicodedata.normalize("NFD", s) if unicodedata.category(c) != "Mn").lower()
 
 
+NOMBRES = {"un": 1, "une": 1, "deux": 2, "trois": 3, "quatre": 4, "cinq": 5, "six": 6, "sept": 7, "huit": 8, "dix": 10,
+           "quinze": 15, "vingt": 20, "trente": 30}
+MOIS = ["janvier", "février", "mars", "avril", "mai", "juin", "juillet", "août", "septembre", "octobre", "novembre",
+        "décembre"]
+
+MOIS_COURT = ["janv.", "févr.", "mars", "avr.", "mai", "juin", "juil.", "août", "sept.", "oct.", "nov.", "déc."]
+
+
+def periode_agenda(message: str) -> str:
+    """La période demandée pour l'agenda, en code court : "" (7 jours), "14" (jours), "mois", "mois-prochain",
+    "semaine-prochaine". « les deux prochaines semaines » -> "14" ; « tout le mois prochain » -> "mois-prochain"."""
+    s = "".join(c for c in unicodedata.normalize("NFD", message.lower()) if unicodedata.category(c) != "Mn")
+    n = r"(\d{1,2}|" + "|".join(NOMBRES) + r")"
+    val = lambda x: int(x) if x.isdigit() else NOMBRES[x]  # noqa: E731
+    if re.search(r"\bmois prochain\b", s):
+        return "mois-prochain"
+    if re.search(r"\bsemaine prochaine\b", s):
+        return "semaine-prochaine"
+    if m := re.search(n + r"\s+(?:prochaine?s?\s+)?mois\b", s):
+        return str(min(92, val(m.group(1)) * 31))
+    if re.search(r"\b(?:ce|du|le) mois\b|\bfin du mois\b", s):
+        return "mois"
+    if m := re.search(n + r"\s+(?:prochaines?\s+)?semaines?\b", s):
+        return str(min(92, val(m.group(1)) * 7))
+    if re.search(r"\bquinzaine\b", s):
+        return "14"
+    if m := re.search(n + r"\s+(?:prochains?\s+)?jours\b", s):
+        return str(min(92, max(1, val(m.group(1)))))
+    return ""
+
+
+def bornes_agenda(sujet: str, maintenant: datetime) -> tuple[datetime, datetime, str]:
+    """(début, fin, libellé) de la période d'agenda codée par periode_agenda."""
+    j0 = maintenant.replace(hour=0, minute=0, second=0, microsecond=0)
+
+    def mois_suivant(d: datetime) -> datetime:
+        return d.replace(day=1, year=d.year + (d.month == 12), month=d.month % 12 + 1)
+    if sujet == "mois":
+        return j0, mois_suivant(j0), f"fin {MOIS[j0.month - 1]}"
+    if sujet == "mois-prochain":
+        d = mois_suivant(j0)
+        return d, mois_suivant(d), MOIS[d.month - 1]
+    if sujet == "semaine-prochaine":
+        d = j0 + timedelta(days=7 - j0.weekday())
+        return d, d + timedelta(days=7), "semaine prochaine"
+    n = int(sujet) if sujet.isdigit() else 7
+    return j0, j0 + timedelta(days=n), (f"{n // 7} semaines" if n % 7 == 0 and n > 7 else f"{n} jours")
+
+
 def detecter(message: str) -> Demande | None:
     """Demande de rapport, ou None. « fais-moi un rapport météo à Lyon » -> Demande("meteo", "Lyon")."""
     m = message.strip()
@@ -94,7 +143,7 @@ def detecter(message: str) -> Demande | None:
     if RE_DOCKER.search(m):
         return Demande("docker")
     if RE_AGENDA.search(m):
-        return Demande("agenda")
+        return Demande("agenda", periode_agenda(m))
     if RE_ACTUS.search(m):
         sujet = re.sub(r"^(?:les |des )?(?:actus?|actualit[ée]s?|news|infos?|nouvelles)\b\s*(?:du jour|de la journ[ée]e)?\s*"
                        r"(?:(?:sur|de|du|des|concernant)\s+(?:la |le |les |l')?)?", "", sujet_de(m), flags=re.I)
@@ -290,7 +339,14 @@ def lire_json(texte: str) -> dict:
     i, j = t.find("{"), t.rfind("}")
     if i < 0 or j <= i:
         raise ValueError("pas de JSON dans la réponse")
-    o = json.loads(t[i:j + 1])
+    brut = t[i:j + 1]
+    try:
+        o = json.loads(brut)
+    except json.JSONDecodeError:
+        # fautes courantes d'un modèle : virgule finale, guillemets typographiques autour des clés
+        brut = re.sub(r",\s*([}\]])", r"\1", brut)
+        brut = re.sub(r"[“”]([a-z_]+)[“”]\s*:", r'"\1":', brut)
+        o = json.loads(brut)
     if not isinstance(o, dict):
         raise ValueError("JSON inattendu")
     liste = lambda k: o.get(k) if isinstance(o.get(k), list) else []  # noqa: E731
@@ -325,6 +381,7 @@ class Rapports:
                  url_geo: str = "https://geocoding-api.open-meteo.com/v1/search",
                  url_bourse: str = "https://query1.finance.yahoo.com/v8/finance/chart/") -> None:
         self.ville = ville
+        self.derniere_ville = ""
         self.demander_json = demander_json
         self.agenda = agenda
         self.docker = docker
@@ -365,11 +422,13 @@ class Rapports:
         return lieu
 
     async def meteo(self, sujet: str) -> dict:
-        nom = sujet or self.ville
+        nom = sujet or self.ville or self.derniere_ville
         if not nom:
-            raise RapportIndisponible("pour quelle ville ? Dis par exemple « rapport météo à Lyon » "
-                                      "(ou règle la ville dans proactif.ville).")
+            raise RapportIndisponible("pour quelle ville ? Dis par exemple « météo à Lyon », ou règle la ville par "
+                                      "défaut dans Réglages, section Météo, annonces, agenda, Docker.")
         lieu = await self.geocoder(nom)
+        if sujet:
+            self.derniere_ville = sujet      # « montre-moi la météo » sans ville ni réglage : la dernière demandée
         async with self._client() as c:
             r = await c.get(self.url_meteo, params={
                 "latitude": lieu["lat"], "longitude": lieu["lon"], "timezone": "auto", "forecast_days": 5,
@@ -438,9 +497,9 @@ class Rapports:
         if not self.agenda or not self.agenda.configure:
             raise RapportIndisponible("l'agenda n'est pas configuré (agenda.url).")
         maintenant = datetime.now().astimezone()
-        debut = maintenant.replace(hour=0, minute=0, second=0, microsecond=0)
-        evts = await self.agenda.evenements(debut, debut + timedelta(days=7))
-        return carte_agenda(evts, maintenant)
+        debut, fin, libelle = bornes_agenda(sujet, maintenant)
+        evts = await self.agenda.evenements(debut, fin)
+        return carte_agenda(evts, maintenant, libelle, sujet, (fin - debut).days > 7 or debut.date() != maintenant.date())
 
     # docker
     async def rapport_docker(self, sujet: str = "") -> dict:
@@ -498,29 +557,42 @@ def _date_du_jour() -> str:
     return f"{JOURS[d.weekday()]} {d.day} {mois} {d.year}"
 
 
-def carte_agenda(evts: list[dict], maintenant: datetime) -> dict:
+def carte_agenda(evts: list[dict], maintenant: datetime, libelle: str = "7 jours", sujet: str = "",
+                 long: bool = False) -> dict:
+    """`long` : plus d'une semaine (ou pas à partir d'aujourd'hui) : les jours portent aussi le mois."""
     from .agenda import JOURS
     j0 = maintenant.date()
+    if not sujet:
+        periode = "sur les 7 prochains jours"
+    elif sujet == "mois":
+        periode = f"d'ici {libelle}"
+    elif sujet == "mois-prochain":
+        periode = f"en {libelle}"
+    elif sujet == "semaine-prochaine":
+        periode = "la semaine prochaine"
+    else:
+        periode = f"sur les {libelle} à venir"
     jours: dict[str, list] = {}
     a_venir = []
     for e in sorted(evts, key=lambda x: x["debut"]):
         d = e["debut"].date()
         nom = ("Aujourd'hui" if d == j0 else "Demain" if d == j0 + timedelta(days=1)
-               else f"{JOURS[d.weekday()].capitalize()} {d.day}")
+               else f"{JOURS[d.weekday()].capitalize()} {d.day}" + (f" {MOIS_COURT[d.month - 1]}" if long else ""))
         heure = "" if e.get("journee") else e["debut"].strftime("%Hh%M")
         jours.setdefault(nom, []).append({"heure": heure, "titre": e.get("titre", "sans titre"), "lieu": e.get("lieu", "")})
         if e.get("journee") or e["debut"] >= maintenant:
             a_venir.append(e)
     n = len(evts)
     if not n:
-        resume = "Rien à l'agenda pour les 7 prochains jours."
+        resume = f"Rien à l'agenda {periode}."
     else:
         from .agenda import decrire
-        resume = f"{n} rendez-vous sur les 7 prochains jours" + (f" ; le prochain : {decrire(a_venir[0], j0)}." if a_venir else ".")
+        resume = f"{n} rendez-vous {periode}" + (f" ; le prochain : {decrire(a_venir[0], j0)}." if a_venir else ".")
     aujourd = len(jours.get("Aujourd'hui", []))
-    return {"type": "rapport", "modele": "agenda", "titre": "Agenda · 7 jours",
-            "sous_titre": f"{aujourd} aujourd'hui · {n} cette semaine", "resume": resume,
-            "maj": maintenant.isoformat(timespec="minutes"), "demande": {"type": "agenda", "sujet": ""},
+    return {"type": "rapport", "modele": "agenda", "titre": f"Agenda · {libelle}",
+            "sous_titre": f"{aujourd} aujourd'hui · {n} " + ("cette semaine" if not sujet else "sur la période"),
+            "resume": resume,
+            "maj": maintenant.isoformat(timespec="minutes"), "demande": {"type": "agenda", "sujet": sujet},
             "agenda": [{"jour": k, "evenements": v} for k, v in jours.items()]}
 
 

@@ -660,6 +660,12 @@ class Maison:
     async def evoque(self, texte: str) -> bool:
         return await self._evoque_la_maison(texte)
 
+    async def a_montrer(self, texte: str) -> list[str]:
+        """« montre-moi la lampe du bureau » : les appareils désignés (un, ou les candidats si c'est ambigu)."""
+        from .resolution import resoudre
+        r = resoudre(texte, "etat", await self.inventaire.obtenir(), alias_appris=self.alias.table())
+        return [e.entity_id for e in (r.entites or r.ambigues)]
+
     async def appareils(self, filtre: str = "") -> list[dict]:
         entites = await self.inventaire.obtenir()
         f = mots(filtre)

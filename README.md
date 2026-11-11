@@ -199,16 +199,18 @@ Image publiée par GitHub Actions (`ghcr.io/bordecielnas-alt/magnus`), template 
 | Actualités | titres du jour, ou sur un sujet | Claude (web) |
 | Libre | tout autre sujet : chiffres clés, points, sources | Claude (web) |
 
-La ville par défaut de la météo est `proactif.ville`. Si Claude ne répond pas, le modèle de secours (sans web) n'est pas utilisé pour une carte : rien d'inventé. `GET /api/rapports` liste les cartes, `POST /api/rapport` (`{"type", "sujet"}`) en refait une (bouton « Actualiser »).
+La ville par défaut de la météo est `proactif.ville` (⚙ Réglages › **Météo, annonces, agenda, Docker**, champ « Ville par défaut pour la météo », prise en compte sans redémarrer). Sans ville réglée, « montre-moi la météo » reprend la dernière ville demandée. L'agenda suit la période demandée : « les deux prochaines semaines », « le mois prochain », « la semaine prochaine », « ce mois-ci » (7 jours sinon). Si Claude ne répond pas, le modèle de secours (sans web) n'est pas utilisé pour une carte : rien d'inventé. `GET /api/rapports` liste les cartes, `POST /api/rapport` (`{"type", "sujet"}`) en refait une (bouton « Actualiser »).
 
 ### Carte ou texte selon le contexte
 
 L'assistant choisit seul entre une carte et du texte (`assistant/presentation.py`). **Quand il y a une carte, la bulle ne montre que la carte** et la phrase est seulement dite à voix haute (elle reste écrite si elle pose une question ou si elle est longue, par exemple une règle à confirmer). Si la carte échoue, il revient au texte. Les règles, de la plus forte à la plus faible :
 
-1. **Tu demandes à voir** (« montre-moi », « affiche », « fais voir », « je veux voir », « en carte ») : carte obligatoire si le sujet en a une (météo, bourse, agenda, Docker, actus, appareils). Sujet sans carte toute faite (« montre-moi un point sur la Fed ») : carte libre ; un appareil : sa carte ; sinon Claude dit qu'il n'a pas de carte pour ça.
+1. **Tu demandes à voir** (« montre-moi », « affiche », « fais voir », « je veux voir », « en carte ») : carte obligatoire si le sujet en a une (météo, bourse, agenda, Docker, actus, appareils). Sujet sans carte toute faite (« montre-moi un point sur la Fed ») : carte libre ; un appareil : sa carte ; sinon Claude dit qu'il n'a pas de carte pour ça. « Montre-moi la lampe du bureau » : la carte de l'appareil, lue dans Home Assistant, sans passer par un modèle.
 2. **Question sur un sujet à carte rapide**, faite sans modèle (« quel temps demain ? », « où en est le CAC ? », « j'ai quoi cette semaine ? », « docker ça va ? ») : phrase et carte. La phrase répond au jour demandé (« Demain à Lyon : averses, 6 à 11 °C… »). Question fermée (« il pleut demain ? ») : la carte arrive repliée, un toucher sur l'en-tête la déplie. La bourse se fait ici sans l'analyse de Claude, pour ne pas attendre.
 3. **Explication** (« dis-moi », « explique », « pourquoi », « raconte ») : texte seul, sans carte.
 4. **Suite de conversation** : dans les 10 min après une carte, « et à Lyon ? », « et demain ? », « et le DAX ? » refont une carte du même genre.
 5. **Claude décide pour le reste** : il peut commencer sa réponse par un marqueur (`[carte:meteo:Lyon]`, `[carte:bourse:DAX]`, `[carte:agenda]`, `[carte:docker]`) que le serveur retire et remplace par la vraie carte, lue après sa phrase. « Je sors à vélo cet après-midi, ça passe ? » donne ainsi la carte météo. Le modèle n'écrit jamais les données de la carte.
+
+**L'heure et la date** (« quelle heure est-il ? », « on est quel jour ? ») sont lues sur l'horloge du serveur, jamais devinées par un modèle ; les modèles reçoivent aussi la date et l'heure. Après « éteins le Globe », la carte attend (2 s au plus) que Home Assistant montre le nouvel état.
 
 Une demande de règle, de routine ou de rappel (« quand il pleut, ferme les volets ») n'est jamais prise pour une question météo. Dans le flux de `/api/chat`, la ligne `{"cartes": [...], "masquer_texte": true}` arrive **avant** le texte.

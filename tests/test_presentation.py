@@ -239,3 +239,37 @@ def test_chat_claude_marqueur_sans_flux(app_meteo):
     c = faire(Classeur("claude", "[carte:meteo] Voici."))
     r = c.post("/api/chat", json={"message": "je sors ?", "conversation": "n", "role": "raisonnement"}).json()
     assert r["reponse"].startswith("Voici. À Lyon, 12 °C") and r["cartes"][0]["modele"] == "meteo" and r["masquer_texte"]
+
+
+# --- correctifs vus dans une vraie conversation (v0.25.0) ---------------------------------------------
+
+def test_smiley_retire_mais_pas_dans_un_marqueur_ni_une_heure():
+    from assistant.voix import sans_emoji
+    assert sans_emoji("[carte:meteo:Douai] Voilà") == "[carte:meteo:Douai] Voilà"
+    assert sans_emoji("à 10:30") == "à 10:30"
+    assert sans_emoji("super :D") == "super "
+
+
+def test_marqueur_abime_retire_et_lu_si_possible():
+    from assistant.presentation import lire_marqueur
+    d, reste = lire_marqueur("[carte:meteoouai] Voilà la météo à Douai.")
+    assert d.type == "meteo" and d.sujet == "Douai" and reste == "Voilà la météo à Douai."
+    d, reste = lire_marqueur("[carte:truc] Bonjour")
+    assert d is None and reste == "Bonjour"
+
+
+def test_periode_agenda():
+    from assistant.rapports import periode_agenda
+    assert periode_agenda("j'ai quoi cette semaine ?") == ""
+    assert periode_agenda("mon agenda pour les deux prochaines semaines") == "14"
+    assert periode_agenda("c'est quoi mon agenda pour tout le mois prochain ?") == "mois-prochain"
+    assert periode_agenda("mes rendez-vous la semaine prochaine") == "semaine-prochaine"
+    assert choisir("c'est quoi mon agenda pour les deux prochaines semaines ?").demande.sujet == "14"
+
+
+def test_heure_et_date_sans_modele():
+    from assistant.main import reponse_horloge
+    assert reponse_horloge("quelle heure est-il ?").startswith("Il est ")
+    assert reponse_horloge("Magnus, il est quelle heure ?").startswith("Il est ")
+    assert reponse_horloge("on est quel jour ?").startswith("Nous sommes ")
+    assert reponse_horloge("quelle heure est-il à Tokyo ?") is None

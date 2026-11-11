@@ -136,11 +136,11 @@
     <details id="cfgJournal" hidden><summary>Journal <span class="etat" id="eJournal"></span></summary>
       <div class="journal" id="cJournal"></div>
     </details>
-    <details id="cfgServices"><summary>Annonces, agenda, Docker <span class="etat" id="eServices"></span></summary>
+    <details id="cfgServices"><summary>Météo, annonces, agenda, Docker <span class="etat" id="eServices"></span></summary>
       <label class="aide" style="display:flex;gap:8px;align-items:center;margin-top:10px"><input type="checkbox" id="cProActif"> L'assistant peut prendre la parole de lui-même</label>
       <label class="champ">Heures calmes (seules les urgences sont dites)<input id="cCalme" placeholder="22:00-07:30"></label>
       <label class="champ">Briefing du matin (heure, vide = jamais)<input id="cBriefing" placeholder="07:30"></label>
-      <label class="champ">Ville pour la météo<input id="cVille" placeholder="ex. Douai"></label>
+      <label class="champ">Ville par défaut pour la météo<input id="cVille" placeholder="ex. Douai"></label>
       <label class="champ">Agenda CalDAV : adresse du calendrier<input id="cAgendaUrl" placeholder="http://192.168.1.2:5232/benjamin/agenda/"></label>
       <label class="champ">Agenda : identifiant<input id="cAgendaUser" autocomplete="off"></label>
       <label class="champ">Agenda : mot de passe<input id="cAgendaMdp" type="password" autocomplete="off" placeholder="laisser vide pour garder l'actuel"></label>
