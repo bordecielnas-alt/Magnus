@@ -87,6 +87,24 @@ def est_hallucination(texte: str) -> bool:
     return len(m) >= 3 and len(set(m)) == 1
 
 
+MOTS_COURANTS = set("""le la les l un une des de du d au aux et ou à a est es sont tu je il elle on nous vous ils me te se
+mon ma mes ton ta tes son sa ses ce cet cette ces qui que quoi quel quelle quels quelles comment combien pourquoi où quand
+pas ne plus oui non ok dans sur sous avec pour par en y fais fait mets met allume éteins eteins ouvre ferme lance arrête
+arrete démarre demarre redémarre dis donne montre regarde envoie état etat est-ce c ça ca il-y quelle""".split())
+
+
+def semble_charabia(texte: str) -> bool:
+    """« Escortrack, SIL, SALVAF » : une suite de morceaux sans aucun mot courant, typique d'un bruit mal transcrit.
+    Une vraie demande contient presque toujours un mot outil (le, de, est, allume…)."""
+    morceaux = [m.strip() for m in re.split(r"[,;]", texte) if m.strip()]
+    mots = [normaliser(m) for m in re.findall(r"[\w'’-]+", texte)]
+    if not mots or len(mots) > 6:
+        return False
+    if any(m in MOTS_COURANTS or m.split("'")[0] in MOTS_COURANTS for m in mots):
+        return False
+    return len(morceaux) >= 3 or len(mots) >= 3
+
+
 class Reveil:
     """État d'écoute par conversation (page) : réveillé jusqu'à telle heure."""
 
@@ -120,10 +138,13 @@ class Reveil:
         d = detecter(texte, wake_word)
         if d.reveil:
             self.prolonger(conversation)
-            if not d.commande:
+            if not d.commande or semble_charabia(d.commande):
+                # « <nom>, Escortrack, SIL » : le nom est bien là, la suite est du bruit -> on écoute la suite
                 return {"action": "reveil", "fenetre_s": self.restant_s(conversation)}
             return {"action": "commande", "commande": d.commande, "fenetre_s": self.restant_s(conversation)}
         if self.eveille(conversation):
+            if semble_charabia(texte):
+                return {"action": "ignorer", "raison": "incompréhensible"}
             if not self.toujours:
                 self.prolonger(conversation)   # la conversation continue : on prolonge la fenêtre
             return {"action": "commande", "commande": texte.strip(), "fenetre_s": self.restant_s(conversation)}

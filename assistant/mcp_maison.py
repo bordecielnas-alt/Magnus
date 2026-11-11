@@ -152,6 +152,16 @@ OUTILS_DOCKER += [
 ]
 
 
+OUTILS_TELEGRAM = [
+    {
+        "name": "envoyer_telegram",
+        "description": "Envoie un message court sur le Telegram de la maison (le même que les alertes). "
+                       "Seulement à la demande de la personne.",
+        "inputSchema": {"type": "object", "properties": {"texte": {"type": "string"}}, "required": ["texte"]},
+    },
+]
+
+
 OUTILS_RAPPELS = [
     {
         "name": "creer_rappel",
@@ -221,7 +231,8 @@ OUTILS_REGLES = [
 
 def outils() -> list[dict]:
     return (OUTILS + OUTILS_ROUTINES + OUTILS_RAPPELS + OUTILS_REGLES + OUTILS_MEMOIRE + (OUTILS_DOCKER if os.environ.get("ASSISTANT_DOCKER") == "1" else [])
-            + (OUTILS_AGENDA if os.environ.get("ASSISTANT_AGENDA") == "1" else []))
+            + (OUTILS_AGENDA if os.environ.get("ASSISTANT_AGENDA") == "1" else [])
+            + (OUTILS_TELEGRAM if os.environ.get("ASSISTANT_TELEGRAM") == "1" else []))
 
 
 def _client() -> httpx.Client:
@@ -246,6 +257,8 @@ def appeler(nom: str, args: dict) -> str:
         elif nom == "demander_redemarrage":
             r = c.post("/interne/docker/redemarrer", json={"nom": args["nom"], "action": args.get("action", "redemarrer"),
                                                            "conversation": conv})
+        elif nom == "envoyer_telegram":
+            r = c.post("/interne/telegram", json={"texte": args["texte"], "conversation": conv})
         elif nom == "lister_conteneurs":
             r = c.get("/interne/docker/conteneurs")
         elif nom == "diagnostiquer_conteneur":

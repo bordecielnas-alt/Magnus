@@ -159,6 +159,9 @@ ETATS_FR_COURTS = {"on": "allumé", "off": "éteint", "open": "ouvert", "closed"
                    "unavailable": "injoignable", "home": "à la maison", "not_home": "absent"}
 RE_BRIEFING = re.compile(r"^\s*(fais[- ]moi |donne[- ]moi |lance |le )?(le |mon )?(briefing|r[ée]sum[ée] du (jour|matin))\b", re.I)
 RE_OUI = re.compile(r"^\s*(oui|ouais|d.accord|ok|vas-y|retiens(-le)?|c.est (bon|ça)|exact)\b[\s!.]*\w{0,10}[\s!.]*$", re.I)
+# Réponse à une question de l'assistant, même dans une phrase (« oui, je veux que tu éteignes adminer »)
+RE_OUI_DEBUT = re.compile(r"^\s*(?:\w+,\s*)?(oui|ouais|d.accord|ok|vas-y|exact|c.est (bon|ça))\b(?!.*\b(non|pas)\b)", re.I)
+RE_NON_DEBUT = re.compile(r"^\s*(?:\w+,\s*)?(non|nan|surtout pas|pas la peine|laisse tomber|annule)\b", re.I)
 RE_NON = re.compile(r"^\s*(non|nan|oublie(-le)?|pas la peine|laisse tomber)\b[\s!.]*\w{0,10}[\s!.]*$", re.I)
 RE_RETIENS = re.compile(r"^\s*(?:\w+,\s*)?(?:retien[st]?|retenir|souviens-toi|souviens toi|rappelle-toi|n.oublie pas|"
                         r"note|m[ée]morise|garde en m[ée]moire|enregistre)"
@@ -222,6 +225,9 @@ RE_DOCKER = re.compile(r"\b(dockers?\w*|conteneurs?|containers?|unraid|serveur|p
 # Désigne sans ambiguïté le serveur ou un conteneur : passe avant les commandes de maison
 # (« allume le docker MeTube », « quel est l'état des dockers », « Dockerplex » mal transcrit)
 RE_DOCKER_FORT = re.compile(r"\b(dockers?\w*|conteneurs?|containers?|unraid|serveur)\b", re.I)
+RE_TELEGRAM = re.compile(r"\bt[ée]l[ée]gram\b", re.I)
+NOTE_TELEGRAM = ("Tu as aussi envoyer_telegram : envoie un message court sur le Telegram de la maison (alertes). "
+                 "Seulement quand on te le demande ; dis ensuite en une phrase ce qui est parti.")
 NOTE_OUTILS_DOCKER = (
     "Tu as aussi lister_conteneurs et diagnostiquer_conteneur (serveur Unraid, lecture seule). Pour un service "
     "qui ne marche pas, diagnostique d'abord, puis donne la cause probable et un correctif concret que la "
@@ -300,6 +306,11 @@ class NouveauRappel(BaseModel):
 
 class ChoixAnnonce(BaseModel):
     action: str = Field(min_length=1, max_length=40)
+
+
+class MessageTelegram(BaseModel):
+    texte: str = Field(min_length=1, max_length=1000)
+    conversation: str = Field(default="", max_length=64)
 
 
 class DemandeRedemarrage(BaseModel):
@@ -494,6 +505,17 @@ def creer_app(config: Config | None = None, registre: Registre | None = None,
                 pass
         mots = {normaliser_nom(m) for m in re.findall(r"[\w'-]+", message)}
         return any(n in mots for n in noms_conteneurs["noms"])
+
+    def conteneur_approchant(message: str) -> str:
+        """Nom de conteneur entendu de travers (« ad mineur » -> adminer), parmi un ou deux mots qui se suivent.
+        Seulement après l'échec de la maison : un appareil de la maison reste prioritaire."""
+        import difflib
+        mots = [normaliser_nom(m) for m in re.findall(r"[\w'-]+", message)]
+        candidats = {m for m in mots if len(m) >= 5} | {a + b for a, b in zip(mots, mots[1:]) if len(a + b) >= 5}
+        for n in noms_conteneurs["noms"]:
+            if len(n) >= 5 and any(difflib.SequenceMatcher(None, c, n).ratio() >= 0.85 for c in candidats):
+                return n
+        return ""
 
     async def signaler(texte: str, priorite: str, source: str, cle: str, vers_telegram: bool = True,
                        actions: list[dict] | None = None, cible: dict | None = None) -> None:
@@ -768,12 +790,13 @@ def creer_app(config: Config | None = None, registre: Registre | None = None,
         env = {"ASSISTANT_INTERNE_URL": f"http://127.0.0.1:{cfg.serveur.port}",
                "ASSISTANT_INTERNE_JETON": jeton_interne, "ASSISTANT_CONVERSATION": conversation,
                "ASSISTANT_DOCKER": "1" if docker.configure else "0",
-               "ASSISTANT_AGENDA": "1" if agenda.configure else "0"}
+               "ASSISTANT_AGENDA": "1" if agenda.configure else "0",
+               "ASSISTANT_TELEGRAM": "1" if telegram.configure else "0"}
         return {
             "mcp": {"mcpServers": {"maison": {"command": sys.executable, "args": ["-m", "assistant.mcp_maison"], "env": env}}},
             "autoriser": ["mcp__maison"],
             "note": NOTE_OUTILS_MAISON + "\n\n" + NOTE_RAPPELS.format(
-                date=f"{JOURS[time.localtime().tm_wday]} {time.strftime('%d/%m/%Y %H:%M')}") + ("\n\n" + NOTE_OUTILS_DOCKER if docker.configure else "")
+                date=f"{JOURS[time.localtime().tm_wday]} {time.strftime('%d/%m/%Y %H:%M')}") + ("\n\n" + NOTE_OUTILS_DOCKER if docker.configure else "") + ("\n\n" + NOTE_TELEGRAM if telegram.configure else "")
                     + ("\n\n" + NOTE_OUTILS_AGENDA.format(date=f"{JOURS[time.localtime().tm_wday]} {time.strftime('%d/%m/%Y %H:%M')}") if agenda.configure else ""),
         }
 
@@ -1393,6 +1416,20 @@ def creer_app(config: Config | None = None, registre: Registre | None = None,
         return {"en_attente": f"demande « {question} {c['nom']} ? » ; rien n'est fait avant le oui",
                 "etat_actuel": c.get("etat", "")}
 
+    @app.post("/interne/telegram", include_in_schema=False)
+    async def interne_telegram(m: MessageTelegram, x_jeton_interne: str | None = Header(None)) -> dict:
+        verifier_jeton(x_jeton_interne)
+        compte, _ = compte_conversation.get(m.conversation, ("", ""))
+        if not securite.est_admin(compte):
+            raise HTTPException(403, "réservé aux administrateurs")
+        if not telegram.configure:
+            raise HTTPException(503, "Telegram non configuré (jeton du bot et chat dans Réglages)")
+        try:
+            await telegram.envoyer(m.texte)
+        except RuntimeError as e:
+            raise HTTPException(502, str(e)) from e
+        return {"ok": True, "envoye": m.texte}
+
     @app.get("/api/unraid")
     async def etat_unraid(requete: Request) -> dict:
         exiger_admin(requete)
@@ -1989,6 +2026,12 @@ def creer_app(config: Config | None = None, registre: Registre | None = None,
         async with verrou_transcription:
             t = await voix.transcrire(audio, ", ".join(noms))
         r = reveil.analyser(t.texte, cfg.identite.variantes_eveil, conversation)
+        if (r["action"] == "ignorer" and r.get("raison") != "bruit" and question_en_attente(conversation)
+                and (RE_OUI_DEBUT.match(t.texte) or RE_NON_DEBUT.match(t.texte))):
+            # l'assistant vient de poser une question (« Je démarre adminer ? ») : « oui » suffit, sans son nom
+            reveil.prolonger(conversation)
+            r = {"action": "commande", "commande": t.texte.strip(), "fenetre_s": reveil.restant_s(conversation),
+                 "raison": "réponse à une question"}
         qui = None
         if r["action"] != "ignorer":
             qui = await reconnaitre(audio, conversation)
@@ -2161,6 +2204,28 @@ def creer_app(config: Config | None = None, registre: Registre | None = None,
         journal.info("redémarrage demandé depuis la page de configuration")
         aio.get_running_loop().call_later(0.5, os._exit, 0)
         return {"ok": True}
+
+    def question_en_attente(conversation: str) -> bool:
+        """L'assistant attend un oui / non dans cette conversation (redémarrage, souvenir, « lequel ? »)."""
+        if not conversation:
+            return False
+        a = redemarrage_attente.get(conversation)
+        if a and time.monotonic() - a[2] < 120:
+            return True
+        if ha.configure and maison.en_attente(conversation):
+            return True
+        try:
+            return bool(memoire.proposition_en_attente(conversation, personne_conversation.get(conversation, ""), 120))
+        except Exception:  # noqa: BLE001
+            return False
+
+    @app.post("/api/voix/prolonger")
+    def prolonger(c: Conv) -> dict:
+        """La page a fini de lire la réponse : la fenêtre d'écoute repart de là (sinon elle se ferme pendant
+        que l'assistant parle et le « oui » qui suit est ignoré)."""
+        if c.conversation:
+            reveil.prolonger(c.conversation)
+        return {"fenetre_s": reveil.restant_s(c.conversation), "toujours": reveil.toujours}
 
     @app.post("/api/voix/endormir")
     def endormir(c: Conv) -> dict:
@@ -2342,10 +2407,11 @@ def creer_app(config: Config | None = None, registre: Registre | None = None,
 
         # --- redémarrage de conteneur en attente de « oui » ------------------------------------------------
         attente_r = redemarrage_attente.get(d.conversation)
-        if attente_r and time.monotonic() - attente_r[2] < 120 and (RE_OUI.match(d.message) or RE_NON.match(d.message)):
+        if attente_r and time.monotonic() - attente_r[2] < 120 and (RE_OUI_DEBUT.match(d.message)
+                                                                   or RE_NON_DEBUT.match(d.message)):
             redemarrage_attente.pop(d.conversation, None)
             nom_c, action_c = attente_r[0], attente_r[3]
-            if RE_NON.match(d.message) or attente_r[1] != compte:
+            if RE_NON_DEBUT.match(d.message) or attente_r[1] != compte:
                 rien = {"redemarrer": "je ne redémarre rien", "demarrer": "je ne démarre rien",
                         "arreter": "je n'arrête rien"}[action_c]
                 return _reponse_ha(d.flux, f"D'accord, {rien}.", {"role": "docker", "raison": "annulé"},
@@ -2491,13 +2557,18 @@ def creer_app(config: Config | None = None, registre: Registre | None = None,
                 _tracer(route, d.message)
                 return _reponse_ha(d.flux, rm.texte, route, "maison", "inventaire", rm.detail.get("duree_ms", 0),
                                    await cartes_sures(rm.detail.get("entites")))
-            if "commande" in rm.detail and cfg.maison.assist_en_secours and maison.mentionne_sensible(d.message):
+            if ("commande" in rm.detail and docker.configure and securite.est_admin(compte)
+                    and conteneur_approchant(d.message)):
+                # rien dans la maison, mais un conteneur au nom proche : Claude avec les outils Docker
+                route["maison"]["vers_docker"] = conteneur_approchant(d.message)
+                pour_docker = True
+            elif "commande" in rm.detail and cfg.maison.assist_en_secours and maison.mentionne_sensible(d.message):
                 # Assist pourrait ouvrir une serrure ou un portail : on refuse sans lui demander
                 route["maison"]["sensible"] = True
                 _tracer(route, d.message)
                 return _reponse_ha(d.flux, "Je ne pilote pas ça : action sensible, à faire depuis Home Assistant.",
                                    route, "maison", "inventaire", 0)
-            if "commande" in rm.detail and cfg.maison.assist_en_secours and not interdits_effectifs:
+            if not pour_docker and "commande" in rm.detail and cfg.maison.assist_en_secours and not interdits_effectifs:
                 # commande comprise mais appareil introuvable : l'agent Assist de HA tente sa chance
                 # (pas pour une personne aux droits limités : Assist ne les connaît pas)
                 debut_ha = time.perf_counter()
@@ -2515,12 +2586,12 @@ def creer_app(config: Config | None = None, registre: Registre | None = None,
                     return _reponse_ha(d.flux, rha.texte or "C'est fait.", route, "home-assistant", "assist", duree,
                                        await cartes_sures(rha.entites))
                 echec_ha = rha.code or rha.type
-            if "commande" in rm.detail and rm.texte:
+            if not pour_docker and "commande" in rm.detail and rm.texte:
                 # Commande de maison comprise mais appareil introuvable : réponse factuelle,
                 # jamais confiée à un modèle (il inventerait « c'est allumé »).
                 _tracer(route, d.message)
                 return _reponse_ha(d.flux, rm.texte, route, "maison", "inventaire", rm.detail.get("duree_ms", 0))
-            if "commande" in rm.detail and not echec_ha:
+            if not pour_docker and "commande" in rm.detail and not echec_ha:
                 echec_ha = rm.detail.get("raison", "appareil introuvable")
         # Claude avec les outils maison : demande ouverte sur la maison (« il fait sombre au salon »),
         # ou demande simple que les règles n'ont pas su traiter
@@ -2531,6 +2602,10 @@ def creer_app(config: Config | None = None, registre: Registre | None = None,
             role = cfg.routeur.role_complexe
             route["outils"] = "Claude avec rappels et agenda"
             agenda_recent[d.conversation] = time.monotonic()
+            outils = outils_maison(d.conversation)
+        elif claude_outille and telegram.configure and RE_TELEGRAM.search(d.message) and securite.est_admin(compte):
+            role = cfg.routeur.role_complexe
+            route["outils"] = "Claude avec Telegram"
             outils = outils_maison(d.conversation)
         elif claude_outille and creer_regle:
             route["outils"] = "Claude prépare une règle « si… alors… »"

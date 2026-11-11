@@ -538,10 +538,11 @@ class Maison:
             if cmd.couleur or cmd.kelvin or cmd.hs:
                 details.append(_nom_couleur(cmd))
             val = f" ({', '.join(details)})" if details else ""
-            if len(faits) == 1:
-                morceaux.append(f"C'est {verbe} : {_et(_noms_courts(faits))}{val}.")   # « c'est » : pas d'accord
+            if len(faits) <= 3:
+                # « c'est » : pas d'accord ; jusqu'à trois appareils, on les nomme (on sait ce qui a bougé)
+                morceaux.append(f"C'est {verbe} : {_et(_noms_courts(faits))}{val}.")
             else:
-                morceaux.append(f"C'est {verbe}{val}.")    # plusieurs appareils : réponse sobre, sans la liste
+                morceaux.append(f"C'est {verbe}{val} : {len(faits)} appareils.")
         if rates:
             morceaux.append(f"Sauf {_et(_noms_courts(rates))} : refusé.")
         if impossibles:

@@ -195,3 +195,11 @@ def test_allumer_un_conteneur_passe_par_docker(tmp_path, monkeypatch):
     assert c.post("/api/chat", json={"message": "oui", "conversation": "d2"}).json()["reponse"].startswith("C'est fait : plex démarre")
     c.post("/interne/docker/redemarrer", json={"nom": "plex", "action": "arreter", "conversation": "d2"}, headers=h)
     assert c.post("/api/chat", json={"message": "non", "conversation": "d2"}).json()["reponse"] == "D'accord, je n'arrête rien."
+    # « oui » dans une phrase (« Magnus, oui, je veux que tu l'arrêtes ») vaut confirmation
+    c.post("/interne/docker/redemarrer", json={"nom": "plex", "action": "arreter", "conversation": "d2"}, headers=h)
+    rep = c.post("/api/chat", json={"message": "oui, je veux que tu éteignes plex", "conversation": "d2"}).json()
+    assert rep["reponse"].startswith("C'est fait : plex s'arrête")
+    # fenêtre d'écoute relancée après la réponse
+    assert c.post("/api/voix/prolonger", json={"conversation": "d2"}).json()["fenetre_s"] > 0
+    # Telegram : outil réservé aux administrateurs, pas configuré ici
+    assert c.post("/interne/telegram", json={"texte": "test", "conversation": "d2"}, headers=h).status_code == 503
