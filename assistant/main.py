@@ -41,7 +41,9 @@ from .memoire import Memoire
 from .fil import Fil
 from .proactif import Annonces, MisesAJourIgnorees
 from .rapports import CONSIGNE_JSON, MODELES as MODELES_RAPPORT, Demande, RapportIndisponible, Rapports
-from .rapports import detecter as detecter_rapport
+from .rapports import detecter as detecter_rapport, sujet_de as sujet_rapport
+from .presentation import (NOTE_CARTE, NOTE_VOIR, RE_MARQUEUR, SUITE_VALIDE_S, Choix, choisir as choisir_carte,
+                           lire_marqueur, marqueur_possible, masquer_texte, phrase as phrase_carte)
 from .docker_diag import Docker, UnraidDocker, causes_probables, normaliser_nom
 from .locuteur import Locuteurs
 from .diagnostic import Diagnostic, GestionnaireJournal
@@ -860,6 +862,7 @@ def creer_app(config: Config | None = None, registre: Registre | None = None,
     texte_conversation: dict[str, str] = {}                  # conversation -> dernière demande (historique)
     cartes_conversation: dict[str, list[str]] = {}           # conversation -> appareils lus ou touchés par Claude
     agenda_recent: dict[str, float] = {}                     # conversation -> dernier échange sur l'agenda
+    derniere_carte: dict[str, tuple[Demande, float]] = {}    # conversation -> dernière carte de rapport (« et à Lyon ? »)
     masques_conversation: dict[str, frozenset] = {}          # conversation -> ce qu'on ne révèle pas (outils de Claude)
     interdits_conversation: dict[str, frozenset] = {}        # conversation -> domaines que la personne ne pilote pas
     personne_conversation: dict[str, str] = {}               # conversation -> qui parle (compte, ou voix reconnue)
@@ -2288,7 +2291,7 @@ def creer_app(config: Config | None = None, registre: Registre | None = None,
         except HTTPException as e:
             fil.ajouter(compte, "assistant", "", d.appareil, question=q["id"], extra={"erreur": str(e.detail)})
             raise
-        extra_de = lambda o: {k: o[k] for k in ("cartes", "fournisseur", "modele", "duree_ms", "erreur") if o.get(k)}
+        extra_de = lambda o: {k: o[k] for k in ("cartes", "masquer_texte", "fournisseur", "modele", "duree_ms", "erreur") if o.get(k)}
         if isinstance(rep_, dict):
             fil.ajouter(compte, "assistant", rep_.get("reponse", ""), d.appareil, question=q["id"], extra=extra_de(rep_))
             return rep_
@@ -2494,16 +2497,37 @@ def creer_app(config: Config | None = None, registre: Registre | None = None,
             texte_r = await lancer_routine(routine, d.conversation)
             return _reponse_ha(d.flux, texte_r, {"role": "maison", "raison": f"routine « {routine['nom']} »"},
                                "maison", "routine", 0)
-        dem_rapport = detecter_rapport(d.message) if d.role == ROLE_AUTO else None
-        if dem_rapport:
-            # « fais-moi un rapport du CAC 40 » : une phrase et une carte de synthèse
+        # --- carte ou texte (presentation.py) : « montre-moi », sujet à carte, suite d'une carte… ----------
+        choix = Choix()
+        if d.role == ROLE_AUTO:
+            prec = derniere_carte.get(d.conversation)
+            prec = prec[0] if prec and time.monotonic() - prec[1] < SUITE_VALIDE_S else None
+            exclu = bool(RE_RAPPEL.search(d.message) or RE_CREER_ROUTINE.search(d.message)
+                         or RE_CREER_REGLE.search(d.message) or RE_GERER_REGLE.search(d.message))
+            choix = choisir_carte(d.message, prec, exclu)
+            dem_rapport = detecter_rapport(d.message)
+            if dem_rapport:
+                choix = Choix(dem_rapport, 1, voir=True)       # « fais-moi un rapport du CAC 40 »
+            elif (choix.voir and choix.demande is None and choix.reste
+                    and not (ha.configure and await maison.evoque(d.message))):
+                # « montre-moi un point sur la Fed » : pas de carte toute faite, la carte libre (Claude et le web)
+                choix.demande = Demande("libre", sujet_rapport("point " + choix.reste) or choix.reste)
+        if choix.demande:
             debut_r = time.perf_counter()
-            texte_r, cartes_r = await faire_rapport(dem_rapport, compte, ctx_revel)
-            route_r = {"role": "rapport", "raison": f"rapport {dem_rapport.type}"
-                       + (f" « {dem_rapport.sujet} »" if dem_rapport.sujet else "")}
-            _tracer(route_r, d.message)
-            return _reponse_ha(d.flux, texte_r, route_r, "rapport", dem_rapport.type,
-                               round((time.perf_counter() - debut_r) * 1000), cartes_r)
+            texte_r, cartes_r = await faire_rapport(choix.demande, compte, ctx_revel)
+            if cartes_r or choix.regle == 1:
+                # demandée (règle 1) : la carte, ou pourquoi il n'y en a pas ; sinon, faute de carte, on continue
+                if cartes_r:
+                    derniere_carte[d.conversation] = (choix.demande, time.monotonic())
+                    texte_r = phrase_carte(d.message, cartes_r[0], texte_r, choix.repliee)
+                    if choix.repliee:
+                        cartes_r[0]["repliee"] = True
+                dem = choix.demande
+                route_r = {"role": "rapport", "raison": f"carte {dem.type}" + (f" « {dem.sujet} »" if dem.sujet else "")
+                           + f" (règle {choix.regle})"}
+                _tracer(route_r, d.message)
+                return _reponse_ha(d.flux, texte_r, route_r, "rapport", dem.type,
+                                   round((time.perf_counter() - debut_r) * 1000), cartes_r)
         decision = None
         compte_conversation[d.conversation] = (compte_de(requete) or "", ip_de(requete)[1])
         texte_conversation[d.conversation] = d.message
@@ -2646,11 +2670,67 @@ def creer_app(config: Config | None = None, registre: Registre | None = None,
 
         if note_fil:
             consigne_profil = (consigne_profil + "\n\n" + note_fil).strip()
+        # règle 5 : Claude peut demander une carte par un marqueur en tête de réponse (jamais pour une explication)
+        marqueur_actif = not choix.texte_seul and (role == cfg.routeur.role_complexe or choix.voir)
+        if marqueur_actif:
+            consigne_profil = (consigne_profil + "\n\n" + NOTE_CARTE + ("\n" + NOTE_VOIR if choix.voir else "")).strip()
         msgs = _messages(cfg, d, outils=bool(outils), profil=consigne_profil)
         # garde-fou : le modèle rapide ne doit pas prétendre avoir agi sur la maison
         garde = ha.configure and role == cfg.routeur.role_simple
         if echec_ha:
             msgs.insert(1, Message("system", NOTE_HA_ECHEC.format(code=echec_ha)))
+
+        async def carte_marqueur(dem: Demande) -> tuple[str, list[dict]]:
+            """Règle 5 : la vraie carte demandée par le modèle, et sa phrase (ou pourquoi elle manque)."""
+            try:
+                phrase_r, cartes_r = await asyncio.wait_for(faire_rapport(dem, compte, ctx_revel), 20)
+            except asyncio.TimeoutError:
+                return "", []
+            journal.info("carte demandée par le modèle : %s « %s » (%s)", dem.type, dem.sujet,
+                         "faite" if cartes_r else "impossible")
+            if cartes_r:
+                derniere_carte[d.conversation] = (dem, time.monotonic())
+            return phrase_r, cartes_r
+
+        async def carte_de_marqueur(texte: str, actif: bool) -> tuple[str, list[dict]]:
+            """« [carte:meteo:Lyon] Voici la météo. » -> (« Voici la météo. » + la phrase de la carte, [carte])."""
+            dem, reste = lire_marqueur(texte) if actif else (None, texte)
+            if not dem:
+                return texte, []
+            phrase_r, cartes_r = await carte_marqueur(dem)
+            return (reste.strip() + " " + phrase_r).strip(), cartes_r
+
+        async def avec_marqueur(flux, actif: bool):
+            """Le flux du modèle sans le marqueur de carte : la carte d'abord (un dict), la phrase du modèle,
+            puis celle de la carte (les vraies données) juste avant la fin."""
+            if not actif:
+                async for x in flux:
+                    yield x
+                return
+            debut_txt, decide, apres = "", False, ""
+            async for x in flux:
+                if not decide and not isinstance(x, Reponse):
+                    debut_txt += x
+                    dem, reste = lire_marqueur(debut_txt)
+                    if dem:
+                        decide = True
+                        apres, cartes_m = await carte_marqueur(dem)
+                        if cartes_m:
+                            yield {"cartes": cartes_m, "masquer_texte": True}
+                        if reste.strip():
+                            yield reste.lstrip()
+                    elif not marqueur_possible(debut_txt):
+                        decide = True
+                        yield debut_txt
+                    continue
+                if isinstance(x, Reponse):
+                    if not decide and debut_txt:
+                        decide = True
+                        yield debut_txt
+                    if apres:
+                        yield " " + apres
+                        apres = ""
+                yield x
 
         if not d.flux:
             debut = time.perf_counter()
@@ -2664,14 +2744,16 @@ def creer_app(config: Config | None = None, registre: Registre | None = None,
                 journal.info("réponse inventée remplacée : %s", r.texte[:120])
                 r.texte = REPONSE_HONNETE
             vus = cartes_conversation.pop(d.conversation, [])
+            texte, cartes = await carte_de_marqueur(r.texte, marqueur_actif)
+            cartes += [] if choix.texte_seul else await cartes_sures(vus)
             return {
-                "reponse": r.texte,
+                "reponse": texte,
                 "fournisseur": r.fournisseur,
                 "modele": r.modele,
                 "secours": r.secours,
                 "route": route,
                 "duree_ms": round((time.perf_counter() - debut) * 1000),
-                **({"cartes": c} if (c := await cartes_sures(vus)) else {}),
+                **({"cartes": cartes, "masquer_texte": masquer_texte(texte, cartes)} if cartes else {}),
             }
 
         async def lignes():
@@ -2687,22 +2769,26 @@ def creer_app(config: Config | None = None, registre: Registre | None = None,
                 except FournisseurIndisponible as e:
                     yield _ndjson({"erreur": f"aucun modèle disponible ({e})"})
                     return
-                texte = sans_emoji(r.texte)
+                texte, cartes = await carte_de_marqueur(sans_emoji(r.texte), marqueur_actif)
                 if r.secours and RE_FAUSSE_ACTION.match(texte):
                     journal.info("réponse inventée remplacée : %s", texte[:120])
                     texte = REPONSE_HONNETE
                 journal.info("réponse %s : %s", r.fournisseur, texte[:160].replace("\n", " "))
                 duree = round((time.perf_counter() - debut) * 1000)
+                vus = cartes_conversation.pop(d.conversation, [])
+                cartes += [] if choix.texte_seul else await cartes_sures(vus)
+                if cartes:      # la carte d'abord : la page sait tout de suite qu'elle cache le texte
+                    yield _ndjson({"cartes": cartes, "masquer_texte": masquer_texte(texte, cartes)})
                 yield _ndjson({"delta": texte})
-                cartes = await cartes_sures(cartes_conversation.pop(d.conversation, []))
-                if cartes:
-                    yield _ndjson({"cartes": cartes})
                 yield _ndjson({"fin": True, "fournisseur": r.fournisseur, "modele": r.modele, "secours": r.secours,
                                "premier_ms": duree, "duree_ms": duree})
                 return
             tampon, verifie = "", not garde
             try:
-                async for x in reg.flux(role, msgs, outils):
+                async for x in avec_marqueur(reg.flux(role, msgs, outils), marqueur_actif):
+                    if isinstance(x, dict):
+                        yield _ndjson(x)       # la carte demandée par Claude (règle 5), avant sa phrase
+                        continue
                     if not isinstance(x, Reponse):
                         x = sans_emoji(x)
                         if not x:
@@ -2810,16 +2896,19 @@ def _tracer(route: dict, message: str) -> None:
 
 def _reponse_ha(flux: bool, texte: str, route: dict, fournisseur: str, modele: str, duree_ms: int,
                 cartes: list[dict] | None = None):
+    """Réponse toute faite (maison, rapport…). Avec une carte, la carte part avant la phrase et dit à la page
+    de cacher le texte (il reste dit à voix haute)."""
     journal.info("réponse %s : %s", fournisseur, texte[:160])
     fin = {"fournisseur": fournisseur, "modele": modele, "secours": False, "duree_ms": duree_ms}
+    avec = {"cartes": cartes, "masquer_texte": masquer_texte(texte, cartes)} if cartes else {}
     if not flux:
-        return {"reponse": texte, **fin, "route": route, **({"cartes": cartes} if cartes else {})}
+        return {"reponse": texte, **fin, "route": route, **avec}
 
     async def lignes():
         yield _ndjson({"route": route})
+        if avec:
+            yield _ndjson(avec)
         yield _ndjson({"delta": texte})
-        if cartes:
-            yield _ndjson({"cartes": cartes})
         yield _ndjson({"fin": True, **fin, "premier_ms": fin["duree_ms"]})
 
     return StreamingResponse(lignes(), media_type="application/x-ndjson")

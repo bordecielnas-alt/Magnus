@@ -77,6 +77,7 @@ INDICES = [
 class Demande:
     type: str           # meteo, bourse, agenda, actus, docker, libre
     sujet: str = ""     # lieu (météo), indice (bourse), sujet libre
+    rapide: bool = False  # bourse : le cours et la courbe seulement, sans l'analyse de Claude (pas d'attente)
 
 
 def _sans_accents(s: str) -> str:
@@ -114,7 +115,9 @@ def lieu_de(message: str) -> str:
     if not x:
         return ""
     lieu = x.group("lieu").strip()
-    lieu = re.sub(r"\s+(aujourd.hui|demain|ce soir|cette semaine|ce week-end)$", "", lieu, flags=re.I).strip()
+    lieu = re.sub(r"(?:\s+(?:aujourd.hui|apr[eè]s-demain|demain|ce soir|ce matin|cet apr[eè]s-midi|cette semaine|"
+                  r"ce week-end|le week-end|(?:lundi|mardi|mercredi|jeudi|vendredi|samedi|dimanche)(?: prochain)?|"
+                  r"s'il te pla[iî]t|stp))+$", "", lieu, flags=re.I).strip()
     if _sans_accents(lieu) in {_sans_accents(w) for w in MOTS_PAS_LIEU} or RE_METEO.fullmatch(lieu):
         return ""
     return lieu[:1].upper() + lieu[1:]
@@ -341,7 +344,7 @@ class Rapports:
              "docker": self.rapport_docker, "libre": self.libre}.get(d.type)
         if not f:
             raise RapportIndisponible(f"je ne sais pas faire de rapport « {d.type} »")
-        carte = await f(d.sujet)
+        carte = await (self.bourse(d.sujet, d.rapide) if d.type == "bourse" else f(d.sujet))
         journal.info("rapport %s « %s » en %d ms", d.type, d.sujet, (time.perf_counter() - debut) * 1000)
         return carte.get("resume") or carte.get("titre", ""), carte
 
@@ -378,7 +381,7 @@ class Rapports:
         return carte_meteo(lieu, r.json())
 
     # bourse
-    async def bourse(self, sujet: str) -> dict:
+    async def bourse(self, sujet: str, rapide: bool = False) -> dict:
         if not indice_de(sujet) and re.fullmatch(r"(?:la |les )?(?:bourse|march[ée]s?|indices?|bourse de paris)"
                                                   r"(?: financiers?| du jour| aujourd.hui)?", sujet.strip(), re.I):
             sujet = ""
@@ -398,6 +401,8 @@ class Rapports:
                 return None
 
         async def analyse():
+            if rapide:
+                return None
             try:
                 return await self._json(CONSIGNES["bourse"].format(sujet=nom, date=_date_du_jour()))
             except RapportIndisponible:

@@ -189,7 +189,7 @@ def test_chat_rapport_libre_renvoie_une_carte():
     assert "JSON" in claude.appels[0][0][0].content
     lignes = [json.loads(x) for x in c.post("/api/chat", json={
         "message": "fais-moi un rapport sur la Fed", "flux": True}).text.splitlines()]
-    assert [next(iter(x)) for x in lignes] == ["route", "delta", "cartes", "fin"]
+    assert [next(iter(x)) for x in lignes] == ["route", "cartes", "delta", "fin"]
 
 
 def test_chat_rapport_secours_ne_fait_pas_de_carte():

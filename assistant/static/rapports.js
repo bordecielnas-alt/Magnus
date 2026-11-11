@@ -8,6 +8,10 @@
   .rapport > * { min-width:0; }
   .rapport { background:var(--surface); border:1px solid var(--bord); border-radius:18px; padding:14px 16px; display:grid; gap:12px; max-width:440px; position:relative; overflow:hidden; }
   .rapport.occupee { opacity:.6; }
+  .rapports .rapport.repliee > :not(.r-tete) { display:none; }      /* question fermée : la réponse est dite, la carte attend */
+  .rapport.repliable > .r-tete { cursor:pointer; }
+  .rapport.repliable > .r-tete::after { content:'▾'; color:var(--muted); font-size:.8rem; align-self:center; transition:transform .2s; }
+  .rapport.repliable:not(.repliee) > .r-tete::after { transform:rotate(180deg); }
   .rapport > .r-tete { display:flex; align-items:flex-start; gap:10px; }
   .rapport > .r-tete .titre { flex:1; min-width:0; line-height:1.25; }
   .rapport > .r-tete strong { font-family:var(--f-titre); font-weight:600; font-size:1.08rem; }
@@ -217,6 +221,16 @@
       + (c.demande ? '<button type="button">Actualiser</button>' : '') + '</div>';
     const b = el.querySelector('.r-pied button');
     if (b) b.onclick = () => actualiser(el, c, conversation);
+    if (c.repliee) {
+      // carte repliée (« il pleut demain ? ») : un toucher sur l'en-tête la déplie
+      el.classList.add('repliable', 'repliee');
+      const tete = el.querySelector('.r-tete');
+      tete.setAttribute('role', 'button'); tete.tabIndex = 0;
+      tete.setAttribute('aria-expanded', 'false');
+      const basculer = () => tete.setAttribute('aria-expanded', String(!el.classList.toggle('repliee')));
+      tete.onclick = basculer;
+      tete.onkeydown = e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); basculer(); } };
+    }
     return el;
   }
 
