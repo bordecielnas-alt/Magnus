@@ -38,7 +38,7 @@ from .habitudes import Routines, automatisation, detecter
 from .memoire import Memoire
 from .fil import Fil
 from .proactif import Annonces
-from .docker_diag import Docker, UnraidDocker
+from .docker_diag import Docker, UnraidDocker, causes_probables
 from .locuteur import Locuteurs
 from .diagnostic import Diagnostic, GestionnaireJournal
 from .securite import COMPTE_MACHINE, NOM_COOKIE, AccesRefuse, Securite, est_locale
@@ -187,7 +187,12 @@ NOTE_OUTILS_DOCKER = (
     "qui ne marche pas, diagnostique d'abord, puis donne la cause probable et un correctif concret que la "
     "personne appliquera elle-même. etat_serveur donne les disques, la parité et les alertes. Pour redémarrer un "
     "conteneur, utilise demander_redemarrage puis demande « Je redémarre <nom> ? » : c'est le « oui » de la personne "
-    "qui le fait. Tu ne peux rien faire d'autre : ne prétends jamais avoir agi."
+    "qui le fait. Tu ne peux rien faire d'autre : ne prétends jamais avoir agi. "
+    "Si on te demande pourquoi un conteneur plante (s'arrête, redémarre en boucle, ne répond plus) : appelle "
+    "diagnostiquer_conteneur, puis réponds en deux ou trois phrases simples : la cause probable (appuie-toi sur "
+    "causes_probables et cite la ligne de journal qui le montre), et ce qu'il faudrait corriger. Si un redémarrage "
+    "peut aider et que redemarrage_possible est vrai, appelle demander_redemarrage et termine par « Je redémarre "
+    "<nom> ? ». Si la cause reviendra au redémarrage (disque plein, config invalide…), dis-le au lieu de le proposer."
 )
 
 
@@ -383,6 +388,8 @@ def creer_app(config: Config | None = None, registre: Registre | None = None,
     diag = Diagnostic(securite.fichier.parent)
     docker = (UnraidDocker(cfg.docker.unraid_url, cfg.docker.cle_unraid(), cfg.docker.timeout) if cfg.docker.unraid_url
               else Docker(cfg.docker.url, cfg.docker.timeout))
+    if isinstance(docker, UnraidDocker) and cfg.docker.url:
+        docker.journaux = Docker(cfg.docker.url, cfg.docker.timeout)   # l'API Unraid ne donne pas les journaux
     annonces = Annonces(securite.fichier.parent, cfg.proactif.heures_calmes)
     telegram = Telegram(cfg.telegram.jeton(), cfg.telegram.chat_id)
     rappels = Rappels(securite.fichier.parent)
@@ -1184,7 +1191,10 @@ def creer_app(config: Config | None = None, registre: Registre | None = None,
     @app.get("/interne/docker/diagnostic", include_in_schema=False)
     async def interne_diagnostic(nom: str, x_jeton_interne: str | None = Header(None)) -> dict:
         verifier_jeton(x_jeton_interne)
-        return await docker_ou_erreur(docker.diagnostic(nom))
+        d = await docker_ou_erreur(docker.diagnostic(nom))
+        d["causes_probables"] = causes_probables(d)
+        d["redemarrage_possible"] = isinstance(docker, UnraidDocker) and bool(cfg.docker.cle_unraid_actions())
+        return d
 
     async def docker_ou_erreur(appel):
         if not docker.configure:

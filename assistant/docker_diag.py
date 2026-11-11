@@ -32,6 +32,68 @@ def demultiplexer(brut: bytes) -> str:
     return b"".join(morceaux).decode("utf-8", "replace")
 
 
+# Signatures connues dans les journaux : (motif, cause probable en une phrase). Ordre = priorité.
+SIGNATURES = [
+    (re.compile(r"out of memory|oom[- ]?kill|cannot allocate memory|memoryerror|java\.lang\.OutOfMemoryError", re.I),
+     "manque de mémoire : le conteneur a dépassé la RAM disponible ou sa limite"),
+    (re.compile(r"no space left on device|disk quota exceeded", re.I),
+     "disque plein : plus de place pour écrire (cache, appdata ou image Docker)"),
+    (re.compile(r"address already in use|bind: .*in use|port is already allocated", re.I),
+     "port déjà pris par un autre conteneur ou service"),
+    (re.compile(r"permission denied|operation not permitted|eacces|read-only file system", re.I),
+     "problème de droits sur un dossier ou un fichier (PUID/PGID, appdata, montage en lecture seule)"),
+    (re.compile(r"connection refused|could not connect|can't connect|connect(ion)? timed out|"
+                r"name or service not known|no route to host|temporary failure in name resolution|getaddrinfo", re.I),
+     "un service dont il dépend est injoignable (base de données, autre conteneur, réseau ou DNS)"),
+    (re.compile(r"database is locked|database disk image is malformed|corrupt", re.I),
+     "base de données verrouillée ou corrompue"),
+    # moins sûres : cherchées seulement dans les lignes d'erreur
+    (re.compile(r"no such file or directory|not found|cannot find|missing", re.I),
+     "fichier ou dossier attendu absent (chemin de montage, configuration manquante)"),
+    (re.compile(r"invalid|parse error|syntax error|yaml|config(uration)? error", re.I),
+     "configuration invalide (fichier de config ou variable d'environnement)"),
+    (re.compile(r"segmentation fault|core dumped|sigsegv", re.I),
+     "le programme s'est planté tout seul (erreur interne, souvent un bug de la version de l'image)"),
+]
+
+SURES = 6          # les 6 premières signatures sont assez précises pour être cherchées dans tout le journal
+
+CODES_SORTIE = {
+    137: "tué par le système (SIGKILL) : souvent le manque de mémoire, ou un arrêt forcé",
+    139: "plantage interne du programme (erreur de segmentation)",
+    143: "arrêté proprement (SIGTERM), par exemple par Unraid ou une mise à jour",
+    126: "la commande de démarrage n'est pas exécutable (droits)",
+    127: "la commande de démarrage est introuvable (image ou configuration)",
+    1: "le programme s'est arrêté sur une erreur (voir les journaux)",
+}
+
+
+def causes_probables(diag: dict) -> list[str]:
+    """Causes probables d'un plantage, tirées de l'état et des journaux (de la plus sûre à la moins sûre)."""
+    causes: list[str] = []
+    if diag.get("oom"):
+        causes.append("manque de mémoire : Docker a tué le conteneur (OOMKilled)")
+    erreurs = diag.get("erreurs_recentes") or []
+    toutes = erreurs + (diag.get("dernieres_lignes") or [])
+    for i, (motif, cause) in enumerate(SIGNATURES):
+        if i == 0 and diag.get("oom"):
+            continue                    # mémoire : déjà dit par OOMKilled
+        lignes = toutes if i < SURES else erreurs
+        if cause not in causes and any(motif.search(l) for l in lignes):
+            causes.append(cause)
+    code = diag.get("code_sortie")
+    if code is None:
+        m = re.search(r"Exited \((\d+)\)", diag.get("statut") or "")
+        code = int(m.group(1)) if m else None
+    if code and code in CODES_SORTIE and not (code == 137 and diag.get("oom")):
+        causes.append(f"code de sortie {code} : {CODES_SORTIE[code]}")
+    if (diag.get("redemarrages") or 0) >= 3:
+        causes.append(f"il redémarre en boucle ({diag['redemarrages']} redémarrages) : le problème revient à chaque démarrage")
+    if diag.get("sante") == "unhealthy":
+        causes.append("il tourne mais son contrôle de santé échoue (service bloqué ou trop lent)")
+    return causes[:4]
+
+
 class Docker:
     def __init__(self, url: str, timeout: float = 8, transport: httpx.AsyncBaseTransport | None = None) -> None:
         self.url = url.rstrip("/")
@@ -99,7 +161,7 @@ class Docker:
             "sante": sante.get("Status", ""), "sante_derniers": [h.get("Output", "")[:200] for h in (sante.get("Log") or [])[-3:]],
             "erreurs_recentes": [l[:300] for l in erreurs],
             "dernieres_lignes": [l[:300] for l in journaux[-20:]],
-        }
+        } | ({} if r.status_code == 200 else {"remarque": f"journaux illisibles (HTTP {r.status_code})"})
 
     async def problemes(self) -> list[dict]:
         """Conteneurs arrêtés anormalement ou en mauvaise santé (pour le mode proactif)."""
@@ -130,6 +192,8 @@ class UnraidDocker(Docker):
         super().__init__(url, timeout, transport)
         self.cle = cle
         self._requete: tuple[str, str] | None = None
+        # facultatif : socket ou docker-socket-proxy en lecture seule, seulement pour lire les journaux
+        self.journaux: Docker | None = None
 
     @property
     def configure(self) -> bool:
@@ -198,9 +262,16 @@ class UnraidDocker(Docker):
         if not c:
             noms = [x["nom"] for x in await self.conteneurs() if nom.lower() in x["nom"].lower()]
             raise ValueError(f"conteneur « {nom} » introuvable ou ambigu" + (f" : {', '.join(noms)}" if noms else ""))
-        return {"nom": c["nom"], "image": c["image"], "etat": c["etat"], "statut": c["statut"], "sante": c["sante"],
-                "demarrage_auto": c.get("demarrage_auto"),
-                "remarque": "API Unraid : pas de journaux disponibles ; diagnostic à partir de l'état et du statut."}
+        base = {"nom": c["nom"], "image": c["image"], "etat": c["etat"], "statut": c["statut"], "sante": c["sante"],
+                "demarrage_auto": c.get("demarrage_auto")}
+        if self.journaux and self.journaux.configure:
+            try:
+                return {**base, **{k: v for k, v in (await self.journaux.diagnostic(c["nom"], lignes)).items() if v not in ("", None)}}
+            except Exception as e:  # noqa: BLE001 - journaux en plus : l'état Unraid suffit pour répondre
+                return {**base, "remarque": f"journaux Docker illisibles ({e.__class__.__name__}) ; "
+                                            "diagnostic à partir de l'état et du statut."}
+        return {**base, "remarque": "API Unraid : pas de journaux disponibles (ajouter docker.url pour les lire) ; "
+                                    "diagnostic à partir de l'état et du statut."}
 
 
     # --- état du serveur (array, disques, parité) ------------------------------------------------------

@@ -96,3 +96,14 @@ client_max_body_size 12m;
 - `https://magnus.bordeciel.net` depuis la tablette : page de connexion, puis l'assistant.
 - Carte *Voix* / `GET /api/voix` : `appareil: cuda`.
 - `nvidia-smi` sur Unraid : un processus python de ~1 Go sur la P2000 pendant une transcription.
+
+## 6. « Pourquoi tel conteneur plante ? » (journaux des conteneurs)
+
+L'API Unraid donne l'état des conteneurs et permet le redémarrage (clé `UNRAID_CLE_ACTIONS`), mais pas leurs journaux. Pour que Magnus lise les dernières lignes d'un conteneur et en tire une cause probable, ajouter en plus un accès Docker **en lecture seule** :
+
+1. Installer un `docker-socket-proxy` (ex. `tecnativa/docker-socket-proxy`) avec seulement `CONTAINERS=1` (tout le reste à 0, pas de `POST`).
+2. Dans le template de Magnus, variable `ASSISTANT_DOCKER_URL` = `http://<IP d'Unraid>:2375` (le port du proxy).
+
+`docker.unraid_url` reste prioritaire pour l'état et le redémarrage ; `docker.url` ne sert alors qu'aux journaux, et l'assistant n'y fait que des lectures (liste, détail, journaux). Sans ce proxy, Magnus explique le plantage à partir du code de sortie et du statut seulement.
+
+Ensuite : « pourquoi Radarr plante ? » → Magnus lit les journaux, donne la cause probable (mémoire, disque plein, port pris, droits, dépendance injoignable…) et propose « Je redémarre radarr ? ». Rien n'est redémarré sans le « oui ».
