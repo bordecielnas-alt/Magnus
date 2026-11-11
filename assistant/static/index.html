@@ -247,6 +247,21 @@
   dialog .actions { display:flex; justify-content:space-between; gap:8px; }
   dialog .actions button { padding:8px 14px; border-radius:10px; cursor:pointer; border:0; background:var(--accent); color:var(--accent-fg); }
   dialog .actions .discret { background:transparent; color:var(--muted); border:1px solid var(--bord); }
+  /* Listes longues (historique, agenda, mémoire, réglages) : le bouton « Fermer » du bas reste collé au bord
+     de la fenêtre et une croix reste en haut à droite, on n'a plus à défiler jusqu'en bas pour fermer.
+     Les marges négatives annulent le rembourrage de la fenêtre (--pad-x, --pad-b) pour que la barre touche les bords. */
+  dialog { --pad-t:18px; --pad-x:20px; --pad-b:18px; padding:var(--pad-t) var(--pad-x) var(--pad-b); }
+  dialog .actions { position:sticky; bottom:calc(-1 * var(--pad-b)); z-index:2; background:var(--surface);
+                    margin:12px calc(-1 * var(--pad-x)) calc(-1 * var(--pad-b)); padding:10px var(--pad-x) var(--pad-b);
+                    border-top:1px solid var(--bord); }
+  dialog h2 { position:sticky; top:calc(-1 * var(--pad-t)); z-index:2; display:flex; align-items:center; gap:8px; background:var(--surface);
+              margin:calc(-1 * var(--pad-t)) calc(-1 * var(--pad-x)) 12px; padding:var(--pad-t) var(--pad-x) 8px; }
+  dialog h2:focus { outline:none; }
+  dialog details, dialog fieldset { scroll-margin-top:56px; }   /* les liens « ↓ » des réglages ne s'arrêtent pas sous le titre collé */
+  dialog .fermer-x { flex:none; margin:-6px -8px -6px auto; width:34px; height:34px; padding:0;
+                     border:0; border-radius:50%; background:transparent; color:var(--muted); cursor:pointer; font:inherit; }
+  dialog .fermer-x:hover, dialog .fermer-x:focus-visible { color:var(--fg); }
+  dialog .fermer-x .ico { width:18px; height:18px; }
 </style>
 </head>
 <body>
@@ -403,6 +418,39 @@ $('rgBrume').oninput = e => { reglagesOrbe.brume = +e.target.value; appliquerOrb
 $('rgTrainees').oninput = e => { reglagesOrbe.trainees = +e.target.value; appliquerOrbe(); };
 $('orbeDefaut').onclick = () => { reglagesOrbe = {...ORBE_DEFAUT}; appliquerOrbe(); };
 $('reglagesOrbe').onclick = () => { fermerMenu(); $('dlgOrbe').showModal(); };
+
+// ----- Fenêtres : se fermer sans défiler -----
+// Chaque fenêtre reçoit une croix toujours visible en haut à droite, et un toucher en dehors de la
+// fenêtre (sur le fond assombri) la ferme aussi. Échap la fermait déjà. Branché sur showModal pour
+// couvrir aussi les fenêtres créées plus tard (Mémoire, dans memoire.js).
+const ICONE_FERMER = '<svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18"/></svg>';
+function equiperFenetre(d) {
+  if (d.dataset.fermeture) return;
+  d.dataset.fermeture = '1';
+  const x = document.createElement('button');
+  x.type = 'button'; x.className = 'fermer-x'; x.title = 'Fermer'; x.setAttribute('aria-label', 'Fermer');
+  x.innerHTML = ICONE_FERMER;
+  x.onclick = () => d.close('ok');
+  const titre = d.querySelector('h2');
+  if (titre) titre.appendChild(x); else (d.querySelector('form') || d).prepend(x);
+  // le fond assombri appartient à la fenêtre : un clic dont la cible est la fenêtre elle-même et qui tombe
+  // hors de son cadre est un clic sur le fond
+  d.addEventListener('click', ev => {
+    if (ev.target !== d) return;
+    const r = d.getBoundingClientRect();
+    if (ev.clientX < r.left || ev.clientX > r.right || ev.clientY < r.top || ev.clientY > r.bottom) d.close('ok');
+  });
+}
+const showModalOrigine = HTMLDialogElement.prototype.showModal;
+HTMLDialogElement.prototype.showModal = function () {
+  equiperFenetre(this);
+  const r = showModalOrigine.apply(this, arguments);
+  // le navigateur donne le focus au premier bouton, qui est maintenant la croix : on le rend au titre
+  if (document.activeElement && document.activeElement.classList.contains('fermer-x')) {
+    const t = this.querySelector('h2'); if (t) { if (!t.hasAttribute('tabindex')) t.tabIndex = -1; t.focus({preventScroll: true}); }
+  }
+  return r;
+};
 
 // ----- Historique des actions sur la maison (avec annulation) -----
 async function chargerHisto() {
