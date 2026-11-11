@@ -162,3 +162,34 @@ def test_conteneurs_arretes_expres_ne_sont_pas_des_problemes():
             {"id": "3", "names": ["/plex"], "state": "EXITED", "status": "Exited (1) 3 minutes ago", "autoStart": True}]}}})
     d = UnraidDocker("http://x/graphql", "k", transport=httpx.MockTransport(repondre))
     assert [c["nom"] for c in asyncio.run(d.problemes())] == ["plex"]
+
+
+def test_causes_probables():
+    from assistant.docker_diag import causes_probables
+    oom = causes_probables({"oom": True, "code_sortie": 137, "erreurs_recentes": ["ERROR: out of memory"]})
+    assert oom[0].startswith("manque de mémoire") and len([c for c in oom if "mémoire" in c]) == 1
+    assert not any("137" in c for c in oom)            # 137 déjà expliqué par OOMKilled
+    port = causes_probables({"code_sortie": 1, "redemarrages": 5,
+                             "dernieres_lignes": ["listen tcp 0.0.0.0:8080: bind: address already in use"]})
+    assert "port déjà pris" in port[0] and any("code de sortie 1" in c for c in port) and any("boucle" in c for c in port)
+    # signature peu sûre : ignorée hors des lignes d'erreur (ex. un 404 banal dans le journal)
+    assert causes_probables({"dernieres_lignes": ["GET /favicon.ico 404 not found"]}) == []
+    # API Unraid sans journaux : le code de sortie vient du statut
+    assert causes_probables({"statut": "Exited (139) 2 minutes ago"})[0].startswith("code de sortie 139")
+
+
+def test_unraid_avec_journaux_docker():
+    from assistant.docker_diag import UnraidDocker
+
+    def repondre(req):
+        return httpx.Response(200, json={"data": {"docker": {"containers": [
+            {"id": "1", "names": ["/radarr"], "state": "EXITED", "status": "Exited (137) 3 minutes ago", "autoStart": True}]}}})
+    d = UnraidDocker("http://x/graphql", "k", transport=httpx.MockTransport(repondre))
+    requetes = []
+    d.journaux = Docker("http://proxy:2375", transport=faux_proxy(requetes))
+    diag = asyncio.run(d.diagnostic("radarr"))
+    assert diag["erreurs_recentes"] == ["ERROR: out of memory"] and diag["oom"] is True
+    assert diag["demarrage_auto"] is True and "remarque" not in diag
+    assert all(m == "GET" for m, _ in requetes)
+    d.journaux = Docker("http://proxy:2375", transport=httpx.MockTransport(lambda r: httpx.Response(500)))
+    assert "journaux Docker illisibles" in asyncio.run(d.diagnostic("radarr"))["remarque"]

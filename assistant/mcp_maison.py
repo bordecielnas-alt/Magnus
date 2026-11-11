@@ -58,8 +58,9 @@ OUTILS_DOCKER = [
     {
         "name": "diagnostiquer_conteneur",
         "description": "Diagnostic d'un conteneur : état, santé, redémarrages, code de sortie, manque de mémoire, "
-                       "lignes d'erreur récentes et dernières lignes du journal. Lecture seule : tu ne peux rien "
-                       "redémarrer ni modifier, seulement proposer un correctif.",
+                       "lignes d'erreur récentes, dernières lignes du journal, causes_probables (déduites des journaux et "
+                       "du code de sortie) et redemarrage_possible. Lecture seule : pour redémarrer, passe par "
+                       "demander_redemarrage (après le oui de la personne).",
         "inputSchema": {"type": "object", "properties": {"nom": {"type": "string"}}, "required": ["nom"]},
     },
 ]
