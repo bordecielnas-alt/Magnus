@@ -121,3 +121,18 @@ En attendant les comptes (phase 3) :
 ## Déployer sur Unraid
 
 Image publiée par GitHub Actions (`ghcr.io/bordecielnas-alt/magnus`), template `unraid/magnus.xml`, réglages Nginx Proxy Manager : voir **`docs/unraid.md`**.
+
+## Rapports à la demande (cartes de synthèse)
+
+« Fais-moi un rapport du CAC 40 », « rapport météo à Lyon », « fais le point sur Docker » : l'assistant répond par une phrase courte et une carte de synthèse sous la réponse (`assistant/rapports.py`, dessinée par `static/rapports.js`). Le mot « rapport », « synthèse », « bilan » ou « fais le point » déclenche la carte ; le sujet choisit le modèle :
+
+| Carte | Données | Modèle |
+| --- | --- | --- |
+| Météo | Open-Meteo (sans clé) : maintenant, prochaines heures, 5 jours, icônes dessinées | aucun |
+| Bourse | Yahoo Finance : cours, variations, courbe du mois (CAC 40, SBF 120, Euro Stoxx, DAX, FTSE, Nasdaq, Dow Jones, S&P 500, Nikkei, Bitcoin, Ethereum) | Claude (web) pour l'analyse du jour |
+| Agenda | CalDAV : 7 prochains jours | aucun |
+| Docker | conteneurs en marche, arrêtés, en souci ; serveur Unraid (administrateurs) | aucun |
+| Actualités | titres du jour, ou sur un sujet | Claude (web) |
+| Libre | tout autre sujet : chiffres clés, points, sources | Claude (web) |
+
+La ville par défaut de la météo est `proactif.ville`. Si Claude ne répond pas, le modèle de secours (sans web) n'est pas utilisé pour une carte : rien d'inventé. `GET /api/rapports` liste les cartes, `POST /api/rapport` (`{"type", "sujet"}`) en refait une (bouton « Actualiser »).

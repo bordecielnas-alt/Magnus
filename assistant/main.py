@@ -37,6 +37,8 @@ from .telegram import Telegram
 from .habitudes import Routines, automatisation, detecter
 from .memoire import Memoire
 from .proactif import Annonces
+from .rapports import CONSIGNE_JSON, MODELES as MODELES_RAPPORT, Demande, RapportIndisponible, Rapports
+from .rapports import detecter as detecter_rapport
 from .docker_diag import Docker, UnraidDocker
 from .locuteur import Locuteurs
 from .diagnostic import Diagnostic, GestionnaireJournal
@@ -84,6 +86,11 @@ class Action(BaseModel):
 
 class Conv(BaseModel):
     conversation: str = ""
+
+
+class DemandeRapport(BaseModel):
+    type: str = Field(min_length=3, max_length=20)
+    sujet: str = Field(default="", max_length=120)
 
 
 class ReglageCarte(BaseModel):
@@ -423,6 +430,32 @@ def creer_app(config: Config | None = None, registre: Registre | None = None,
                 echecs.append(res.texte)
         return f"{r['nom'][:1].upper()}{r['nom'][1:]} : c'est lancé." + (" " + " ".join(echecs) if echecs else "")
     agenda = Agenda(cfg.agenda.url, cfg.agenda.utilisateur, cfg.agenda.mot_de_passe())
+
+    async def demander_json(consigne: str) -> str:
+        """Claude avec le web, pour une carte de rapport ; le secours (sans web) inventerait : refusé."""
+        msgs = [Message("system", cfg.consigne_effective + "\n\n" + CONSIGNE_JSON), Message("user", consigne)]
+        r = await reg.repondre(cfg.routeur.role_complexe, msgs)
+        if r.secours:
+            raise RapportIndisponible("Claude ne répond pas pour le moment (le modèle de secours n'a pas accès au web).")
+        return r.texte
+
+    rapports = Rapports(cfg.proactif.ville, demander_json if cfg.routeur.role_complexe in reg.roles else None,
+                        agenda, docker)
+
+    async def faire_rapport(dem: Demande, compte: str | None, ctx_revel: frozenset) -> tuple[str, list[dict]]:
+        """(phrase, cartes) ; mêmes droits que les écrans : Docker pour les administrateurs, agenda masquable."""
+        if dem.type == "docker" and not securite.est_admin(compte):
+            return "Le rapport Docker est réservé aux administrateurs.", []
+        if dem.type == "agenda" and "historique" in ctx_revel:
+            return "L'agenda est masqué en ce moment.", []
+        try:
+            texte, carte = await rapports.faire(dem)
+            return texte, [carte]
+        except RapportIndisponible as e:
+            return f"Pas de rapport {MODELES_RAPPORT.get(dem.type, '').lower()} : {e}".replace("  ", " "), []
+        except Exception as e:  # noqa: BLE001 - service injoignable, réponse inattendue
+            journal.info("rapport %s impossible : %s : %s", dem.type, e.__class__.__name__, str(e)[:200])
+            return f"Je n'arrive pas à faire ce rapport pour le moment ({e.__class__.__name__}).", []
 
     def consigne_briefing() -> str:
         ville = f" à {cfg.proactif.ville}" if cfg.proactif.ville else ""
@@ -1491,6 +1524,23 @@ def creer_app(config: Config | None = None, registre: Registre | None = None,
             raise HTTPException(503, f"aucun modèle disponible ({e})") from e
         return {"texte": texte}
 
+    # --- rapports (cartes de synthèse) ------------------------------------------------------------------
+    @app.get("/api/rapports")
+    def lister_rapports() -> dict:
+        """Les cartes toutes faites (le type « libre » prend un sujet quelconque)."""
+        return {"modeles": [{"type": k, "nom": v} for k, v in MODELES_RAPPORT.items()], "ville": cfg.proactif.ville}
+
+    @app.post("/api/rapport")
+    async def demander_rapport(dem: DemandeRapport, requete: Request) -> dict:
+        """Une carte de rapport sans passer par le chat (bouton « Actualiser » de la carte, raccourcis)."""
+        if dem.type not in MODELES_RAPPORT:
+            raise HTTPException(400, f"type de rapport inconnu : {dem.type}")
+        if dem.type == "libre" and not dem.sujet.strip():
+            raise HTTPException(400, "un rapport libre demande un sujet")
+        texte, cartes = await faire_rapport(Demande(dem.type, dem.sujet.strip()), compte_de(requete),
+                                            frozenset(contexte_de(requete)["masques"]))
+        return {"texte": texte, "cartes": cartes}
+
     @app.get("/api/docker")
     async def etat_docker(requete: Request) -> dict:
         """Conteneurs et ceux qui posent problème (administrateurs)."""
@@ -1854,6 +1904,16 @@ def creer_app(config: Config | None = None, registre: Registre | None = None,
             texte_r = await lancer_routine(routine, d.conversation)
             return _reponse_ha(d.flux, texte_r, {"role": "maison", "raison": f"routine « {routine['nom']} »"},
                                "maison", "routine", 0)
+        dem_rapport = detecter_rapport(d.message) if d.role == ROLE_AUTO else None
+        if dem_rapport:
+            # « fais-moi un rapport du CAC 40 » : une phrase et une carte de synthèse
+            debut_r = time.perf_counter()
+            texte_r, cartes_r = await faire_rapport(dem_rapport, compte, ctx_revel)
+            route_r = {"role": "rapport", "raison": f"rapport {dem_rapport.type}"
+                       + (f" « {dem_rapport.sujet} »" if dem_rapport.sujet else "")}
+            _tracer(route_r, d.message)
+            return _reponse_ha(d.flux, texte_r, route_r, "rapport", dem_rapport.type,
+                               round((time.perf_counter() - debut_r) * 1000), cartes_r)
         decision = None
         compte_conversation[d.conversation] = (compte_de(requete) or "", ip_de(requete)[1])
         texte_conversation[d.conversation] = d.message
