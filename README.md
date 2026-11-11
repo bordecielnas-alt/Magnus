@@ -90,7 +90,26 @@ Quand une demande touche ou lit des appareils (règles, Assist ou outils de Clau
 
 Les cartes arrivent **repliées** (nom et état) : un toucher sur l'en-tête les déplie. Sur téléphone, les réglages sont **verrouillés** pour ne pas gêner le défilement : un **appui long** sur la carte les active (bordure en couleur, « Réglages actifs »), puis ils se reverrouillent après 20 s sans y toucher. Sur ordinateur, pas de verrou.
 
-Les cartes sont construites par le serveur (`assistant/maison/cartes.py`) avec l'état lu dans Home Assistant : aucun modèle n'en écrit le contenu. Dans le flux NDJSON de `/api/chat`, elles arrivent dans une ligne `{"cartes": [...]}` avant `fin` (champ `cartes` sans flux). Un geste sur une carte appelle `POST /api/maison/carte` sans passer par un modèle : mêmes appareils autorisés, actions sensibles refusées, historique et « annule » comme à la voix (`POST /api/maison/carte/annuler`). Les appareils masqués (accès à distance, appareil partagé) n'ont pas de carte.
+**Couleurs** : douze teintes du cercle chromatique en pastilles, et une **roue** (dernière pastille) pour toutes les autres, teinte et saturation (vers le centre, plus pâle). Dans une carte « groupe », la section **Régler plusieurs lampes** règle d'un coup la couleur, le blanc ou l'intensité des lampes choisies (toutes par défaut, un toucher sur un nom l'enlève) ; seules celles qui le peuvent sont réglées, les autres sont citées. Chaque lampe se règle aussi seule en dépliant sa ligne. Un « Annuler » remet tout le lot.
+
+Une réponse **en cours d'utilisation ne disparaît pas** : touchée il y a moins de 30 s, survolée à la souris, ou avec une carte dépliée touchée il y a moins de 3 min, elle n'est ni effacée (vue orbe) ni masquée par l'échange suivant. Ensuite elle s'efface comme les autres.
+
+Les cartes sont construites par le serveur (`assistant/maison/cartes.py`) avec l'état lu dans Home Assistant : aucun modèle n'en écrit le contenu. Dans le flux NDJSON de `/api/chat`, elles arrivent dans une ligne `{"cartes": [...]}` avant `fin` (champ `cartes` sans flux). Un geste sur une carte appelle `POST /api/maison/carte` sans passer par un modèle : mêmes appareils autorisés, actions sensibles refusées, historique et « annule » comme à la voix (`POST /api/maison/carte/annuler`). Le réglage de plusieurs lampes passe par `POST /api/maison/carte/groupe` (`entity_ids`, plus un réglage : `teinte`/`saturation`, `couleur`, `kelvin`, `intensite`…). Les appareils masqués (accès à distance, appareil partagé) n'ont pas de carte.
+
+### Règles « si… alors… »
+
+On les dicte en phrase normale : « si la température du salon passe sous 19, préviens-moi », « quand tout le monde part, éteins les lumières », « allume l'entrée dès que Léa arrive, entre 18 h et 23 h », « préviens-moi si la porte du garage reste ouverte plus de 10 minutes ». Claude cherche le capteur (`lister_capteurs`) et les appareils, puis appelle `proposer_regle` ; l'assistant relit alors la règle **construite par le serveur à partir de ce qui sera vraiment enregistré** (« Je crée cette règle : Quand Température salon passe sous 19 °C, j'allume Plafonnier. D'accord ? ») et ne l'enregistre qu'après un « oui » de la même personne (5 minutes pour répondre).
+
+- Conditions : présence (quelqu'un arrive, tout le monde est parti, une personne `person.*` arrive ou part), seuil d'un capteur (sous / au-dessus d'une valeur ; `current_temperature` pour un thermostat), état d'un appareil (devient X, ou reste X plus de N minutes), avec un créneau horaire facultatif.
+- Actions : les mêmes que les routines (allumer, éteindre, ouvrir, fermer, régler), avec les mêmes garde-fous (appareils autorisés, actions sensibles refusées dès la proposition), et/ou une annonce dite par l'assistant (heures calmes et absence respectées, Telegram si configuré).
+- Déclenchement sur front : quand la condition **devient** vraie, pas tant qu'elle l'est ; marge de 0,5 sur les seuils pour ne pas répéter quand la valeur oscille ; rien ne se déclenche au démarrage ou à la reprise sur un état déjà vrai. États lus dans Home Assistant toutes les 15 s.
+- Pause : « mets la règle du garage en pause », « reprends-la », ou dans Réglages > Règles (mettre en pause, reprendre, supprimer, dernier déclenchement). Gardées dans `<état>/regles.json`, déclenchements notés au journal.
+
+| Point d'accès | Rôle |
+| --- | --- |
+| `GET /api/regles` | Règles (texte, active, dernier déclenchement) |
+| `POST /api/regles/{id}` | `{"active": false}` met en pause, `true` reprend |
+| `DELETE /api/regles/{id}` | Supprimer une règle |
 
 ## Un seul assistant par compte (fil partagé)
 
@@ -109,6 +128,31 @@ Stockage : `fil.db` (SQLite) dans le dossier d'état, 1 000 échanges au plus pa
 | `GET /api/fil` | Identifiant de conversation du compte et derniers échanges |
 | `GET /api/fil/flux` | Server-Sent Events : questions, réponses mot à mot, effacement (reprise après coupure par `Last-Event-ID`) |
 | `DELETE /api/fil` | Nouvelle conversation |
+
+## Un profil par personne
+
+Chaque compte a son profil (⚙ Mon compte) : ton, pièce habituelle, préférences. Quand la voix d'une personne est enregistrée, l'assistant la reconnaît (`assistant/locuteur.py`) et applique **son** profil, même sur l'appareil de quelqu'un d'autre :
+
+- **Préférences** : son ton, sa pièce par défaut, ses consignes et ses souvenirs privés.
+- **Rappels personnels** : « rappelle-moi de ranger ma chambre » appartient à la personne reconnue (sinon au compte connecté). Chacun ne voit et ne supprime que les siens ; à l'heure dite, l'annonce dit pour qui (« Rappel pour Léa : … ») dès qu'il y a plusieurs comptes.
+- **Droits** : un administrateur coche, pour chaque compte (⚙ Comptes), ce que la personne ne pilote pas : lumières, prises, volets, chauffage, télé et musique, ventilateurs. Un compte enfant ne touche pas au chauffage tant que rien d'autre n'a été choisi. Le refus vaut partout : commandes, outils de Claude, routines, cartes, « annule », « plus fort ». Pour une personne aux droits limités, l'agent Assist de Home Assistant n'est jamais appelé en secours (il ne connaît pas ces droits).
+
+La voix ne peut que **retirer** des droits, jamais en donner : les interdits du compte connecté et ceux de la voix reconnue s'additionnent. Si Léa (enfant) parle sur la tablette d'un parent et qu'elle est reconnue, ses limites s'appliquent ; si sa voix n'est pas reconnue, ce sont celles du compte connecté. Pour une limite garantie, l'enfant utilise son propre compte.
+
+Rappel : le chauffage, le portail ou le garage restent refusés à tout le monde par `maison.domaines_sensibles` et `maison.noms_sensibles`. Si tu ouvres le chauffage aux adultes en le retirant de cette liste, la limite par personne garde l'enfant à l'écart.
+
+## Surveillance du serveur Unraid
+
+Avec l'API Unraid (`docker.unraid_url` et la clé `UNRAID_CLE` en lecture seule, dans Réglages) et le mode proactif actif, l'assistant vérifie chaque minute l'array et les disques, et prévient de lui-même (annonce sur la page, et Telegram si coché) :
+
+- **Disques** : état anormal, erreurs de lecture/écriture, SMART pas OK, température au-delà des seuils d'Unraid (chaud / critique), disque plein à `docker.plein_pct` % (95 par défaut).
+- **Espace** : l'array entier a moins de `docker.libre_min_pct` % libre (10 par défaut).
+- **Parité** : erreurs au dernier contrôle, ou dernier contrôle plus vieux que `docker.parite_max_jours` jours (45 par défaut, pas pendant un contrôle en cours).
+- **Mises à jour d'images Docker** (toutes les 6 h, `docker.mises_a_jour`) : l'état que Unraid calcule lui-même (page Docker). Une annonce par conteneur, avec deux boutons, réservés aux administrateurs :
+  - **Mettre à jour** : comme « update » dans Unraid (nouvelle image, conteneur recréé). Demande la 2e clé `UNRAID_CLE_ACTIONS` (droits Docker) ; sans elle, l'annonce le dit et rien n'est fait. Chaque choix est noté dans le journal d'audit.
+  - **Ignorer** : plus d'annonce pour ce conteneur tant qu'il n'est pas à jour, avec un rappel au bout de 30 jours.
+
+Un seuil à 0 coupe l'alerte correspondante. Telegram ne reçoit les mises à jour que si la case « mises à jour » est cochée (décochée par défaut, pour ne pas être bavard). L'outil `etat_serveur` de Claude renvoie aussi la liste des mises à jour en attente.
 
 ## Voix (locale)
 
@@ -139,3 +183,18 @@ En attendant les comptes (phase 3) :
 ## Déployer sur Unraid
 
 Image publiée par GitHub Actions (`ghcr.io/bordecielnas-alt/magnus`), template `unraid/magnus.xml`, réglages Nginx Proxy Manager : voir **`docs/unraid.md`**.
+
+## Rapports à la demande (cartes de synthèse)
+
+« Fais-moi un rapport du CAC 40 », « rapport météo à Lyon », « fais le point sur Docker » : l'assistant répond par une phrase courte et une carte de synthèse sous la réponse (`assistant/rapports.py`, dessinée par `static/rapports.js`). Le mot « rapport », « synthèse », « bilan » ou « fais le point » déclenche la carte ; le sujet choisit le modèle :
+
+| Carte | Données | Modèle |
+| --- | --- | --- |
+| Météo | Open-Meteo (sans clé) : maintenant, prochaines heures, 5 jours, icônes dessinées | aucun |
+| Bourse | Yahoo Finance : cours, variations, courbe du mois (CAC 40, SBF 120, Euro Stoxx, DAX, FTSE, Nasdaq, Dow Jones, S&P 500, Nikkei, Bitcoin, Ethereum) | Claude (web) pour l'analyse du jour |
+| Agenda | CalDAV : 7 prochains jours | aucun |
+| Docker | conteneurs en marche, arrêtés, en souci ; serveur Unraid (administrateurs) | aucun |
+| Actualités | titres du jour, ou sur un sujet | Claude (web) |
+| Libre | tout autre sujet : chiffres clés, points, sources | Claude (web) |
+
+La ville par défaut de la météo est `proactif.ville`. Si Claude ne répond pas, le modèle de secours (sans web) n'est pas utilisé pour une carte : rien d'inventé. `GET /api/rapports` liste les cartes, `POST /api/rapport` (`{"type", "sujet"}`) en refait une (bouton « Actualiser »).

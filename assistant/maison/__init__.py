@@ -19,6 +19,18 @@ piece_preferee: ContextVar[str] = ContextVar("piece_preferee", default="")
 # Catégories d'informations à ne pas révéler dans le contexte de la demande (distant, appareil partagé, enfant)
 masques: ContextVar[frozenset] = ContextVar("masques", default=frozenset())
 NON_REVELE = "information non donnée sur cet appareil"
+# Domaines que la personne qui parle n'a pas le droit de piloter (profil : « droits par personne »)
+interdits: ContextVar[frozenset] = ContextVar("interdits", default=frozenset())
+# Catégories proposées dans les profils -> domaines Home Assistant
+CATEGORIES_DROITS: dict[str, tuple[str, ...]] = {
+    "lumieres": ("light",), "prises": ("switch",), "volets": ("cover",), "chauffage": ("climate", "water_heater"),
+    "medias": ("media_player",), "ventilateurs": ("fan",),
+}
+REFUS_DROITS = "Tu n'as pas le droit de piloter {noms}."
+
+
+def domaines_interdits(categories) -> frozenset:
+    return frozenset(d for c in categories or () for d in CATEGORIES_DROITS.get(c, ()))
 from .commande import Commande, corriger_verbe, par_modele, par_regles
 from .inventaire import Entite, Inventaire
 from .resolution import resoudre
@@ -112,11 +124,14 @@ def _relatif(e: Entite, s: dict | None, sens: float) -> tuple[str, str, dict] | 
 
 
 def _service(action: str, e: Entite, valeur: float | None,
-             couleur: str | None = None, kelvin: int | None = None) -> tuple[str, str, dict] | None:
+             couleur: str | None = None, kelvin: int | None = None,
+             hs: tuple[float, float] | None = None) -> tuple[str, str, dict] | None:
     d, ident = e.domaine, {"entity_id": e.entity_id}
-    if action == "allumer" and d == "light" and (couleur or kelvin or valeur is not None):
+    if action == "allumer" and d == "light" and (couleur or kelvin or hs or valeur is not None):
         data = dict(ident)
-        if couleur:
+        if hs:
+            data["hs_color"] = [round(hs[0] % 360, 1), round(max(0, min(100, hs[1])), 1)]
+        elif couleur:
             data["color_name"] = couleur
         if kelvin:
             data["color_temp_kelvin"] = kelvin
@@ -202,6 +217,10 @@ class Maison:
         if e.domaine == "cover" and re.search(r"\b(garage|porte)\b", nom, re.I):
             return True
         return bool(self.cfg.noms_sensibles and re.search(rf"\b({self.cfg.noms_sensibles})\b", nom, re.I))
+
+    def interdit(self, e: Entite) -> bool:
+        """Appareil que la personne qui parle n'a pas le droit de piloter (lecture de l'état permise)."""
+        return e.domaine in interdits.get()
 
     def masque(self, e: Entite) -> bool:
         return "etat_sensible" in masques.get() and self.sensible(e)
@@ -300,7 +319,7 @@ class Maison:
         if suite_meme:
             # « la cuisine aussi » : même action, nouvelle cible
             cmd = Commande(ctx.commande.action, cmd.cible, ctx.commande.valeur, cmd.tous,
-                           ctx.commande.couleur, ctx.commande.kelvin)
+                           ctx.commande.couleur, ctx.commande.kelvin, ctx.commande.hs)
             origine = "suite de conversation"
         if cmd is None and self.extracteur and self.cfg.extraction_par_modele and await self._evoque_la_maison(texte):
             cmd = await par_modele(texte, self.extracteur)
@@ -391,7 +410,7 @@ class Maison:
             return ReponseMaison(False, self.introuvable(" et ".join(parties)), {"resolution": "aucun appareil ne correspond"})
         textes, detail = [], {"resolution": "plusieurs cibles"}
         if trouves:
-            r = await self._executer(Commande(cmd.action, "", cmd.valeur, False, cmd.couleur, cmd.kelvin),
+            r = await self._executer(Commande(cmd.action, "", cmd.valeur, False, cmd.couleur, cmd.kelvin, cmd.hs),
                                      trouves, conversation)
             textes.append(r.texte)
             detail.update(r.detail)
@@ -490,14 +509,18 @@ class Maison:
             self._contextes[conversation] = _Contexte(cmd, entites, [], time.monotonic())
             return ReponseMaison(True, " ".join(lignes), {"entites": ids})
         refuses = [e for e in entites if self.sensible(e)]
-        entites = [e for e in entites if not self.sensible(e)]
-        if refuses and not entites:
-            return ReponseMaison(True, REFUS_SENSIBLE.format(noms=_et(_noms_courts(refuses))),
-                                 {"entites": ids, "sensibles": [e.entity_id for e in refuses]})
+        sans_droit = [e for e in entites if not self.sensible(e) and self.interdit(e)]
+        entites = [e for e in entites if not self.sensible(e) and not self.interdit(e)]
+        if (refuses or sans_droit) and not entites:
+            texte = " ".join(t for t in (
+                REFUS_SENSIBLE.format(noms=_et(_noms_courts(refuses))) if refuses else "",
+                REFUS_DROITS.format(noms=_et(_noms_courts(sans_droit))) if sans_droit else "") if t)
+            return ReponseMaison(True, texte, {"entites": ids, "sensibles": [e.entity_id for e in refuses],
+                                               "interdits": [e.entity_id for e in sans_droit]})
         avant = [s for s in [await self.ha.etat_entite(e.entity_id) for e in entites] if s]
         faits, rates, impossibles = [], [], []
         for e in entites:
-            svc = _service(cmd.action, e, cmd.valeur, cmd.couleur, cmd.kelvin)
+            svc = _service(cmd.action, e, cmd.valeur, cmd.couleur, cmd.kelvin, cmd.hs)
             if not svc:
                 impossibles.append(e)
                 continue
@@ -512,7 +535,7 @@ class Maison:
             details = []
             if cmd.valeur is not None and cmd.action in ("regler", "allumer"):
                 details.append(f"{cmd.valeur:g} °C" if faits[0].domaine == "climate" else f"{cmd.valeur:g} %")
-            if cmd.couleur or cmd.kelvin:
+            if cmd.couleur or cmd.kelvin or cmd.hs:
                 details.append(_nom_couleur(cmd))
             val = f" ({', '.join(details)})" if details else ""
             if len(faits) == 1:
@@ -525,8 +548,11 @@ class Maison:
             morceaux.append(f"Impossible sur {_et(_noms_courts(impossibles))}.")
         if refuses:
             morceaux.append(f"Pas {_et(_noms_courts(refuses))} : action sensible.")
+        if sans_droit:
+            morceaux.append(f"Pas {_et(_noms_courts(sans_droit))} : tu n'as pas le droit.")
         return ReponseMaison(True, " ".join(morceaux), {"entites": ids, "echecs": [e.entity_id for e in rates],
-                                                       "sensibles": [e.entity_id for e in refuses]})
+                                                       "sensibles": [e.entity_id for e in refuses],
+                                                       "interdits": [e.entity_id for e in sans_droit]})
 
 
     async def _restaurer(self, ctx: _Contexte) -> ReponseMaison:
@@ -535,6 +561,9 @@ class Maison:
         faits, rates = [], []
         noms = {e.entity_id: e.libelle for e in ctx.entites}
         for s in ctx.avant:
+            if s["entity_id"].split(".")[0] in interdits.get():
+                rates.append(noms.get(s["entity_id"], s["entity_id"]))
+                continue
             svc = _restauration(s)
             if not svc:
                 continue
@@ -554,7 +583,7 @@ class Maison:
         avant = [await self.ha.etat_entite(e.entity_id) for e in ctx.entites]
         faits, impossibles = [], []
         for e, s in zip(ctx.entites, avant):
-            if self.sensible(e):
+            if self.sensible(e) or self.interdit(e):
                 impossibles.append(e)
                 continue
             svc = _relatif(e, s, sens)
@@ -598,6 +627,8 @@ class Maison:
             return False, "déjà annulée"
         if not a.get("annulable") or not a.get("avant"):
             return False, "cette action ne peut pas être annulée"
+        if a["appareil"].split(".")[0] in interdits.get():
+            return False, "tu n'as pas le droit de piloter cet appareil"
         avant = {"entity_id": a["appareil"], "state": a["avant"]["etat"], "attributes": a["avant"].get("attributs", {})}
         svc = _restauration(avant)
         if not svc:
@@ -709,7 +740,21 @@ NOMS_COULEURS = {"red": "rouge", "blue": "bleu", "green": "vert", "yellow": "jau
                  "magenta": "magenta", "indigo": "indigo", "gold": "doré"}
 
 
+# cercle chromatique des cartes : teinte (degrés) -> nom dit dans la réponse
+TEINTES = [(0, "rouge"), (30, "orange"), (50, "jaune"), (85, "vert anis"), (120, "vert"), (155, "vert d'eau"),
+           (185, "cyan"), (210, "bleu ciel"), (235, "bleu"), (265, "violet"), (295, "magenta"), (330, "rose")]
+
+
+def nom_teinte(teinte: float, saturation: float = 100) -> str:
+    """Nom français le plus proche d'une teinte ; « pâle » quand la couleur tire vers le blanc."""
+    t = teinte % 360
+    nom = min(TEINTES, key=lambda x: min(abs(t - x[0]), 360 - abs(t - x[0])))[1]
+    return "blanc" if saturation < 12 else f"{nom} pâle" if saturation < 45 else nom
+
+
 def _nom_couleur(cmd: Commande) -> str:
+    if cmd.hs:
+        return nom_teinte(*cmd.hs)
     if cmd.couleur:
         return NOMS_COULEURS.get(cmd.couleur, cmd.couleur)
     k = cmd.kelvin or 0

@@ -28,6 +28,7 @@ class Commande:
     tous: bool = False            # « toutes les lumières du salon »
     couleur: str | None = None    # nom de couleur HA (red, blue…) ou None
     kelvin: int | None = None     # température de blanc
+    hs: tuple[float, float] | None = None   # teinte (0-360°) et saturation (0-100 %) : cercle chromatique des cartes
 
     @property
     def vers_contexte(self) -> bool:

@@ -12,6 +12,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+from . import TEINTES
 from .commande import COULEURS, Commande
 
 if TYPE_CHECKING:
@@ -21,9 +22,10 @@ if TYPE_CHECKING:
 MAX_CARTES = 8                 # au-delà, la carte « groupe » ne montre que les premiers
 MODES_COULEUR = {"hs", "rgb", "rgbw", "rgbww", "xy"}
 MODES_INTENSITE = MODES_COULEUR | {"brightness", "color_temp", "white"}
-# couleurs proposées sur la carte : nom français (envoyé au serveur) -> teinte affichée
-PALETTE = {"rouge": "#ff5a4e", "orange": "#ff9f43", "jaune": "#ffd84d", "vert": "#4cd97b",
-           "cyan": "#4fe0e8", "bleu": "#4c9bff", "violet": "#b06bff", "rose": "#ff7ac6"}
+# couleurs proposées sur la carte : les 12 teintes du cercle chromatique (la roue de la carte donne
+# toutes les autres). Envoyées en teinte/saturation (hs_color), pas par leur nom.
+PALETTE = [{"nom": nom, "teinte": t} for t, nom in TEINTES]
+MAX_GROUPE = 20                # appareils réglés d'un coup depuis une carte « groupe »
 
 
 def _pourcent(brightness) -> int | None:
@@ -45,6 +47,7 @@ def carte(e: Entite, s: dict | None) -> dict | None:
                 "intensite": _pourcent(a.get("brightness")) if allume else None,
                 "kelvin": a.get("color_temp_kelvin") if allume and a.get("color_mode") == "color_temp" else None,
                 "rgb": a.get("rgb_color") if allume and a.get("color_mode") in MODES_COULEUR else None,
+                "hs": a.get("hs_color") if allume and a.get("color_mode") in MODES_COULEUR else None,
                 "reglages": {
                     # sans supported_color_modes (vieille intégration), on propose l'intensité par prudence
                     "intensite": not modes or bool(modes & MODES_INTENSITE),
@@ -69,7 +72,7 @@ async def cartes_pour(maison: Maison, entity_ids: list[str]) -> list[dict]:
     vus, cartes = set(), []
     for eid in entity_ids:
         e = connus.get(eid)
-        if not e or eid in vus or maison.masque(e) or maison.sensible(e):
+        if not e or eid in vus or maison.masque(e) or maison.sensible(e) or maison.interdit(e):
             continue          # appareil caché en ce moment, ou à piloter depuis Home Assistant
         vus.add(eid)
         c = carte(e, await maison.ha.etat_entite(eid))
@@ -84,31 +87,75 @@ async def cartes_pour(maison: Maison, entity_ids: list[str]) -> list[dict]:
     return [{"type": "groupe", "titre": titre, "elements": cartes}]
 
 
-async def regler(maison: Maison, entity_id: str, conversation: str = "", allume: bool | None = None,
-                 intensite: float | None = None, kelvin: int | None = None, couleur: str | None = None,
-                 position: float | None = None) -> tuple[ReponseMaison | None, dict | None]:
+def _commande(allume: bool | None = None, intensite: float | None = None, kelvin: int | None = None,
+              couleur: str | None = None, position: float | None = None, teinte: float | None = None,
+              saturation: float | None = None) -> Commande:
+    """Le geste d'une carte en commande de maison (un seul réglage à la fois)."""
+    if allume is False:
+        return Commande("eteindre", "")
+    if teinte is not None:
+        s = 100.0 if saturation is None else saturation
+        return Commande("allumer", "", intensite, hs=(float(teinte) % 360, max(0.0, min(100.0, float(s)))))
+    if couleur:
+        nom = COULEURS.get(couleur.lower())
+        if not nom:
+            raise ValueError(f"couleur inconnue : {couleur}")
+        return Commande("allumer", "", intensite, couleur=nom)
+    if kelvin:
+        return Commande("allumer", "", intensite, kelvin=int(max(1500, min(9000, kelvin))))
+    if position is not None:
+        return Commande("regler", "", max(0, min(100, position)))
+    if intensite is not None:
+        return Commande("regler" if intensite > 0 else "eteindre", "", max(1, min(100, intensite)))
+    if allume:
+        return Commande("allumer", "")
+    raise ValueError("rien à régler")
+
+
+def compatible(c: dict, champs: dict) -> bool:
+    """La carte `c` accepte-t-elle ce réglage ? (une prise n'a pas de couleur, une ampoule blanche non plus)"""
+    if not c.get("disponible"):
+        return False
+    reg = c.get("reglages") or {}
+    if "teinte" in champs or "couleur" in champs:
+        return bool(reg.get("couleurs"))
+    if "kelvin" in champs:
+        return bool(reg.get("blanc"))
+    if "position" in champs:
+        return bool(reg.get("position"))
+    if "intensite" in champs and champs["intensite"] > 0:
+        return bool(reg.get("intensite"))
+    return True       # allumer / éteindre : tout appareil joignable
+
+
+async def regler(maison: Maison, entity_id: str, conversation: str = "", **champs) -> tuple[ReponseMaison | None, dict | None]:
     """Un geste sur une carte. Renvoie (réponse de Maison, carte à jour) ; (None, None) si l'appareil
     n'est pas pilotable (inconnu, hors des domaines autorisés, caché ou sensible)."""
     connus = {e.entity_id: e for e in await maison.inventaire.obtenir()}
     e = connus.get(entity_id)
     if not e or maison.masque(e) or maison.sensible(e):
         return None, None
-    if allume is False:
-        cmd = Commande("eteindre", "")
-    elif couleur:
-        nom = COULEURS.get(couleur.lower())
-        if not nom:
-            raise ValueError(f"couleur inconnue : {couleur}")
-        cmd = Commande("allumer", "", intensite, couleur=nom)
-    elif kelvin:
-        cmd = Commande("allumer", "", intensite, kelvin=int(max(1500, min(9000, kelvin))))
-    elif position is not None:
-        cmd = Commande("regler", "", max(0, min(100, position)))
-    elif intensite is not None:
-        cmd = Commande("regler" if intensite > 0 else "eteindre", "", max(1, min(100, intensite)))
-    elif allume:
-        cmd = Commande("allumer", "")
-    else:
-        raise ValueError("rien à régler")
+    cmd = _commande(**champs)
     r = await maison._executer(cmd, [e], conversation)
     return r, carte(e, await maison.ha.etat_entite(entity_id))
+
+
+async def regler_plusieurs(maison: Maison, entity_ids: list[str], conversation: str = "",
+                           **champs) -> tuple[ReponseMaison | None, list[dict], list[str]]:
+    """Le même geste sur plusieurs appareils d'une carte « groupe » (la couleur pour tous, par exemple).
+    Seuls les appareils compatibles sont réglés, en une seule action : un « annule » les remet tous.
+    Renvoie (réponse, cartes à jour des appareils réglés, appareils écartés car incompatibles)."""
+    cmd = _commande(**champs)
+    connus = {e.entity_id: e for e in await maison.inventaire.obtenir()}
+    cibles, ecartes = [], []
+    for eid in dict.fromkeys(entity_ids):
+        e = connus.get(eid)
+        if not e or maison.masque(e) or maison.sensible(e):
+            continue
+        c = carte(e, await maison.ha.etat_entite(eid))
+        (cibles if c and compatible(c, champs) else ecartes).append(e)
+    if not cibles:
+        return None, [], [e.entity_id for e in ecartes]
+    r = await maison._executer(cmd, cibles, conversation)
+    cartes = [c for e in cibles if (c := carte(e, await maison.ha.etat_entite(e.entity_id)))]
+    return r, cartes, [e.entity_id for e in ecartes]

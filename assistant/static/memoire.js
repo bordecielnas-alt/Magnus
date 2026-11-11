@@ -13,7 +13,7 @@
 
   const css = document.createElement('style');
   css.textContent = `
-    dialog#dlgMemoire { width:min(96vw, 560px); padding:16px 16px 14px; }
+    dialog#dlgMemoire { width:min(96vw, 560px); --pad-t:16px; --pad-x:16px; --pad-b:14px; padding:var(--pad-t) var(--pad-x) var(--pad-b); }
     #dlgMemoire h2 { display:flex; align-items:baseline; justify-content:space-between; gap:8px; }
     #dlgMemoire h2:focus { outline:none; }
     #dlgMemoire h2 small { font-family:var(--f-texte); font-size:.78rem; color:var(--muted); font-weight:400; }
@@ -59,7 +59,7 @@
       padding:7px 10px; font-size:.9rem; }
     .mem-msg { min-height:1.2em; margin:6px 0 0; font-size:.8rem; color:var(--muted); }
     .mem-msg.ko { color:var(--rouge); }
-    .mem-toast { position:sticky; bottom:0; margin-top:10px; display:flex; justify-content:space-between; align-items:center; gap:10px;
+    .mem-toast { position:sticky; bottom:58px; margin-top:10px; display:flex; justify-content:space-between; align-items:center; gap:10px;
       padding:8px 10px; border-radius:10px; background:var(--surface); border:1px solid var(--accent); font-size:.85rem;
       box-shadow:0 4px 18px rgba(0,0,0,.5); }
     .mem-toast[hidden], .mem-ajout[hidden] { display:none; }
@@ -90,7 +90,7 @@
       </div>
       <p class="mem-msg" id="memMsg" aria-live="polite"></p>
       <div class="mem-toast" id="memToast" hidden><span id="memToastTexte"></span><button type="button" class="mem-btn" id="memToastAnnuler">Annuler</button></div>
-      <div class="actions" style="margin-top:12px"><span></span><button value="ok">Fermer</button></div>
+      <div class="actions"><span></span><button value="ok">Fermer</button></div>
     </form>`;
   document.body.appendChild(dlg);
 

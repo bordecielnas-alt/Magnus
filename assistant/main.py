@@ -23,8 +23,8 @@ from . import __version__
 from .config import Config, charger, charger_secrets, chemin_alias, dossier_etat, enregistrer_reglages
 from .fournisseurs import FournisseurIndisponible, Message, Registre, Reponse
 from .home_assistant import HomeAssistant
-from .maison import Maison, masques, piece_preferee
-from .maison.cartes import cartes_pour, regler as regler_carte
+from .maison import CATEGORIES_DROITS, Maison, domaines_interdits, interdits, masques, piece_preferee
+from .maison.cartes import MAX_GROUPE, cartes_pour, regler as regler_carte, regler_plusieurs
 from .maison.historique import Historique
 from .maison.historique import demande as demande_en_cours
 from .maison.alias import AliasAppris
@@ -36,9 +36,12 @@ from .audit import Audit
 from .rappels import Rappels
 from .telegram import Telegram
 from .habitudes import Routines, automatisation, detecter
+from .regles import Regles, decrire as decrire_regle, normaliser as normaliser_regle
 from .memoire import Memoire
 from .fil import Fil
-from .proactif import Annonces
+from .proactif import Annonces, MisesAJourIgnorees
+from .rapports import CONSIGNE_JSON, MODELES as MODELES_RAPPORT, Demande, RapportIndisponible, Rapports
+from .rapports import detecter as detecter_rapport
 from .docker_diag import Docker, UnraidDocker, causes_probables, normaliser_nom
 from .locuteur import Locuteurs
 from .diagnostic import Diagnostic, GestionnaireJournal
@@ -89,6 +92,11 @@ class Conv(BaseModel):
     conversation: str = ""
 
 
+class DemandeRapport(BaseModel):
+    type: str = Field(min_length=3, max_length=20)
+    sujet: str = Field(default="", max_length=120)
+
+
 class ReglageCarte(BaseModel):
     """Geste sur une carte du chat : un seul réglage à la fois (interrupteur, curseur ou couleur)."""
     entity_id: str = Field(min_length=3, max_length=120)
@@ -97,7 +105,15 @@ class ReglageCarte(BaseModel):
     kelvin: int | None = Field(default=None, ge=1000, le=10000)
     couleur: str | None = Field(default=None, max_length=30)
     position: float | None = Field(default=None, ge=0, le=100)
+    teinte: float | None = Field(default=None, ge=0, le=360)          # cercle chromatique (degrés)
+    saturation: float | None = Field(default=None, ge=0, le=100)
     conversation: str = Field(default="", max_length=64)
+
+
+class ReglageGroupe(ReglageCarte):
+    """Le même geste sur plusieurs appareils d'une carte « groupe » : seuls les compatibles sont réglés."""
+    entity_id: str = ""
+    entity_ids: list[str] = Field(min_length=1, max_length=MAX_GROUPE)
 
 
 class ReglagesVoix(BaseModel):
@@ -151,6 +167,26 @@ RE_CORRECTION = re.compile(r"^\s*non\s*[,!.]?\s*(?:en fait|plut[ôo]t|je pr[ée]
                            r"ce n.est pas [çc]a|la prochaine fois|d[ée]sormais|[àa] l.avenir)\s*[,:]?\s*(?P<fait>.{3,300})$", re.I)
 RE_CREER_ROUTINE = re.compile(r"\b(cr[ée]+[ers]?|fais|faire|ajoute[rz]?|enregistre[rz]?|programme[rz]?|"
                               r"modifie[rz]?|change[rz]?)\b.{0,20}\broutines?\b", re.I)
+_VERBES_REGLE = (r"(?:allume[rz]?|[ée]tein[st]|[ée]teindre|ouvre|ferme|r[èe]gle|mets|monte|baisse|coupe|lance|"
+                 r"pr[ée]viens(?:[- ]moi)?|avertis(?:[- ]moi)?|dis(?:[- ]moi)?|annonce|signale|envoie)")
+RE_CREER_REGLE = re.compile(
+    r"^\s*(?:\w+,\s*)?(?:"
+    r"(?:cr[ée]+[ers]?|ajoute[rz]?|fais|programme[rz]?|enregistre[rz]?)\b.{0,15}\b(?:une|la|les|des|cette|nouvelle)\s+r[èe]gles?\b"
+    r"|(?:si(?!\s+(?:tu\s+(?:peux|veux|le\s+veux)|possible|besoin|[çc]a\s+te|vous))|s.il(?!\s+(?:te|vous)\s+pla)|s.ils|quand|lorsque?|lorsqu.|d[èe]s que?|d[èe]s qu.|(?:[àa] )?chaque fois que?|(?:[àa] )?chaque fois qu.)"
+    r"\b.{4,200}?(?:,|\balors\b)\s*(?:alors\s+)?(?:tu\s+)?" + _VERBES_REGLE + r"\b"
+    r"|" + _VERBES_REGLE + r"\b.{2,150}?\b(?:d[èe]s que?|d[èe]s qu.|(?:[àa] )?chaque fois que?|lorsque?|lorsqu.|quand)\b"
+    r"|(?:pr[ée]viens|avertis)[- ]moi\b.{0,40}?\bsi\b)", re.I)
+RE_GERER_REGLE = re.compile(r"\b(?:la|les|une|des|mes|ma|ta|tes|cette|ces|nouvelles?|quelles?)\s+r[èe]gles?\b", re.I)
+NOTE_REGLES = (
+    "Règles « si… alors… » : quand la personne veut que quelque chose se fasse tout seul quand une condition arrive "
+    "(présence, seuil d'un capteur, état d'un appareil, éventuellement dans un créneau horaire), cherche les capteurs "
+    "avec lister_capteurs et les appareils avec lister_appareils, puis appelle proposer_regle. Rien n'est enregistré "
+    "tant que la personne n'a pas dit oui : termine ta réponse par la phrase « a_dire » renvoyée, mot pour mot, sans "
+    "rien ajouter. Conditions possibles : présence (quelqu'un arrive, tout le monde part, une personne arrive ou part), "
+    "seuil (passe sous / au-dessus d'une valeur), état (devient X, ou reste X plus de N minutes). Si la condition n'entre "
+    "pas dans ces cas (météo, heure seule, coucher du soleil…), dis-le simplement. Pour mettre une règle en pause ou la "
+    "reprendre : lister_regles puis changer_regle. Tu ne supprimes pas de règle : c'est dans Réglages > Règles."
+)
 RE_SUJET_MEMOIRE = re.compile(r"\b(retien[st]?|retenir|souviens|rappelle-toi|oublie|m[ée]moire|souvenir|corrige|"
                               r"en fait|plus que|n.est plus|maintenant j|j.ai (vendu|achet[ée]|perdu|chang[ée])|"
                               r"je n.ai plus|d[ée]sormais)\b", re.I)
@@ -225,6 +261,18 @@ class NouvelleRoutine(BaseModel):
     etapes: list[EtapeRoutine] = Field(min_length=1, max_length=20)
 
 
+class PropositionRegle(BaseModel):
+    condition: dict
+    actions: list[EtapeRoutine] = Field(default_factory=list, max_length=10)
+    annonce: str = Field(default="", max_length=200)
+    plage: str = Field(default="", max_length=20)
+    conversation: str = Field(default="", max_length=64)
+
+
+class ChangementRegle(BaseModel):
+    active: bool
+
+
 class ChoixHabitude(BaseModel):
     id: str = Field(min_length=3, max_length=200)
 
@@ -250,6 +298,10 @@ class NouveauRappel(BaseModel):
     conversation: str = Field(default="", max_length=64)
 
 
+class ChoixAnnonce(BaseModel):
+    action: str = Field(min_length=1, max_length=40)
+
+
 class DemandeRedemarrage(BaseModel):
     nom: str = Field(min_length=1, max_length=100)
     action: Literal["redemarrer", "demarrer", "arreter"] = "redemarrer"
@@ -269,6 +321,13 @@ class Profil(BaseModel):
     consigne: str | None = Field(default=None, max_length=500)
     piece: str | None = Field(default=None, max_length=40)
     type: Literal["adulte", "enfant"] | None = None       # modifiable par un administrateur seulement
+    # droits : catégories d'appareils que la personne ne pilote pas (administrateur seulement)
+    interdits: list[Literal["lumieres", "prises", "volets", "chauffage", "medias", "ventilateurs"]] | None = None
+
+
+CHAMPS_ADMIN = {"type", "interdits"}
+NOMS_DROITS = {"lumieres": "les lumières", "prises": "les prises", "volets": "les volets", "chauffage": "le chauffage",
+               "medias": "la télé et la musique", "ventilateurs": "les ventilateurs"}
 
 
 TONS = {"concis": "Réponds de la façon la plus brève possible, sans formule de politesse.",
@@ -288,6 +347,10 @@ def note_profil(nom: str, p: dict) -> str:
         morceaux.append(f"Sa pièce habituelle : {p['piece']} (pièce par défaut quand il n'en précise pas).")
     if p.get("consigne"):
         morceaux.append(f"Ses préférences : {p['consigne']}")
+    if p.get("interdits"):
+        noms = ", ".join(NOMS_DROITS.get(c, c) for c in p["interdits"])
+        morceaux.append(f"Elle n'a pas le droit de piloter : {noms}. Si elle le demande, dis-lui simplement "
+                        "que ce n'est pas permis pour elle, sans le faire.")
     return " ".join(morceaux)
 
 
@@ -398,6 +461,7 @@ def creer_app(config: Config | None = None, registre: Registre | None = None,
     if isinstance(docker, UnraidDocker) and cfg.docker.url:
         docker.journaux = Docker(cfg.docker.url, cfg.docker.timeout)   # l'API Unraid ne donne pas les journaux
     annonces = Annonces(securite.fichier.parent, cfg.proactif.heures_calmes)
+    maj_ignorees = MisesAJourIgnorees(securite.fichier.parent)
     telegram = Telegram(cfg.telegram.jeton(), cfg.telegram.chat_id)
     rappels = Rappels(securite.fichier.parent)
 
@@ -407,7 +471,10 @@ def creer_app(config: Config | None = None, registre: Registre | None = None,
         while True:
             try:
                 for r in rappels.echus():
-                    await signaler(f"Rappel : {r['texte']}", "urgent", "rappel", f"rappel:{r['id']}", cfg.telegram.agenda)
+                    pour = (securite.comptes.get(r.get("compte") or "", {}).get("nom", "")
+                            if len(securite.comptes) > 1 else "")
+                    await signaler(f"Rappel{' pour ' + pour if pour else ''} : {r['texte']}", "urgent", "rappel",
+                                   f"rappel:{r['id']}", cfg.telegram.agenda)
             except Exception:  # noqa: BLE001
                 journal.exception("rappels : erreur")
             await aio.sleep(5)
@@ -428,9 +495,10 @@ def creer_app(config: Config | None = None, registre: Registre | None = None,
         mots = {normaliser_nom(m) for m in re.findall(r"[\w'-]+", message)}
         return any(n in mots for n in noms_conteneurs["noms"])
 
-    async def signaler(texte: str, priorite: str, source: str, cle: str, vers_telegram: bool = True) -> None:
+    async def signaler(texte: str, priorite: str, source: str, cle: str, vers_telegram: bool = True,
+                       actions: list[dict] | None = None, cible: dict | None = None) -> None:
         """Une alerte : gardée dans les annonces (sans doublon) et envoyée sur Telegram la première fois."""
-        a = annonces.ajouter(texte, priorite, source, cle)
+        a = annonces.ajouter(texte, priorite, source, cle, actions, cible)
         if a and vers_telegram and telegram.configure:
             try:
                 await telegram.envoyer(f"{cfg.identite.nom_effectif} : {texte}")
@@ -439,6 +507,8 @@ def creer_app(config: Config | None = None, registre: Registre | None = None,
     memoire = Memoire(securite.fichier.parent)
     fil = Fil(securite.fichier.parent)
     routines = Routines(securite.fichier.parent)
+    regles = Regles(securite.fichier.parent)
+    regle_attente: dict[str, tuple[dict, str, float]] = {}   # conversation -> (règle proposée, compte, instant)
     fichier_ignorees = securite.fichier.parent / "habitudes_ignorees.json"
 
     def habitudes_ignorees() -> set[str]:
@@ -455,6 +525,32 @@ def creer_app(config: Config | None = None, registre: Registre | None = None,
                 echecs.append(res.texte)
         return f"{r['nom'][:1].upper()}{r['nom'][1:]} : c'est lancé." + (" " + " ".join(echecs) if echecs else "")
     agenda = Agenda(cfg.agenda.url, cfg.agenda.utilisateur, cfg.agenda.mot_de_passe())
+
+    async def demander_json(consigne: str) -> str:
+        """Claude avec le web, pour une carte de rapport ; le secours (sans web) inventerait : refusé."""
+        msgs = [Message("system", cfg.consigne_effective + "\n\n" + CONSIGNE_JSON), Message("user", consigne)]
+        r = await reg.repondre(cfg.routeur.role_complexe, msgs)
+        if r.secours:
+            raise RapportIndisponible("Claude ne répond pas pour le moment (le modèle de secours n'a pas accès au web).")
+        return r.texte
+
+    rapports = Rapports(cfg.proactif.ville, demander_json if cfg.routeur.role_complexe in reg.roles else None,
+                        agenda, docker)
+
+    async def faire_rapport(dem: Demande, compte: str | None, ctx_revel: frozenset) -> tuple[str, list[dict]]:
+        """(phrase, cartes) ; mêmes droits que les écrans : Docker pour les administrateurs, agenda masquable."""
+        if dem.type == "docker" and not securite.est_admin(compte):
+            return "Le rapport Docker est réservé aux administrateurs.", []
+        if dem.type == "agenda" and "historique" in ctx_revel:
+            return "L'agenda est masqué en ce moment.", []
+        try:
+            texte, carte = await rapports.faire(dem)
+            return texte, [carte]
+        except RapportIndisponible as e:
+            return f"Pas de rapport {MODELES_RAPPORT.get(dem.type, '').lower()} : {e}".replace("  ", " "), []
+        except Exception as e:  # noqa: BLE001 - service injoignable, réponse inattendue
+            journal.info("rapport %s impossible : %s : %s", dem.type, e.__class__.__name__, str(e)[:200])
+            return f"Je n'arrive pas à faire ce rapport pour le moment ({e.__class__.__name__}).", []
 
     def consigne_briefing() -> str:
         ville = f" à {cfg.proactif.ville}" if cfg.proactif.ville else ""
@@ -512,7 +608,7 @@ def creer_app(config: Config | None = None, registre: Registre | None = None,
                 await signaler(texte, regle.priorite, "surveillance", cle)
         if isinstance(docker, UnraidDocker) and docker.configure:
             try:
-                alertes = (await docker.serveur())["alertes"]
+                alertes = (await serveur_unraid())["alertes"]
             except Exception:  # noqa: BLE001
                 alertes = None
             if alertes is not None:
@@ -522,6 +618,9 @@ def creer_app(config: Config | None = None, registre: Registre | None = None,
                 for ancienne in etat_veille.get("disques", set()) - set(alertes):
                     annonces.resoudre(f"disque:{ancienne}")
                 etat_veille["disques"] = set(alertes)
+            if cfg.docker.mises_a_jour and time.monotonic() >= etat_veille.get("maj_prochaine", 0):
+                etat_veille["maj_prochaine"] = time.monotonic() + cfg.docker.mises_a_jour_intervalle_h * 3600
+                await surveiller_mises_a_jour()
         if agenda.configure and cfg.agenda.annonce_avant_min:
             from datetime import datetime as dt, timedelta
             maintenant = dt.now().astimezone()
@@ -546,6 +645,30 @@ def creer_app(config: Config | None = None, registre: Registre | None = None,
             except Exception as e:  # noqa: BLE001
                 journal.info("briefing impossible : %s", e)
 
+    def serveur_unraid():
+        return docker.serveur(cfg.docker.plein_pct, cfg.docker.libre_min_pct, cfg.docker.parite_max_jours)
+
+    async def surveiller_mises_a_jour() -> None:
+        """Une annonce par conteneur dont l'image a une mise à jour, avec « Mettre à jour » et « Ignorer »."""
+        try:
+            en_attente = set(await docker.mises_a_jour())
+        except Exception as e:  # noqa: BLE001 - Unraid trop ancien ou injoignable : on réessaiera
+            journal.info("mises à jour Docker illisibles : %s", e)
+            return
+        maj_ignorees.garder_seulement(en_attente)
+        for nom in sorted(en_attente, key=str.lower):
+            if maj_ignorees.est_ignoree(nom):
+                continue
+            await signaler(f"Une mise à jour de l'image de {nom} est disponible.", "info", "mises à jour",
+                           f"maj:{nom}", cfg.telegram.mises_a_jour,
+                           actions=[{"id": "mettre_a_jour", "libelle": "Mettre à jour"},
+                                    {"id": "ignorer", "libelle": "Ignorer"}],
+                           cible={"type": "maj_docker", "conteneur": nom})
+        for a in annonces.liste:          # mis à jour ailleurs (page Docker d'Unraid) : l'annonce est close
+            nom = (a.get("cible") or {}).get("conteneur")
+            if a.get("cle", "").startswith("maj:") and not a.get("resolue") and nom not in en_attente:
+                annonces.resoudre(a["cle"])
+
     async def boucle_surveillance() -> None:
         import asyncio as aio
         veille: dict = {"briefing": time.strftime("%Y-%m-%d") if cfg.proactif.briefing_heure
@@ -556,6 +679,62 @@ def creer_app(config: Config | None = None, registre: Registre | None = None,
             except Exception:  # noqa: BLE001 - la surveillance ne doit jamais s'arrêter
                 journal.exception("surveillance : erreur")
             await aio.sleep(cfg.proactif.intervalle_s)
+    async def etats_ha() -> dict[str, dict]:
+        from .maison.inventaire import CMD_ETATS
+        return {x.get("entity_id"): x for x in (await ha.ws([CMD_ETATS])).get(CMD_ETATS) or [] if x.get("entity_id")}
+
+    async def noms_regle(r: dict, etats: dict[str, dict] | None = None) -> tuple[dict[str, str], dict[str, str]]:
+        """Noms lisibles et unités des entités d'une règle, pour la relire à voix haute."""
+        ids = {r["condition"].get("entity_id", "")} | {i for e in r.get("actions", []) for i in e["entity_ids"]}
+        noms, unites = {}, {}
+        for i in filter(None, ids):
+            x = (etats or {}).get(i) or await ha.etat_entite(i)
+            if not x:
+                continue
+            a = x.get("attributes") or {}
+            noms[i] = a.get("friendly_name") or i
+            if r["condition"].get("entity_id") == i:
+                unites[i] = "°C" if r["condition"].get("attribut") in ("current_temperature", "temperature") \
+                    else a.get("unit_of_measurement", "")
+        return noms, unites
+
+    async def executer_regle(r: dict) -> str:
+        """Une règle vient de se déclencher : ses actions (mêmes garde-fous que les routines), puis son annonce."""
+        faits = []
+        for e in r.get("actions", []):
+            res = await maison.agir_ids(e["entity_ids"], e["action"], e.get("valeur"), e.get("couleur"), f"regle:{r['id']}")
+            faits.append(res.texte or "Rien n'a été fait.")
+        if r.get("annonce"):
+            await signaler(r["annonce"], "important", "regle", f"regle:{r['id']}")
+            faits.append("Annonce faite.")
+        resultat = " ".join(faits)
+        regles.noter(r["id"], resultat)
+        audit.noter("règle_déclenchée", r.get("compte", ""), "", par="règle", regle=r["texte"][:200], resultat=resultat[:200])
+        journal.info("règle %s déclenchée : %s", r["id"], resultat[:160])
+        return resultat
+
+    async def evaluer_regles_une_fois(etats: dict[str, dict] | None = None) -> list[str]:
+        """Un passage : lit les états de Home Assistant et déclenche les règles dont la condition vient de devenir vraie."""
+        if not any(r.get("active", True) for r in regles.liste):
+            return []
+        if etats is None:
+            try:
+                etats = await etats_ha()
+            except Exception:  # noqa: BLE001 - Home Assistant injoignable : on réessaiera
+                return []
+        fronts, retombees = regles.a_declencher(etats)
+        for r in retombees:
+            annonces.resoudre(f"regle:{r['id']}")
+        return [await executer_regle(r) for r in fronts]
+
+    async def boucle_regles() -> None:
+        import asyncio as aio
+        while True:
+            try:
+                await evaluer_regles_une_fois()
+            except Exception:  # noqa: BLE001 - les règles ne doivent jamais arrêter l'assistant
+                journal.exception("règles : erreur")
+            await aio.sleep(15)
     locuteurs = Locuteurs(cfg.voix.chemin_locuteur(), securite.fichier.parent, cfg.voix.seuil_locuteur)
     locuteur_conversation: dict[str, tuple[str, float]] = {}   # conversation -> (compte reconnu, instant)
 
@@ -608,12 +787,15 @@ def creer_app(config: Config | None = None, registre: Registre | None = None,
         if cfg.voix.active and cfg.voix.whisper_present() and cfg.voix.synthese_presente():
             app.state.prechauffage = asyncio.create_task(voix.prechauffer())
         app.state.rappels = asyncio.create_task(boucle_rappels())
+        app.state.boucle_regles = asyncio.create_task(boucle_regles()) if ha.configure else None
         if (cfg.proactif.active and (ha.configure or docker.configure or cfg.proactif.briefing_heure)) or telegram.configure                 or agenda.configure:
             app.state.surveillance = asyncio.create_task(boucle_surveillance())
         yield
         if getattr(app.state, "surveillance", None):
             app.state.surveillance.cancel()
         app.state.rappels.cancel()
+        if app.state.boucle_regles:
+            app.state.boucle_regles.cancel()
         await reg.fermer()
         await ha.fermer()
 
@@ -629,6 +811,8 @@ def creer_app(config: Config | None = None, registre: Registre | None = None,
     app.state.annonces = annonces
     app.state.fil = fil
     app.state.surveiller_une_fois = surveiller_une_fois     # pour les tests
+    app.state.evaluer_regles_une_fois = evaluer_regles_une_fois
+    app.state.regles = regles
 
     def ip_de(requete: Request) -> tuple[str, str]:
         """(IP directe, IP réelle du client). « testclient » = client de test de Starlette, traité comme local."""
@@ -654,6 +838,15 @@ def creer_app(config: Config | None = None, registre: Registre | None = None,
     cartes_conversation: dict[str, list[str]] = {}           # conversation -> appareils lus ou touchés par Claude
     agenda_recent: dict[str, float] = {}                     # conversation -> dernier échange sur l'agenda
     masques_conversation: dict[str, frozenset] = {}          # conversation -> ce qu'on ne révèle pas (outils de Claude)
+    interdits_conversation: dict[str, frozenset] = {}        # conversation -> domaines que la personne ne pilote pas
+    personne_conversation: dict[str, str] = {}               # conversation -> qui parle (compte, ou voix reconnue)
+
+    def interdits_de(compte: str | None, conversation: str = "") -> frozenset:
+        """Droits effectifs : ceux du compte connecté, réduits par ceux de la voix reconnue dans la
+        conversation. La voix ne peut que retirer des droits, jamais en donner."""
+        propres = (domaines_interdits(securite.profil(compte)["interdits"])
+                   if compte and compte != COMPTE_MACHINE else frozenset())
+        return propres | interdits_conversation.get(conversation, frozenset())
 
     def contexte_de(requete: Request) -> dict:
         """D'où vient la demande : à distance ? appareil partagé ? compte enfant ? Et donc ce qu'on masque."""
@@ -1017,8 +1210,8 @@ def creer_app(config: Config | None = None, registre: Registre | None = None,
         if not compte or compte == COMPTE_MACHINE:
             raise HTTPException(409, "pas de profil pour la machine elle-même")
         maj = p.model_dump(exclude_none=True)
-        if "type" in maj and not securite.est_admin(compte):
-            raise HTTPException(403, "seul un administrateur change le type d'un compte")
+        if CHAMPS_ADMIN & set(maj) and not securite.est_admin(compte):
+            raise HTTPException(403, "seul un administrateur change le type ou les droits d'un compte")
         auditer(requete, "profil_modifié", champs=sorted(maj))
         return {"profil": securite.definir_profil(compte, maj)}
 
@@ -1087,6 +1280,7 @@ def creer_app(config: Config | None = None, registre: Registre | None = None,
         if not ha.configure:
             raise HTTPException(503, "Home Assistant n'est pas configuré")
         masques.set(frozenset(contexte_de(requete)["masques"]))
+        interdits.set(interdits_de(compte_de(requete), g.conversation))
         demande_en_cours.set(("carte", texte_conversation.get(g.conversation, "")))
         champs = g.model_dump(exclude={"entity_id", "conversation"}, exclude_none=True)
         try:
@@ -1100,10 +1294,32 @@ def creer_app(config: Config | None = None, registre: Registre | None = None,
             raise HTTPException(409, r.texte or "Rien n'a été fait.")
         return {"ok": True, "texte": r.texte, "carte": c}
 
+    @app.post("/api/maison/carte/groupe")
+    async def geste_groupe(g: ReglageGroupe, requete: Request) -> dict:
+        """Carte « groupe » : la même couleur (ou intensité, blanc…) pour les appareils choisis, en une action."""
+        if not ha.configure:
+            raise HTTPException(503, "Home Assistant n'est pas configuré")
+        masques.set(frozenset(contexte_de(requete)["masques"]))
+        demande_en_cours.set(("carte", texte_conversation.get(g.conversation, "")))
+        champs = g.model_dump(exclude={"entity_id", "entity_ids", "conversation"}, exclude_none=True)
+        try:
+            r, cartes, ecartes = await regler_plusieurs(maison, g.entity_ids, g.conversation, **champs)
+        except ValueError as e:
+            raise HTTPException(400, str(e)) from e
+        if r is None:
+            raise HTTPException(404 if not ecartes else 409,
+                                "Aucun de ces appareils n'accepte ce réglage." if ecartes else "appareils inconnus ou non autorisés")
+        auditer(requete, "action_maison", par="carte", entites=[c["entity_id"] for c in cartes],
+                resultat=r.texte[:200], **champs)
+        if r.detail.get("echecs") or r.detail.get("sensibles") or not r.texte.startswith("C'est"):
+            raise HTTPException(409, r.texte or "Rien n'a été fait.")
+        return {"ok": True, "texte": r.texte, "cartes": cartes, "ecartes": ecartes}
+
     @app.post("/api/maison/carte/annuler")
     async def annuler_carte(c: Conv, requete: Request) -> dict:
         """Bouton « Annuler » d'une carte : comme dire « annule » dans la même conversation."""
         masques.set(frozenset(contexte_de(requete)["masques"]))
+        interdits.set(interdits_de(compte_de(requete), c.conversation))
         r = await maison.annuler(c.conversation)
         auditer(requete, "action_maison", par="carte", action="annuler", resultat=r.texte[:200])
         return {"ok": r.traite, "texte": r.texte, "cartes": await cartes_sures(r.detail.get("entites"))}
@@ -1142,6 +1358,7 @@ def creer_app(config: Config | None = None, registre: Registre | None = None,
     @app.post("/api/actions/{ident}/annuler")
     async def annuler_action(ident: str, requete: Request) -> dict:
         exiger_revelation(requete, "historique")
+        interdits.set(interdits_de(compte_de(requete)))
         ok, message = await maison.annuler_action(ident)
         if not ok:
             raise HTTPException(404 if message == "action inconnue" else 409, message)
@@ -1158,7 +1375,7 @@ def creer_app(config: Config | None = None, registre: Registre | None = None,
         verifier_jeton(x_jeton_interne)
         if not isinstance(docker, UnraidDocker):
             raise HTTPException(503, "l'état du serveur demande l'API Unraid (docker.unraid_url)")
-        return await docker_ou_erreur(docker.serveur())
+        return {**(await docker_ou_erreur(serveur_unraid())), **(await mises_a_jour_sures())}
 
     @app.post("/interne/docker/redemarrer", include_in_schema=False)
     async def interne_redemarrer(r: DemandeRedemarrage, x_jeton_interne: str | None = Header(None)) -> dict:
@@ -1181,7 +1398,15 @@ def creer_app(config: Config | None = None, registre: Registre | None = None,
         exiger_admin(requete)
         if not isinstance(docker, UnraidDocker):
             return {"configure": False}
-        return {"configure": True, **(await docker_ou_erreur(docker.serveur()))}
+        return {"configure": True, **(await docker_ou_erreur(serveur_unraid())), **(await mises_a_jour_sures())}
+
+    async def mises_a_jour_sures() -> dict:
+        """Pour l'état du serveur : la liste des mises à jour est un bonus (absente sur un vieil Unraid)."""
+        try:
+            return {"mises_a_jour": await docker.mises_a_jour()}
+        except Exception as e:  # noqa: BLE001
+            journal.info("mises à jour Docker illisibles : %s", e)
+            return {}
 
     @app.post("/api/telegram/{action}")
     async def essai_telegram(action: Literal["test", "trouver"], requete: Request) -> dict:
@@ -1418,6 +1643,11 @@ def creer_app(config: Config | None = None, registre: Registre | None = None,
             raise HTTPException(422, str(e)) from e
         return {"ok": True, "en_attente": "la personne doit répondre oui ou non", "souvenir": sv["texte"]}
 
+    def personne_de(conversation: str) -> str:
+        """À qui sont les rappels de cette conversation : la voix reconnue, sinon le compte connecté."""
+        compte = personne_conversation.get(conversation) or compte_conversation.get(conversation, ("", ""))[0]
+        return "" if compte == COMPTE_MACHINE else compte
+
     @app.post("/interne/rappels", include_in_schema=False)
     def interne_creer_rappel(n: NouveauRappel, x_jeton_interne: str | None = Header(None)) -> dict:
         verifier_jeton(x_jeton_interne)
@@ -1425,7 +1655,7 @@ def creer_app(config: Config | None = None, registre: Registre | None = None,
         try:
             quand = dt.fromisoformat(n.quand)
             r = rappels.ajouter(n.texte, quand.astimezone() if quand.tzinfo is None else quand,
-                                compte_conversation.get(n.conversation, ("", ""))[0], n.conversation)
+                                personne_de(n.conversation), n.conversation)
         except ValueError as e:
             raise HTTPException(422, str(e)) from e
         return {"ok": True, "id": r["id"], "quand": r["quand"], "texte": r["texte"]}
@@ -1433,13 +1663,13 @@ def creer_app(config: Config | None = None, registre: Registre | None = None,
     @app.get("/interne/rappels", include_in_schema=False)
     def interne_lister_rappels(conversation: str = "", x_jeton_interne: str | None = Header(None)) -> list[dict]:
         verifier_jeton(x_jeton_interne)
-        compte = compte_conversation.get(conversation, ("", ""))[0]
+        compte = personne_de(conversation)
         return [{k: r[k] for k in ("id", "quand", "texte")} for r in rappels.a_venir(compte or None)]
 
     @app.delete("/interne/rappels/{ident}", include_in_schema=False)
-    def interne_supprimer_rappel(ident: str, x_jeton_interne: str | None = Header(None)) -> dict:
+    def interne_supprimer_rappel(ident: str, conversation: str = "", x_jeton_interne: str | None = Header(None)) -> dict:
         verifier_jeton(x_jeton_interne)
-        r = rappels.supprimer(ident)
+        r = rappels.supprimer(ident, personne_de(conversation) or None)
         if not r:
             raise HTTPException(404, "rappel inconnu ou déjà passé")
         return {"ok": True, "supprime": r["texte"]}
@@ -1478,6 +1708,99 @@ def creer_app(config: Config | None = None, registre: Registre | None = None,
         auditer(requete, "routine_supprimée", nom=nom)
         return {"ok": True}
 
+    # --- règles « si… alors… » ---------------------------------------------------------------------
+    @app.get("/interne/capteurs", include_in_schema=False)
+    async def interne_capteurs(filtre: str = "", x_jeton_interne: str | None = Header(None)) -> list[dict]:
+        """Capteurs et personnes utilisables dans une condition (température, humidité, porte, présence…)."""
+        verifier_jeton(x_jeton_interne)
+        from .maison.texte import normaliser
+        try:
+            etats = await etats_ha()
+        except Exception as e:  # noqa: BLE001
+            raise HTTPException(502, "Home Assistant injoignable") from e
+        f = set(normaliser(filtre).split())
+        sortie = []
+        for eid, x in etats.items():
+            if eid.split(".", 1)[0] not in ("sensor", "binary_sensor", "person", "climate", "device_tracker", "weather"):
+                continue
+            a = x.get("attributes") or {}
+            nom = a.get("friendly_name") or eid
+            score = len(f & set(normaliser(f"{nom} {eid.replace('.', ' ').replace('_', ' ')} {a.get('device_class', '')}").split()))
+            if f and not score:
+                continue
+            sortie.append({"score": score, "entity_id": eid, "nom": nom, "etat": x.get("state"),
+                           **({"unite": a["unit_of_measurement"]} if a.get("unit_of_measurement") else {}),
+                           **({"type": a["device_class"]} if a.get("device_class") else {}),
+                           **({"current_temperature": a["current_temperature"]} if "current_temperature" in a else {})})
+        sortie.sort(key=lambda x: -x["score"])          # les plus proches du filtre d'abord
+        return [{k: v for k, v in x.items() if k != "score"} for x in sortie[:80]]
+
+    @app.post("/interne/regles", include_in_schema=False)
+    async def interne_proposer_regle(p: PropositionRegle, x_jeton_interne: str | None = Header(None)) -> dict:
+        """Prépare une règle : rien n'est enregistré avant le « oui » de la personne."""
+        verifier_jeton(x_jeton_interne)
+        try:
+            c, actions, annonce, plage = normaliser_regle(p.condition, [e.model_dump(exclude_none=True) for e in p.actions],
+                                                          p.annonce, p.plage)
+        except ValueError as e:
+            raise HTTPException(422, str(e)) from e
+        if c.get("entity_id") and not await ha.etat_entite(c["entity_id"]):
+            raise HTTPException(422, f"capteur inconnu : {c['entity_id']} (cherche-le avec lister_capteurs)")
+        connus = {e.entity_id: e for e in await maison.inventaire.obtenir()} if actions else {}
+        for e in actions:
+            inconnus = [i for i in e["entity_ids"] if i not in connus]
+            if inconnus:
+                raise HTTPException(422, f"appareils inconnus ou non autorisés : {', '.join(inconnus)}")
+            sensibles = [connus[i].libelle for i in e["entity_ids"] if maison.sensible(connus[i])]
+            if sensibles:
+                raise HTTPException(422, f"action sensible, refusée même dans une règle : {', '.join(sensibles)}")
+        r = {"condition": c, "actions": actions, "annonce": annonce, "plage": plage}
+        r["texte"] = decrire_regle(r, *(await noms_regle(r)))
+        compte = compte_conversation.get(p.conversation, ("", ""))[0]
+        regle_attente[p.conversation] = (r, compte, time.monotonic())
+        return {"en_attente": "rien n'est enregistré avant le oui de la personne",
+                "a_dire": f"Je crée cette règle : {r['texte']} D'accord ?"}
+
+    @app.get("/interne/regles", include_in_schema=False)
+    def interne_regles(x_jeton_interne: str | None = Header(None)) -> list[dict]:
+        verifier_jeton(x_jeton_interne)
+        return [{"id": r["id"], "texte": r["texte"], "active": r.get("active", True)} for r in regles.liste]
+
+    @app.post("/interne/regles/{ident}", include_in_schema=False)
+    def interne_changer_regle(ident: str, c: ChangementRegle, conversation: str = "",
+                              x_jeton_interne: str | None = Header(None)) -> dict:
+        verifier_jeton(x_jeton_interne)
+        r = regles.activer(ident, c.active)
+        if not r:
+            raise HTTPException(404, "règle inconnue")
+        compte, ip = compte_conversation.get(conversation, ("", ""))
+        audit.noter("règle_reprise" if c.active else "règle_en_pause", compte, ip, par="claude", regle=r["texte"][:200])
+        return {"ok": True, "texte": r["texte"], "active": r["active"]}
+
+    @app.get("/api/regles")
+    def lister_regles(requete: Request) -> dict:
+        compte_memoire(requete)
+        return {"regles": [{k: r.get(k) for k in ("id", "texte", "active", "creee", "derniere", "resultat")}
+                           for r in regles.liste]}
+
+    @app.post("/api/regles/{ident}")
+    def changer_regle(ident: str, c: ChangementRegle, requete: Request) -> dict:
+        compte_memoire(requete)
+        r = regles.activer(ident, c.active)
+        if not r:
+            raise HTTPException(404, "règle inconnue")
+        auditer(requete, "règle_reprise" if c.active else "règle_en_pause", regle=r["texte"][:200])
+        return {"ok": True, "active": r["active"]}
+
+    @app.delete("/api/regles/{ident}")
+    def supprimer_regle(ident: str, requete: Request) -> dict:
+        compte_memoire(requete)
+        r = regles.supprimer(ident)
+        if not r:
+            raise HTTPException(404, "règle inconnue")
+        auditer(requete, "règle_supprimée", regle=r["texte"][:200])
+        return {"ok": True}
+
     @app.get("/api/habitudes")
     def lister_habitudes(requete: Request) -> dict:
         compte_memoire(requete)
@@ -1513,6 +1836,8 @@ def creer_app(config: Config | None = None, registre: Registre | None = None,
         liste = annonces.depuis(depuis)
         if "historique" in caches:         # appareil partagé / enfant : seulement les urgences
             liste = [a for a in liste if a["priorite"] == "urgent"]
+        if not securite.est_admin(compte_de(requete)):     # les boutons (mise à jour…) : administrateurs seulement
+            liste = [{k: v for k, v in a.items() if k not in ("actions", "cible")} for a in liste]
         return {"annonces": liste, "heures_calmes": cfg.proactif.heures_calmes, "presents": annonces.presents}
 
     @app.post("/api/annonces/{ident}/lue")
@@ -1521,6 +1846,42 @@ def creer_app(config: Config | None = None, registre: Registre | None = None,
             raise HTTPException(404, "annonce inconnue")
         return {"ok": True}
 
+    @app.post("/api/annonces/{ident}/action")
+    async def action_annonce(ident: str, c: ChoixAnnonce, requete: Request) -> dict:
+        """Bouton d'une annonce : « Mettre à jour » ou « Ignorer » une mise à jour d'image Docker."""
+        exiger_admin(requete)
+        a = annonces.trouver(ident)
+        if not a or not a.get("actions"):
+            raise HTTPException(404, "annonce inconnue ou sans action")
+        if c.action not in {x["id"] for x in a["actions"]}:
+            raise HTTPException(422, f"action inconnue : {c.action}")
+        cible = a.get("cible") or {}
+        nom = cible.get("conteneur", "")
+        if cible.get("type") != "maj_docker" or not nom:
+            raise HTTPException(422, "annonce sans cible connue")
+        if a.get("resolue") and not a.get("decision"):
+            raise HTTPException(409, f"{nom} : plus de mise à jour en attente (faite ailleurs ?)")
+        if c.action == "mettre_a_jour" and not (isinstance(docker, UnraidDocker) and cfg.docker.cle_unraid_actions()):
+            raise HTTPException(409, "mise à jour impossible : ajoute la clé Unraid « actions Docker » dans Réglages")
+        if not annonces.decider(ident, c.action):
+            deja = {"mettre_a_jour": "déjà mis à jour", "ignorer": "déjà ignoré"}.get(a.get("decision"), "déjà traité")
+            raise HTTPException(409, f"{nom} : {deja}")
+        if c.action == "ignorer":
+            maj_ignorees.ignorer(nom)
+            annonces.resoudre(a["cle"])
+            auditer(requete, "mise_a_jour_docker", conteneur=nom, decision="ignorée")
+            return {"ok": True, "texte": f"D'accord, j'ignore la mise à jour de {nom}."}
+        try:
+            r = await docker_ou_erreur(docker.mettre_a_jour(nom, cfg.docker.cle_unraid_actions()))
+        except HTTPException as e:
+            annonces.annuler_decision(ident)
+            auditer(requete, "mise_a_jour_docker", conteneur=nom, decision="échec", erreur=str(e.detail)[:200])
+            raise
+        annonces.resoudre(a["cle"])
+        auditer(requete, "mise_a_jour_docker", conteneur=nom, decision="mise à jour", etat=r["etat"])
+        etat = "et tourne" if r["etat"] == "running" else f"({r['statut'] or r['etat'] or 'état inconnu'})"
+        return {"ok": True, "texte": f"C'est fait : {r['nom']} est à jour {etat}.", "etat": r["etat"]}
+
     @app.post("/api/briefing")
     async def demander_briefing() -> dict:
         try:
@@ -1528,6 +1889,23 @@ def creer_app(config: Config | None = None, registre: Registre | None = None,
         except FournisseurIndisponible as e:
             raise HTTPException(503, f"aucun modèle disponible ({e})") from e
         return {"texte": texte}
+
+    # --- rapports (cartes de synthèse) ------------------------------------------------------------------
+    @app.get("/api/rapports")
+    def lister_rapports() -> dict:
+        """Les cartes toutes faites (le type « libre » prend un sujet quelconque)."""
+        return {"modeles": [{"type": k, "nom": v} for k, v in MODELES_RAPPORT.items()], "ville": cfg.proactif.ville}
+
+    @app.post("/api/rapport")
+    async def demander_rapport(dem: DemandeRapport, requete: Request) -> dict:
+        """Une carte de rapport sans passer par le chat (bouton « Actualiser » de la carte, raccourcis)."""
+        if dem.type not in MODELES_RAPPORT:
+            raise HTTPException(400, f"type de rapport inconnu : {dem.type}")
+        if dem.type == "libre" and not dem.sujet.strip():
+            raise HTTPException(400, "un rapport libre demande un sujet")
+        texte, cartes = await faire_rapport(Demande(dem.type, dem.sujet.strip()), compte_de(requete),
+                                            frozenset(contexte_de(requete)["masques"]))
+        return {"texte": texte, "cartes": cartes}
 
     @app.get("/api/docker")
     async def etat_docker(requete: Request) -> dict:
@@ -1543,6 +1921,7 @@ def creer_app(config: Config | None = None, registre: Registre | None = None,
     async def interne_agir(a: Action, x_jeton_interne: str | None = Header(None)) -> dict:
         verifier_jeton(x_jeton_interne)
         demande_en_cours.set(("claude", texte_conversation.get(a.conversation, "")))
+        interdits.set(interdits_conversation.get(a.conversation, frozenset()))
         r = await maison.agir_ids(a.entity_ids, a.action, a.valeur, a.couleur, a.conversation)
         cartes_conversation.setdefault(a.conversation, []).extend(r.detail.get("entites", []))
         journal.info("outil agir %s %s -> %s", a.action, a.entity_ids, r.texte[:120])
@@ -1554,6 +1933,7 @@ def creer_app(config: Config | None = None, registre: Registre | None = None,
     @app.post("/interne/maison/annuler", include_in_schema=False)
     async def interne_annuler(c: Conv, x_jeton_interne: str | None = Header(None)) -> dict:
         verifier_jeton(x_jeton_interne)
+        interdits.set(interdits_conversation.get(c.conversation, frozenset()))
         r = await maison.annuler(c.conversation)
         journal.info("outil annuler -> %s", r.texte[:120])
         compte, ip = compte_conversation.get(c.conversation, ("", ""))
@@ -1940,13 +2320,23 @@ def creer_app(config: Config | None = None, registre: Registre | None = None,
         nom_profil = securite.comptes.get(compte or "", {}).get("nom", "")
         voix_de = locuteur_conversation.get(d.conversation)
         if d.source == "voix" and voix_de and time.monotonic() - voix_de[1] < 60 and voix_de[0] in securite.comptes:
-            # reconnu à la voix : son ton, sa pièce, ses préférences (pas ses droits)
+            # reconnu à la voix : son ton, sa pièce, ses préférences, et ses limites (jamais plus de droits
+            # que le compte connecté : les interdits des deux s'additionnent)
             profil, nom_profil = securite.profil(voix_de[0]), securite.comptes[voix_de[0]].get("nom", voix_de[0])
             route_locuteur = nom_profil
+            interdits_voix = domaines_interdits(profil.get("interdits"))
         else:
             route_locuteur = ""
+            interdits_voix = frozenset()
+        interdits_conversation[d.conversation] = interdits_voix
+        interdits_effectifs = interdits_de(compte, d.conversation)
+        interdits_conversation[d.conversation] = interdits_effectifs
+        interdits.set(interdits_effectifs)
+        if profil:
+            profil = {**profil, "interdits": sorted(c for c, doms in CATEGORIES_DROITS.items()
+                                                    if set(doms) <= interdits_effectifs)}
         if "personnel" in ctx_revel:
-            profil = {k: v for k, v in profil.items() if k in ("type", "ton")}   # ni pièce ni préférences
+            profil = {k: v for k, v in profil.items() if k in ("type", "ton", "interdits")}   # ni pièce ni préférences
         piece_preferee.set(profil.get("piece", ""))
         consigne_profil = note_profil(nom_profil, profil) if profil else ""
 
@@ -1972,8 +2362,26 @@ def creer_app(config: Config | None = None, registre: Registre | None = None,
                 journal.info("%s de %s impossible : %s", action_c, nom_c, e)
             return _reponse_ha(d.flux, texte_r, {"role": "docker", "raison": f"{action_c} confirmé"}, "docker", "unraid", 0)
 
+        # --- règle « si… alors… » proposée, en attente de « oui » ---------------------------------------
+        attente_regle = regle_attente.get(d.conversation)
+        if (attente_regle and time.monotonic() - attente_regle[2] < 300
+                and (RE_OUI.match(d.message) or RE_NON.match(d.message))):
+            regle_attente.pop(d.conversation, None)
+            if RE_NON.match(d.message) or attente_regle[1] != (compte or ""):
+                return _reponse_ha(d.flux, "D'accord, je n'enregistre pas cette règle.",
+                                   {"role": "maison", "raison": "règle refusée"}, "maison", "règles", 0)
+            try:
+                rg = regles.enregistrer(attente_regle[0], compte or "")
+            except ValueError as e:
+                return _reponse_ha(d.flux, f"Je n'ai pas pu l'enregistrer : {e}.",
+                                   {"role": "maison", "raison": "règle refusée"}, "maison", "règles", 0)
+            auditer(requete, "règle_créée", regle=rg["texte"][:200])
+            return _reponse_ha(d.flux, "C'est enregistré. Tu peux la mettre en pause quand tu veux, ici ou dans "
+                               "Réglages, Règles.", {"role": "maison", "raison": "règle enregistrée"}, "maison", "règles", 0)
+
         # --- mémoire : réponse à une proposition, « retiens que… », souvenirs utiles à la réponse ---------
         qui = ((voix_de[0] if route_locuteur else compte) or "")
+        personne_conversation[d.conversation] = qui
         attente = memoire.proposition_en_attente(d.conversation, qui) if d.conversation else None
         if attente and RE_OUI.match(d.message):
             memoire.changer_statut(attente["id"], "valide", qui)
@@ -2020,13 +2428,24 @@ def creer_app(config: Config | None = None, registre: Registre | None = None,
             texte_r = await lancer_routine(routine, d.conversation)
             return _reponse_ha(d.flux, texte_r, {"role": "maison", "raison": f"routine « {routine['nom']} »"},
                                "maison", "routine", 0)
+        dem_rapport = detecter_rapport(d.message) if d.role == ROLE_AUTO else None
+        if dem_rapport:
+            # « fais-moi un rapport du CAC 40 » : une phrase et une carte de synthèse
+            debut_r = time.perf_counter()
+            texte_r, cartes_r = await faire_rapport(dem_rapport, compte, ctx_revel)
+            route_r = {"role": "rapport", "raison": f"rapport {dem_rapport.type}"
+                       + (f" « {dem_rapport.sujet} »" if dem_rapport.sujet else "")}
+            _tracer(route_r, d.message)
+            return _reponse_ha(d.flux, texte_r, route_r, "rapport", dem_rapport.type,
+                               round((time.perf_counter() - debut_r) * 1000), cartes_r)
         decision = None
         compte_conversation[d.conversation] = (compte_de(requete) or "", ip_de(requete)[1])
         texte_conversation[d.conversation] = d.message
         cartes_conversation.pop(d.conversation, None)
-        creer_routine = bool(RE_CREER_ROUTINE.search(d.message))
+        creer_regle = ha.configure and bool(RE_CREER_REGLE.search(d.message) or RE_GERER_REGLE.search(d.message))
+        creer_routine = bool(RE_CREER_ROUTINE.search(d.message)) or creer_regle
         # « mets un rappel », « rappelle-moi » : l'agenda, jamais une commande de maison ni Assist (minuteur HA)
-        if RE_RAPPEL.search(d.message):
+        if RE_RAPPEL.search(d.message) and not creer_regle:
             d = d.model_copy(update={"role": cfg.routeur.role_complexe})
             pour_agenda = True
         else:
@@ -2078,8 +2497,9 @@ def creer_app(config: Config | None = None, registre: Registre | None = None,
                 _tracer(route, d.message)
                 return _reponse_ha(d.flux, "Je ne pilote pas ça : action sensible, à faire depuis Home Assistant.",
                                    route, "maison", "inventaire", 0)
-            if "commande" in rm.detail and cfg.maison.assist_en_secours:
+            if "commande" in rm.detail and cfg.maison.assist_en_secours and not interdits_effectifs:
                 # commande comprise mais appareil introuvable : l'agent Assist de HA tente sa chance
+                # (pas pour une personne aux droits limités : Assist ne les connaît pas)
                 debut_ha = time.perf_counter()
                 rha = await ha.conversation(maison.texte_pour_assist(d.message))
                 duree = round((time.perf_counter() - debut_ha) * 1000)
@@ -2112,6 +2532,10 @@ def creer_app(config: Config | None = None, registre: Registre | None = None,
             route["outils"] = "Claude avec rappels et agenda"
             agenda_recent[d.conversation] = time.monotonic()
             outils = outils_maison(d.conversation)
+        elif claude_outille and creer_regle:
+            route["outils"] = "Claude prépare une règle « si… alors… »"
+            outils = outils_maison(d.conversation)
+            outils["note"] += "\n\n" + NOTE_REGLES
         elif claude_outille and ha.configure and creer_routine:
             route["outils"] = "Claude crée une routine"
             outils = outils_maison(d.conversation)

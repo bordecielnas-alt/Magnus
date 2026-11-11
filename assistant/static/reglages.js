@@ -37,6 +37,9 @@
     #config .compte { display:flex; gap:8px; align-items:center; justify-content:space-between; padding:8px 0;
                       border-bottom:1px dashed var(--bord); font-size:.85rem; flex-wrap:wrap; }
     #config .compte small { color:var(--muted); display:block; font-size:.75rem; }
+    #config .compte .droits { display:flex; flex-wrap:wrap; gap:4px 10px; margin-top:4px; font-size:.75rem; color:var(--muted); }
+    #config .compte .droits small { display:inline; }
+    #config .compte .droits label { display:inline-flex; gap:3px; align-items:center; }
     #config .codes { display:grid; grid-template-columns:1fr 1fr; gap:4px 10px; font-family:var(--f-mono, monospace);
                      font-size:.85rem; user-select:all; margin-top:8px; }
     #config .journal { max-height:240px; overflow:auto; margin-top:8px; font-size:.75rem; color:var(--muted); }
@@ -84,6 +87,11 @@
       <p class="aide" style="margin-top:12px">Routines : dis par exemple « crée une routine mode cinéma qui ferme les volets du salon et met la lumière à 20 % », puis « mode cinéma ».</p>
       <div id="cRoutinesListe"></div>
       <p class="aide" data-msg="habitudes"></p>
+    </details>
+    <details id="cfgRegles" hidden><summary>Règles « si… alors… » <span class="etat" id="eRegles"></span></summary>
+      <p class="aide">Dis par exemple « si la porte du garage reste ouverte plus de 10 minutes, préviens-moi » ou « quand tout le monde part, éteins les lumières ». L'assistant relit la règle et ne l'enregistre qu'après ton « oui ». Une règle en pause ne se déclenche plus, sans être perdue.</p>
+      <div id="cReglesListe"></div>
+      <p class="aide" data-msg="regles"></p>
     </details>
     <details id="cfgAssistant"><summary>Assistant <span class="etat" id="eAssistant"></span></summary>
       <label class="champ">Nom<input id="cNom" maxlength="40"></label>
@@ -139,12 +147,17 @@
       <label class="champ">Annoncer un rendez-vous (minutes avant)<input id="cAgendaAvant" type="number" min="0" max="240"></label>
       <label class="champ">Docker via l'API Unraid : adresse<input id="cUnraidUrl" placeholder="http://192.168.1.2/graphql"></label>
       <label class="champ">API Unraid : clé (rôle lecture seule)<input id="cUnraidCle" type="password" autocomplete="off" placeholder="laisser vide pour garder l'actuelle"></label>
-      <label class="champ">API Unraid : clé pour redémarrer un conteneur (droits Docker seulement, facultatif)<input id="cUnraidCleActions" type="password" autocomplete="off" placeholder="laisser vide pour garder l'actuelle"></label>
+      <label class="champ">API Unraid : clé pour redémarrer ou mettre à jour un conteneur (droits Docker seulement, facultatif)<input id="cUnraidCleActions" type="password" autocomplete="off" placeholder="laisser vide pour garder l'actuelle"></label>
+      <label class="aide" style="display:flex;gap:8px;align-items:center"><input type="checkbox" id="cMaj"> Prévenir quand une image Docker a une mise à jour (boutons « Mettre à jour / Ignorer »)</label>
+      <div class="rangee"><label class="champ" style="flex:1">Disque plein à (%)<input id="cPlein" type="number" min="0" max="100"></label>
+        <label class="champ" style="flex:1">Array : libre minimum (%)<input id="cLibreMin" type="number" min="0" max="100"></label>
+        <label class="champ" style="flex:1">Parité : contrôle max (jours)<input id="cPariteJours" type="number" min="0" max="365"></label></div>
       <input id="cDockerUrl" type="hidden">
       <label class="champ">Telegram : jeton du bot (donné par @BotFather)<input id="cTgJeton" type="password" autocomplete="off" placeholder="laisser vide pour garder l'actuel"></label>
       <div class="rangee"><label class="aide" style="margin:0"><input type="checkbox" id="cTgDocker"> conteneurs</label>
         <label class="aide" style="margin:0"><input type="checkbox" id="cTgDisques"> disques</label>
-        <label class="aide" style="margin:0"><input type="checkbox" id="cTgAgenda"> rendez-vous</label></div>
+        <label class="aide" style="margin:0"><input type="checkbox" id="cTgAgenda"> rendez-vous</label>
+        <label class="aide" style="margin:0"><input type="checkbox" id="cTgMaj"> mises à jour</label></div>
       <div class="rangee"><button type="button" class="bouton" id="cTgTrouver">Trouver mon chat</button>
         <button type="button" class="bouton" id="cTgTest">Message de test</button><span class="aide" data-msg="telegram"></span></div>
       <p class="aide">Telegram : crée un bot avec @BotFather, colle son jeton, enregistre et redémarre ; envoie « /start » à ton bot, puis « Trouver mon chat ».</p>
@@ -239,6 +252,8 @@
     $('cVille').value = pa.ville || ''; $('cAgendaUrl').value = ag.url || ''; $('cAgendaUser').value = ag.utilisateur || '';
     const tg = r.telegram || {};
     $('cTgDocker').checked = tg.docker !== false; $('cTgDisques').checked = tg.disques !== false; $('cTgAgenda').checked = tg.agenda !== false;
+    $('cTgMaj').checked = !!tg.mises_a_jour; $('cMaj').checked = dk.mises_a_jour !== false;
+    $('cPlein').value = dk.plein_pct ?? 95; $('cLibreMin').value = dk.libre_min_pct ?? 10; $('cPariteJours').value = dk.parite_max_jours ?? 45;
     $('cTgJeton').placeholder = tg.jeton_defini ? 'jeton enregistré — laisser vide pour le garder' : 'jeton du bot';
     $('cAgendaAvant').value = ag.annonce_avant_min ?? 15; $('cDockerUrl').value = dk.url || ''; $('cUnraidUrl').value = dk.unraid_url || '';
     etat('eServices', [ag.url ? 'agenda' : '', (dk.unraid_url || dk.url) ? 'Docker' : '', pa.briefing_heure ? 'briefing ' + pa.briefing_heure : ''].filter(Boolean).join(' · ') || 'rien de branché');
@@ -253,10 +268,13 @@
     chargerComptes();
     chargerMemoire();
     chargerHabitudes();
+    chargerRegles();
   }
 
   // --- comptes ---------------------------------------------------------------------------------
   const texte = (balise, contenu) => Object.assign(document.createElement(balise), {textContent: contenu});
+  const DROITS = [['lumieres', 'lumières'], ['prises', 'prises'], ['volets', 'volets'], ['chauffage', 'chauffage'],
+    ['medias', 'télé et musique'], ['ventilateurs', 'ventilateurs']];
   const quand = d => d ? new Date(d).toLocaleString('fr-FR', {dateStyle: 'short', timeStyle: 'short'}) : 'jamais';
   const LIBELLES = {connexion: 'connexion', 'déconnexion': 'déconnexion', action_maison: 'maison', 'réglages': 'réglages',
     secret_modifié: 'secret modifié', 'redémarrage': 'redémarrage', compte_créé: 'compte créé', compte_supprimé: 'compte supprimé',
@@ -322,6 +340,40 @@
   }
 
 
+  async function chargerRegles() {
+    let r;
+    try { r = await api('/api/regles'); } catch (e) { $('cfgRegles').hidden = true; return; }
+    $('cfgRegles').hidden = false;
+    const actives = r.regles.filter(x => x.active).length;
+    etat('eRegles', r.regles.length ? `${actives} active(s)` + (actives < r.regles.length ? ` · ${r.regles.length - actives} en pause` : '') : 'aucune');
+    const l = $('cReglesListe'); l.replaceChildren();
+    if (!r.regles.length) l.appendChild(texte('p', 'Aucune règle pour l\'instant.')).className = 'aide';
+    for (const x of r.regles) {
+      const ligne = document.createElement('div'); ligne.className = 'compte';
+      const t = texte('div', x.texte);
+      if (!x.active) t.style.opacity = '.55';
+      t.appendChild(texte('small', (x.active ? '' : 'En pause · ') + 'Dernier déclenchement : ' + quand(x.derniere)
+        + (x.resultat ? ' (' + x.resultat + ')' : '')));
+      const b = document.createElement('div'); b.className = 'rangee'; b.style.marginTop = '0';
+      const pause = texte('button', x.active ? 'Mettre en pause' : 'Reprendre'); pause.type = 'button';
+      pause.className = 'bouton' + (x.active ? '' : ' principal');
+      pause.onclick = async () => {
+        try { await api(`/api/regles/${encodeURIComponent(x.id)}`, {active: !x.active}); msg('regles', x.active ? 'Règle en pause.' : 'Règle reprise.', true); }
+        catch (e) { msg('regles', e.message, false); }
+        chargerRegles();
+      };
+      const sup = texte('button', 'Supprimer'); sup.type = 'button'; sup.className = 'bouton';
+      sup.onclick = async () => {
+        if (!confirm(`Supprimer la règle « ${x.texte} » ?`)) return;
+        const rep = await fetch(`/api/regles/${encodeURIComponent(x.id)}`, {method: 'DELETE'});
+        msg('regles', rep.ok ? 'Règle supprimée.' : 'Suppression impossible.', rep.ok);
+        chargerRegles();
+      };
+      b.append(pause, sup);
+      ligne.append(t, b); l.appendChild(ligne);
+    }
+  }
+
   async function chargerComptes() {
     let s;
     try { s = await api('/api/securite'); } catch (e) { return; }
@@ -362,10 +414,25 @@
         for (const t of ['adulte', 'enfant']) type.appendChild(Object.assign(document.createElement('option'), {value: t, textContent: t}));
         type.value = c.type || 'adulte';
         type.onchange = async () => {
-          try { await api(`/api/comptes/${encodeURIComponent(c.id)}/profil`, {type: type.value}); msg('comptes', `${c.nom} : compte ${type.value}.`, true); }
+          try { await api(`/api/comptes/${encodeURIComponent(c.id)}/profil`, {type: type.value}); msg('comptes', `${c.nom} : compte ${type.value}.`, true); chargerComptes(); }
           catch (e) { msg('comptes', e.message, false); }
         };
         boutons.appendChild(type);
+        // Droits par personne : ce qu'elle ne pilote pas (appliqué aussi quand sa voix est reconnue ailleurs)
+        const droits = document.createElement('div'); droits.className = 'droits';
+        droits.appendChild(texte('small', 'Ne pilote pas :'));
+        for (const [cle, lib] of DROITS) {
+          const l = document.createElement('label'); const cb = document.createElement('input');
+          cb.type = 'checkbox'; cb.checked = (c.interdits || []).includes(cle);
+          cb.onchange = async () => {
+            const choix = [...droits.querySelectorAll('input')].filter(x => x.checked).map(x => x.dataset.cle);
+            try { await api(`/api/comptes/${encodeURIComponent(c.id)}/profil`, {interdits: choix});
+                  msg('comptes', `${c.nom} : ${choix.length ? 'ne pilote pas ' + choix.map(x => DROITS.find(d => d[0] === x)[1]).join(', ') : 'pilote tout'}.`, true); }
+            catch (e) { cb.checked = !cb.checked; msg('comptes', e.message, false); }
+          };
+          cb.dataset.cle = cle; l.append(cb, ' ' + lib); droits.appendChild(l);
+        }
+        nom.appendChild(droits);
         if (c.id !== moi) {
           const suppr = texte('button', 'Supprimer'); suppr.type = 'button'; suppr.className = 'bouton';
           suppr.onclick = async () => {
@@ -540,8 +607,10 @@
       enregistrer('services', {
         proactif: {active: $('cProActif').checked, heures_calmes: $('cCalme').value.trim(), briefing_heure: $('cBriefing').value.trim(), ville: $('cVille').value.trim()},
         agenda: {url: $('cAgendaUrl').value.trim(), utilisateur: $('cAgendaUser').value.trim(), annonce_avant_min: +$('cAgendaAvant').value || 0},
-        docker: {url: $('cDockerUrl').value.trim(), unraid_url: $('cUnraidUrl').value.trim()},
-        telegram: {docker: $('cTgDocker').checked, disques: $('cTgDisques').checked, agenda: $('cTgAgenda').checked}},
+        docker: {url: $('cDockerUrl').value.trim(), unraid_url: $('cUnraidUrl').value.trim(), mises_a_jour: $('cMaj').checked,
+                 plein_pct: +$('cPlein').value || 0, libre_min_pct: +$('cLibreMin').value || 0, parite_max_jours: +$('cPariteJours').value || 0},
+        telegram: {docker: $('cTgDocker').checked, disques: $('cTgDisques').checked, agenda: $('cTgAgenda').checked,
+                   mises_a_jour: $('cTgMaj').checked}},
         async () => {
           if (mdp) { await api('/api/reglages/secret', {nom: 'AGENDA_MOT_DE_PASSE', valeur: mdp}); $('cAgendaMdp').value = ''; }
           const cle = $('cUnraidCle').value.trim();

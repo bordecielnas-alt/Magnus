@@ -2,11 +2,13 @@
    Interprétation originale (aucun son, voix ni image du film) : une lentille noire dans une monture
    métallique, une lueur rouge au cœur presque doré, et une couronne de graduations dans le verre.
    Même interface que l'orbe :
-     const oeil = creerOeil(canvas, { couronne: true });
+     const oeil = creerOeil(canvas, { style: "classique", couronne: true });
+     style : « classique » (lentille fish-eye proche du film, animation très calme)
+             ou « moderne » (lueur qui pulse, couronne de graduations).
      oeil.etat("reflexion");   // repos, ecoute, reflexion, parole, erreur
      oeil.impulsion(n);        // un morceau de réponse vient d'arriver (fait pulser la parole)
      oeil.son(n);              // niveau du micro, 0 à 1
-     oeil.reglages({ couronne }); oeil.pause(true);
+     oeil.reglages({ style, couronne }); oeil.pause(true);
    Sons : sonsHal.eveil(nom, ctx, sortie, t) avec nom = "cristal" ou "aube" ; sonsHal.ecoute(ctx, sortie, t).
    Tous fabriqués à la volée avec Web Audio, dans les aigus et en gamme majeure (clairs, pas inquiétants).
 */
@@ -22,7 +24,7 @@ function creerOeil(cv, opts = {}) {
   };
   const g = cv.getContext('2d');
   const reduit = matchMedia('(prefers-reduced-motion: reduce)').matches;
-  let W = 0, couronne = opts.couronne !== false, enPause = !!opts.pause;
+  let W = 0, couronne = opts.couronne !== false, enPause = !!opts.pause, style = opts.style === 'moderne' ? 'moderne' : 'classique';
   function taille() {
     const D = Math.min(devicePixelRatio || 1, 2);
     W = Math.max(2, Math.min(1800, Math.round(cv.clientWidth * D)));
@@ -47,6 +49,7 @@ function creerOeil(cv, opts = {}) {
     syllabe += (cibleS - syllabe) * (cibleS > syllabe ? .35 : .12);
     micro += (microCible - micro) * .2; microCible *= .9;
 
+    if (style === 'classique') { classique(t); requestAnimationFrame(frame); return; }
     const cx = W / 2, cy = W / 2, R = W * .36;
     g.clearRect(0, 0, W, W);
     const respire = reduit ? 0 : Math.sin(t / 1000 * vu.vitesse * 1.6) * vu.respire;
@@ -127,6 +130,85 @@ function creerOeil(cv, opts = {}) {
   }
   requestAnimationFrame(frame);
 
+  // ----- Style « classique » : proche de l'œil du film, il bouge très peu, seule la lumière varie -----
+  const ECLAT = { repos: .55, ecoute: .95, reflexion: .75, parole: .85, erreur: .4 };
+  let eclatC = .55;
+  function classique(t) {
+    eclatC += (ECLAT[etat] - eclatC) * (reduit ? .2 : .03);   // transitions lentes
+    let vie = eclatC + syllabe * .22 + micro * .15 + flash * .15;
+    if (!reduit) {
+      vie += Math.sin(t / 1000 * 1.1) * .025;                         // respiration à peine visible
+      if (etat === 'reflexion') vie += Math.sin(t / 1000 * 2.4) * .14; // lente baisse et remontée
+      if (etat === 'erreur' && Math.random() < .08) vie -= .25;        // vacille
+      vie += (Math.sin(t / 61) + Math.sin(t / 43)) * .004;
+    }
+    const lueur = 1.35, reflets = 1.5, anneaux = .7;
+    const cx = W / 2, cy = W / 2, R = W * .36, TOUR = Math.PI * 2;
+    g.clearRect(0, 0, W, W);
+    // halo très doux autour
+    const h = g.createRadialGradient(cx, cy, R * .85, cx, cy, R * 1.25);
+    h.addColorStop(0, `rgba(255,30,20,${.10 * vie * lueur})`); h.addColorStop(1, 'rgba(255,30,20,0)');
+    g.fillStyle = h; g.beginPath(); g.arc(cx, cy, R * 1.25, 0, TOUR); g.fill();
+    // collier noir, puis anneau chromé brossé
+    g.fillStyle = '#060606'; g.beginPath(); g.arc(cx, cy, R, 0, TOUR); g.fill();
+    const rc1 = R * .965, rc2 = R * .86;
+    let ch;
+    if (g.createConicGradient) {
+      ch = g.createConicGradient(-Math.PI * .75, cx, cy);
+      for (const [o, c] of [[0,'#f2f2f2'],[.07,'#8a8a8c'],[.16,'#2a2a2c'],[.27,'#bdbdbf'],[.36,'#4a4a4c'],[.5,'#e6e6e8'],[.6,'#3a3a3c'],[.72,'#a8a8aa'],[.84,'#262628'],[.93,'#9a9a9c'],[1,'#f2f2f2']]) ch.addColorStop(o, c);
+    } else { ch = g.createLinearGradient(cx - R, cy - R, cx + R, cy + R); ch.addColorStop(0, '#eee'); ch.addColorStop(.5, '#333'); ch.addColorStop(1, '#aaa'); }
+    g.save(); g.globalAlpha = .93;
+    g.fillStyle = ch; g.beginPath(); g.arc(cx, cy, rc1, 0, TOUR); g.moveTo(cx + rc2, cy); g.arc(cx, cy, rc2, 0, TOUR); g.fill('evenodd'); g.restore();
+    g.strokeStyle = 'rgba(0,0,0,.18)'; g.lineWidth = Math.max(.5, W * .0012);
+    for (let r = rc2; r < rc1; r += (rc1 - rc2) / 7) { g.beginPath(); g.arc(cx, cy, r, 0, TOUR); g.stroke(); }
+    g.fillStyle = '#020202'; g.beginPath(); g.arc(cx, cy, rc2, 0, TOUR); g.fill();
+    // verre bombé
+    const Rl = R * .82;
+    const verre = g.createRadialGradient(cx, cy, 0, cx, cy, Rl);
+    verre.addColorStop(0, '#1a0304'); verre.addColorStop(.55, '#0b0102'); verre.addColorStop(1, '#000');
+    g.fillStyle = verre; g.beginPath(); g.arc(cx, cy, Rl, 0, TOUR); g.fill();
+    // éléments internes de l'objectif : anneaux sombres concentriques
+    g.save(); g.beginPath(); g.arc(cx, cy, Rl, 0, TOUR); g.clip();
+    for (const [k, a] of [[.86, .5], [.68, .6], [.5, .55], [.34, .45]]) {
+      const r = Rl * k;
+      g.lineWidth = Rl * .035; g.strokeStyle = `rgba(0,0,0,${.55 * anneaux})`; g.beginPath(); g.arc(cx, cy, r, 0, TOUR); g.stroke();
+      g.lineWidth = Math.max(1, Rl * .008); g.strokeStyle = `rgba(255,60,40,${.10 * a * vie * anneaux})`; g.beginPath(); g.arc(cx, cy, r - Rl * .02, 0, TOUR); g.stroke();
+    }
+    g.restore();
+    // la lueur : rouge large, rouge vif, cœur jaune-blanc
+    g.save(); g.globalCompositeOperation = 'lighter';
+    const L = Math.min(1.4, vie * lueur);
+    const l1 = g.createRadialGradient(cx, cy, 0, cx, cy, Rl * .85);
+    l1.addColorStop(0, `rgba(230,20,15,${.55 * L})`); l1.addColorStop(.35, `rgba(170,5,10,${.35 * L})`); l1.addColorStop(1, 'rgba(90,0,0,0)');
+    g.fillStyle = l1; g.beginPath(); g.arc(cx, cy, Rl * .85, 0, TOUR); g.fill();
+    const l2 = g.createRadialGradient(cx, cy, 0, cx, cy, Rl * .32);
+    l2.addColorStop(0, `rgba(255,80,40,${.85 * L})`); l2.addColorStop(.5, `rgba(250,30,20,${.5 * L})`); l2.addColorStop(1, 'rgba(220,0,0,0)');
+    g.fillStyle = l2; g.beginPath(); g.arc(cx, cy, Rl * .32, 0, TOUR); g.fill();
+    const rc = Rl * .075;
+    const l3 = g.createRadialGradient(cx, cy, 0, cx, cy, rc);
+    l3.addColorStop(0, `rgba(255,250,215,${Math.min(1, L)})`); l3.addColorStop(.4, `rgba(255,215,110,${.85 * L})`); l3.addColorStop(1, 'rgba(255,110,40,0)');
+    g.fillStyle = l3; g.beginPath(); g.arc(cx, cy, rc, 0, TOUR); g.fill();
+    g.restore();
+    // reflets de lampes sur le verre
+    g.save(); g.beginPath(); g.arc(cx, cy, Rl, 0, TOUR); g.clip();
+    g.lineCap = 'round';
+    const arc = (r, a1, a2, larg, alpha) => { g.strokeStyle = `rgba(255,255,255,${alpha * reflets})`; g.lineWidth = larg; g.beginPath(); g.arc(cx, cy, r, a1, a2); g.stroke(); };
+    arc(Rl * .80, Math.PI * 1.08, Math.PI * 1.40, Rl * .06, .10);
+    arc(Rl * .70, Math.PI * 1.12, Math.PI * 1.33, Rl * .025, .16);
+    arc(Rl * .58, Math.PI * 1.18, Math.PI * 1.30, Rl * .018, .10);
+    arc(Rl * .80, Math.PI * .12, Math.PI * .30, Rl * .03, .06);
+    for (let i = 0; i < 5; i++) {
+      const a = Math.PI * (1.16 + i * .045), x = cx + Math.cos(a) * Rl * .64, y = cy + Math.sin(a) * Rl * .64;
+      const p = g.createRadialGradient(x, y, 0, x, y, Rl * .035);
+      p.addColorStop(0, `rgba(255,255,255,${.45 * reflets})`); p.addColorStop(1, 'rgba(255,255,255,0)');
+      g.fillStyle = p; g.beginPath(); g.arc(x, y, Rl * .035, 0, TOUR); g.fill();
+    }
+    const voile = g.createLinearGradient(cx, cy - Rl, cx, cy);
+    voile.addColorStop(0, `rgba(255,255,255,${.06 * reflets})`); voile.addColorStop(1, 'rgba(255,255,255,0)');
+    g.fillStyle = voile; g.beginPath(); g.ellipse(cx, cy - Rl * .45, Rl * .8, Rl * .5, 0, 0, TOUR); g.fill();
+    g.restore();
+  }
+
   return {
     etat(e) {
       if (!ETATS[e]) return;
@@ -137,7 +219,10 @@ function creerOeil(cv, opts = {}) {
     son(n = 0) { microCible = Math.max(microCible, Math.max(0, Math.min(1, +n || 0))); },
     impulsion(n = 1) { activite = Math.min(1.5, activite + .25 + Math.min(n, 40) / 40); },
     eclair() { flash = 1; },
-    reglages(r = {}) { if (r.couronne != null) couronne = !!r.couronne; },
+    reglages(r = {}) {
+      if (r.couronne != null) couronne = !!r.couronne;
+      if (r.style) style = r.style === 'moderne' ? 'moderne' : 'classique';
+    },
     pause(b) { enPause = !!b; },
     redimensionner: taille,
   };

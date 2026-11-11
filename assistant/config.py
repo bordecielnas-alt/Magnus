@@ -153,6 +153,12 @@ class DockerConfig(BaseModel):
         """2e clé, limitée à Docker, pour redémarrer un conteneur (après confirmation)."""
         return os.environ.get("UNRAID_CLE_ACTIONS", "")
     timeout: float = Field(default=8, gt=0)
+    # Surveillance du serveur (mode proactif, API Unraid)
+    plein_pct: int = Field(default=95, ge=0, le=100)          # un disque plein à ce % ou plus : alerte (0 = jamais)
+    libre_min_pct: int = Field(default=10, ge=0, le=100)      # array entier sous ce % libre : alerte (0 = jamais)
+    parite_max_jours: int = Field(default=45, ge=0)           # dernier contrôle de parité trop vieux (0 = jamais)
+    mises_a_jour: bool = True                                 # prévenir quand une image Docker a une mise à jour
+    mises_a_jour_intervalle_h: float = Field(default=6, gt=0)  # relecture de l'état des mises à jour
 
 
 class TelegramConfig(BaseModel):
@@ -160,6 +166,7 @@ class TelegramConfig(BaseModel):
     chat_id: str = ""              # trouvé avec « Trouver mon chat » (après /start au bot)
     docker: bool = True            # conteneur arrêté ou en mauvaise santé
     disques: bool = True           # disque en erreur, trop chaud, SMART, array arrêté
+    mises_a_jour: bool = False     # mise à jour d'image Docker disponible (sur la page seulement, par défaut)
     agenda: bool = True            # rendez-vous imminent
 
     def jeton(self) -> str:
@@ -260,7 +267,7 @@ class VoixConfig(BaseModel):
     # (prolongée à chaque phrase). toujours_a_l_ecoute = plus besoin du wake word du tout.
     fenetre_s: float = Field(default=10, ge=0, le=3600)
     toujours_a_l_ecoute: bool = False
-    # Reconnaître qui parle (empreinte vocale) pour appliquer son profil ; jamais pour donner des droits
+    # Reconnaître qui parle (empreinte vocale) pour appliquer son profil et ses limites ; jamais pour donner des droits
     identification: bool = True
     seuil_locuteur: float = Field(default=0.5, ge=0, le=1)
     locuteur: str = ""         # modèle ONNX WeSpeaker ; vide = modeles/locuteur/voxceleb_resnet34_LM.onnx
