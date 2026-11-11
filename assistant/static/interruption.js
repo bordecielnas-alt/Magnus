@@ -46,8 +46,17 @@
   // attendu de l'assistant (null si on ne le connaît pas). Il répond :
   //   'debut'   : quelque chose qui ressemble à ta voix commence (on peut déjà enregistrer)
   //   'abandon' : fausse alerte, ce n'était pas toi (bruit bref)
-  //   'coupe'   : c'est bien toi, l'assistant doit se taire
+  //   'verifier': ça dure assez pour être toi ; l'appelant baisse la voix de l'assistant pendant
+  //               ~0,4 s (voir plus bas) et continue à donner les images
+  //   'coupe'   : c'est bien toi (ta voix ne baisse pas avec la sienne), l'assistant doit se taire
+  //   'echo'    : c'était son propre écho (il a baissé avec sa voix) ; l'appelant remet le volume
   //   ''        : rien de neuf
+  //
+  // Pourquoi la vérification : le navigateur annule l'écho du haut-parleur (echoCancellation), si bien
+  // que l'écho appris est minuscule (gain 0,01 à 0,03)… mais l'annulation laisse parfois passer des
+  // bouffées de sa voix, plus fortes que ta voix normale. Au volume seul, impossible de les distinguer
+  // de toi, et les longues phrases étaient coupées. Le test physique tranche : on baisse sa voix ;
+  // son écho baisse d'autant, ta voix non.
   function creerDetecteur(o) {
     o = o || {};
     const SEUIL = o.seuil || 0.012;          // ≈ -38 dBFS : en dessous, trop faible pour être une voix proche
@@ -55,15 +64,21 @@
     const DUREE = o.duree || 350;            // ms de voix cumulée avant de couper
     const SECOURS = o.secours || 0.25;       // crête sans enveloppe connue (son d'éveil, décodage raté)
     const ECHAUFFEMENT = o.echauffement || 800;   // ms de sa voix pour apprendre son écho, à chaque lecture
+    const VERIFIER = o.verifier !== false;   // false : coupe directement (ancien comportement)
+    const VERIF = o.verif || 400;            // ms de voix baissée pour trancher
+    const VERIF_ATTENTE = o.verifAttente || 130;   // ms ignorées au début (son déjà parti, réverbération)
+    const PART_TOI = o.partToi || 0.35;      // ta voix garde au moins cette part de son niveau ; l'écho tombe à ~10 %
     const d = {
       gain: o.gain > 0 ? o.gain : 0.5,       // part du son de l'assistant qui revient dans le micro
       bruit: 0.004,                          // bruit de fond du micro quand personne ne parle
       score: 0, candidat: false, debut: 0, dernier: 0, traine: 0, appris: 0,
-      raison: '',
-      reinit() { d.score = 0; d.candidat = false; d.debut = 0; d.dernier = 0; d.traine = 0; d.appris = 0; },
+      raison: '', verif: 0, mesures: [], niveau: 0, nNiveau: 0, traineCand: 0, nConnu: 0,
+      reinit() { d.score = 0; d.candidat = false; d.debut = 0; d.dernier = 0; d.traine = 0; d.appris = 0; d.verif = 0; },
+      enVerification() { return d.verif > 0; },
       image(rms, pic, sortie, t) {
         const dt = d.dernier ? Math.min(100, t - d.dernier) : 16;
         d.dernier = t;
+        if (d.verif) return d._verifier(rms, t);
         let voix;
         if (sortie === null || sortie === undefined) {
           // on ne sait pas ce que l'assistant joue : seulement une voix forte et franche
@@ -91,10 +106,41 @@
           if (d.traine < 0.005 && !voix) d.bruit += (Math.min(rms, 0.05) - d.bruit) * 0.02;
         }
         if (voix) d.score += dt; else d.score = d.candidat ? d.score - dt * 0.3 : 0;   // les petits blancs entre tes syllabes sont tolérés
-        if (!d.candidat && voix) { d.candidat = true; d.debut = t; d.score = dt; return 'debut'; }
+        // niveau moyen de ce qu'on croit être toi, et de son écho attendu au même moment
+        const connu = !(sortie === null || sortie === undefined);
+        if (!d.candidat && voix) {
+          d.candidat = true; d.debut = t; d.score = dt;
+          d.niveau = rms; d.nNiveau = 1; d.traineCand = connu ? d.traine : 0; d.nConnu = connu ? 1 : 0;
+          return 'debut';
+        }
+        if (d.candidat && voix) { d.niveau += rms; d.nNiveau++; if (connu) { d.traineCand += d.traine; d.nConnu++; } }
         if (d.candidat && d.score <= 0) { d.candidat = false; d.score = 0; return 'abandon'; }
-        if (d.candidat && d.score >= DUREE) { d.candidat = false; d.score = 0; return 'coupe'; }
+        if (d.candidat && d.score >= DUREE) {
+          d.score = 0;
+          if (!VERIFIER) { d.candidat = false; return 'coupe'; }
+          d.verif = t; d.mesures = [];
+          return 'verifier';
+        }
         return '';
+      },
+      // Pendant que sa voix est baissée : on mesure le micro, puis on tranche.
+      _verifier(rms, t) {
+        const ecoule = t - d.verif;
+        if (ecoule >= VERIF_ATTENTE) d.mesures.push(rms);
+        if (ecoule < VERIF) return '';
+        const m = d.mesures.slice().sort((a, b) => a - b);
+        const haut = m.length ? m[Math.min(m.length - 1, Math.floor(m.length * 0.75))] : 0;
+        const avant = d.nNiveau ? d.niveau / d.nNiveau : 0;
+        d.verif = 0; d.candidat = false; d.score = 0;
+        if (haut > SEUIL && haut >= PART_TOI * avant) {
+          d.raison += ' · confirmé voix baissée : micro ' + haut.toFixed(3) + ' (avant ' + avant.toFixed(3) + ')';
+          return 'coupe';
+        }
+        // C'était son écho : on retient qu'il peut revenir aussi fort, pour ne pas revérifier sans cesse.
+        const traine = d.nConnu ? d.traineCand / d.nConnu : 0;
+        if (traine > 0.02) d.gain = Math.min(4, Math.max(d.gain, 1.1 * avant / traine / MARGE));
+        d.raison = 'écho : micro ' + avant.toFixed(3) + ' puis ' + haut.toFixed(3) + ' voix baissée (gain d\'écho ' + d.gain.toFixed(2) + ')';
+        return 'echo';
       }};
     return d;
   }
