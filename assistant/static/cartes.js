@@ -481,6 +481,11 @@
   window.cartesChat = {
     afficher(corps, cartes, conversation) {
       if (!Array.isArray(cartes) || !cartes.length) return;
+      // cartes de rapport (météo, bourse…) : dessinées par rapports.js, dépliées, sans réglages à verrouiller
+      const rapports = cartes.filter(c => c.type === 'rapport');
+      if (rapports.length && window.rapportsChat) rapportsChat.afficher(corps, rapports, conversation);
+      cartes = cartes.filter(c => c.type !== 'rapport');
+      if (!cartes.length) return;
       const zone = document.createElement('div');
       zone.className = 'cartes';
       for (const c of cartes) zone.appendChild(habiller(dessiner(c, conversation), true));
