@@ -139,12 +139,17 @@
       <label class="champ">Annoncer un rendez-vous (minutes avant)<input id="cAgendaAvant" type="number" min="0" max="240"></label>
       <label class="champ">Docker via l'API Unraid : adresse<input id="cUnraidUrl" placeholder="http://192.168.1.2/graphql"></label>
       <label class="champ">API Unraid : clé (rôle lecture seule)<input id="cUnraidCle" type="password" autocomplete="off" placeholder="laisser vide pour garder l'actuelle"></label>
-      <label class="champ">API Unraid : clé pour redémarrer un conteneur (droits Docker seulement, facultatif)<input id="cUnraidCleActions" type="password" autocomplete="off" placeholder="laisser vide pour garder l'actuelle"></label>
+      <label class="champ">API Unraid : clé pour redémarrer ou mettre à jour un conteneur (droits Docker seulement, facultatif)<input id="cUnraidCleActions" type="password" autocomplete="off" placeholder="laisser vide pour garder l'actuelle"></label>
+      <label class="aide" style="display:flex;gap:8px;align-items:center"><input type="checkbox" id="cMaj"> Prévenir quand une image Docker a une mise à jour (boutons « Mettre à jour / Ignorer »)</label>
+      <div class="rangee"><label class="champ" style="flex:1">Disque plein à (%)<input id="cPlein" type="number" min="0" max="100"></label>
+        <label class="champ" style="flex:1">Array : libre minimum (%)<input id="cLibreMin" type="number" min="0" max="100"></label>
+        <label class="champ" style="flex:1">Parité : contrôle max (jours)<input id="cPariteJours" type="number" min="0" max="365"></label></div>
       <input id="cDockerUrl" type="hidden">
       <label class="champ">Telegram : jeton du bot (donné par @BotFather)<input id="cTgJeton" type="password" autocomplete="off" placeholder="laisser vide pour garder l'actuel"></label>
       <div class="rangee"><label class="aide" style="margin:0"><input type="checkbox" id="cTgDocker"> conteneurs</label>
         <label class="aide" style="margin:0"><input type="checkbox" id="cTgDisques"> disques</label>
-        <label class="aide" style="margin:0"><input type="checkbox" id="cTgAgenda"> rendez-vous</label></div>
+        <label class="aide" style="margin:0"><input type="checkbox" id="cTgAgenda"> rendez-vous</label>
+        <label class="aide" style="margin:0"><input type="checkbox" id="cTgMaj"> mises à jour</label></div>
       <div class="rangee"><button type="button" class="bouton" id="cTgTrouver">Trouver mon chat</button>
         <button type="button" class="bouton" id="cTgTest">Message de test</button><span class="aide" data-msg="telegram"></span></div>
       <p class="aide">Telegram : crée un bot avec @BotFather, colle son jeton, enregistre et redémarre ; envoie « /start » à ton bot, puis « Trouver mon chat ».</p>
@@ -239,6 +244,8 @@
     $('cVille').value = pa.ville || ''; $('cAgendaUrl').value = ag.url || ''; $('cAgendaUser').value = ag.utilisateur || '';
     const tg = r.telegram || {};
     $('cTgDocker').checked = tg.docker !== false; $('cTgDisques').checked = tg.disques !== false; $('cTgAgenda').checked = tg.agenda !== false;
+    $('cTgMaj').checked = !!tg.mises_a_jour; $('cMaj').checked = dk.mises_a_jour !== false;
+    $('cPlein').value = dk.plein_pct ?? 95; $('cLibreMin').value = dk.libre_min_pct ?? 10; $('cPariteJours').value = dk.parite_max_jours ?? 45;
     $('cTgJeton').placeholder = tg.jeton_defini ? 'jeton enregistré — laisser vide pour le garder' : 'jeton du bot';
     $('cAgendaAvant').value = ag.annonce_avant_min ?? 15; $('cDockerUrl').value = dk.url || ''; $('cUnraidUrl').value = dk.unraid_url || '';
     etat('eServices', [ag.url ? 'agenda' : '', (dk.unraid_url || dk.url) ? 'Docker' : '', pa.briefing_heure ? 'briefing ' + pa.briefing_heure : ''].filter(Boolean).join(' · ') || 'rien de branché');
@@ -540,8 +547,10 @@
       enregistrer('services', {
         proactif: {active: $('cProActif').checked, heures_calmes: $('cCalme').value.trim(), briefing_heure: $('cBriefing').value.trim(), ville: $('cVille').value.trim()},
         agenda: {url: $('cAgendaUrl').value.trim(), utilisateur: $('cAgendaUser').value.trim(), annonce_avant_min: +$('cAgendaAvant').value || 0},
-        docker: {url: $('cDockerUrl').value.trim(), unraid_url: $('cUnraidUrl').value.trim()},
-        telegram: {docker: $('cTgDocker').checked, disques: $('cTgDisques').checked, agenda: $('cTgAgenda').checked}},
+        docker: {url: $('cDockerUrl').value.trim(), unraid_url: $('cUnraidUrl').value.trim(), mises_a_jour: $('cMaj').checked,
+                 plein_pct: +$('cPlein').value || 0, libre_min_pct: +$('cLibreMin').value || 0, parite_max_jours: +$('cPariteJours').value || 0},
+        telegram: {docker: $('cTgDocker').checked, disques: $('cTgDisques').checked, agenda: $('cTgAgenda').checked,
+                   mises_a_jour: $('cTgMaj').checked}},
         async () => {
           if (mdp) { await api('/api/reglages/secret', {nom: 'AGENDA_MOT_DE_PASSE', valeur: mdp}); $('cAgendaMdp').value = ''; }
           const cle = $('cUnraidCle').value.trim();

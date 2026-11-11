@@ -133,7 +133,8 @@ OUTILS_DOCKER += [
     {
         "name": "etat_serveur",
         "description": "État du serveur Unraid : array (démarré ?), capacité, chaque disque (état, température, "
-                       "erreurs, SMART, espace libre), dernier contrôle de parité, et liste des alertes.",
+                       "erreurs, SMART, espace libre), dernier contrôle de parité (et son âge), conteneurs dont "
+                       "l'image a une mise à jour disponible (mises_a_jour), et liste des alertes.",
         "inputSchema": {"type": "object", "properties": {}},
     },
     {

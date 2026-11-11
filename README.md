@@ -110,6 +110,19 @@ Stockage : `fil.db` (SQLite) dans le dossier d'état, 1 000 échanges au plus pa
 | `GET /api/fil/flux` | Server-Sent Events : questions, réponses mot à mot, effacement (reprise après coupure par `Last-Event-ID`) |
 | `DELETE /api/fil` | Nouvelle conversation |
 
+## Surveillance du serveur Unraid
+
+Avec l'API Unraid (`docker.unraid_url` et la clé `UNRAID_CLE` en lecture seule, dans Réglages) et le mode proactif actif, l'assistant vérifie chaque minute l'array et les disques, et prévient de lui-même (annonce sur la page, et Telegram si coché) :
+
+- **Disques** : état anormal, erreurs de lecture/écriture, SMART pas OK, température au-delà des seuils d'Unraid (chaud / critique), disque plein à `docker.plein_pct` % (95 par défaut).
+- **Espace** : l'array entier a moins de `docker.libre_min_pct` % libre (10 par défaut).
+- **Parité** : erreurs au dernier contrôle, ou dernier contrôle plus vieux que `docker.parite_max_jours` jours (45 par défaut, pas pendant un contrôle en cours).
+- **Mises à jour d'images Docker** (toutes les 6 h, `docker.mises_a_jour`) : l'état que Unraid calcule lui-même (page Docker). Une annonce par conteneur, avec deux boutons, réservés aux administrateurs :
+  - **Mettre à jour** : comme « update » dans Unraid (nouvelle image, conteneur recréé). Demande la 2e clé `UNRAID_CLE_ACTIONS` (droits Docker) ; sans elle, l'annonce le dit et rien n'est fait. Chaque choix est noté dans le journal d'audit.
+  - **Ignorer** : plus d'annonce pour ce conteneur tant qu'il n'est pas à jour, avec un rappel au bout de 30 jours.
+
+Un seuil à 0 coupe l'alerte correspondante. Telegram ne reçoit les mises à jour que si la case « mises à jour » est cochée (décochée par défaut, pour ne pas être bavard). L'outil `etat_serveur` de Claude renvoie aussi la liste des mises à jour en attente.
+
 ## Voix (locale)
 
 - **Transcription** : faster-whisper « small » en français (`POST /api/voix/transcrire`, corps = l'audio enregistré par le navigateur, webm/opus ou wav). Les noms de l'assistant, des appareils et des pièces sont donnés à Whisper comme indices.
