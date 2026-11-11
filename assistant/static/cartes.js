@@ -8,8 +8,10 @@
 (() => {
   const css = `
   .cartes > .disparue, .rapports > .disparue, .cartes[hidden], .rapports[hidden] { display:none !important; }
-  .cartes { display:grid; gap:10px; margin-top:.7em; font-size:.95rem; text-shadow:none; }
-  .carte { background:var(--surface); border:1px solid var(--bord); border-radius:16px; padding:12px 14px; display:grid; gap:10px; max-width:380px; }
+  .cartes { display:grid; grid-template-columns:minmax(0, 1fr); gap:10px; margin-top:.7em; font-size:.95rem; text-shadow:none; }
+  .carte { background:var(--surface); border:1px solid var(--bord); border-radius:16px; padding:12px 14px; display:grid; grid-template-columns:minmax(0, 1fr); gap:10px; max-width:380px; min-width:0; }
+  /* téléphone : rien dans la carte n'impose sa largeur (un curseur garde sinon ~130 px), elle suit l'écran */
+  .carte > *, .carte .rangs > li > * { min-width:0; }
   .carte.occupee { opacity:.75; }
   .cartes > .carte { -webkit-user-select:none; user-select:none; -webkit-touch-callout:none; transition:border-color .2s, box-shadow .2s; }
   .cartes > .carte > .carte-tete { cursor:pointer; }
@@ -31,8 +33,8 @@
   .carte .halo { height:6px; border-radius:99px; background:var(--bord); transition:background .25s, box-shadow .25s; }
   .carte .ligne { display:flex; align-items:center; gap:10px; }
   .carte .ligne > span { width:68px; flex:none; color:var(--muted); font-size:.82rem; }
-  .carte .ligne output { width:52px; text-align:right; font-variant-numeric:tabular-nums; font-size:.82rem; color:var(--muted); }
-  .carte input[type=range] { -webkit-appearance:none; appearance:none; flex:1; min-width:0; height:28px; background:transparent; cursor:pointer; margin:0; touch-action:none; }
+  .carte .ligne output { width:52px; flex:none; white-space:nowrap; text-align:right; font-variant-numeric:tabular-nums; font-size:.82rem; color:var(--muted); }
+  .carte input[type=range] { -webkit-appearance:none; appearance:none; flex:1; width:0; min-width:0; height:28px; background:transparent; cursor:pointer; margin:0; touch-action:none; }
   .carte input[type=range]::-webkit-slider-runnable-track { height:8px; border-radius:99px; background:var(--piste, var(--bord)); }
   .carte input[type=range]::-moz-range-track { height:8px; border-radius:99px; background:var(--piste, var(--bord)); }
   .carte input[type=range]::-webkit-slider-thumb { -webkit-appearance:none; width:22px; height:22px; margin-top:-7px; border-radius:50%; background:var(--fg); border:3px solid var(--bg); }
@@ -47,7 +49,7 @@
   .carte .pastilles button[aria-expanded=true] { border-color:var(--fg); box-shadow:0 0 0 2px var(--accent); }
   .carte .roue-zone { display:flex; align-items:center; gap:14px; padding-left:78px; }
   .carte .roue-zone[hidden] { display:none; }
-  .carte .roue { position:relative; width:150px; height:150px; flex:none; border-radius:50%; cursor:crosshair; touch-action:none;
+  .carte .roue { position:relative; width:min(150px, 100%); height:auto; aspect-ratio:1; flex:none; border-radius:50%; cursor:crosshair; touch-action:none;
     background:radial-gradient(circle closest-side, #fff, rgba(255,255,255,0)), conic-gradient(hsl(0 100% 50%), hsl(30 100% 50%), hsl(60 100% 50%),
       hsl(90 100% 50%), hsl(120 100% 50%), hsl(150 100% 50%), hsl(180 100% 50%), hsl(210 100% 50%), hsl(240 100% 50%),
       hsl(270 100% 50%), hsl(300 100% 50%), hsl(330 100% 50%), hsl(360 100% 50%)); box-shadow:0 0 0 1px var(--bord); }
@@ -62,7 +64,13 @@
   .carte .choix button { background:none; border:1px solid var(--bord); border-radius:99px; padding:3px 10px; font-size:.8rem; color:var(--muted); cursor:pointer; }
   .carte .choix button[aria-pressed=true] { border-color:var(--accent); color:var(--fg); background:color-mix(in srgb, var(--accent) 18%, transparent); }
   .cartes.verrouillee .carte .choix button { pointer-events:none; opacity:.5; }
-  @media (max-width:420px) { .carte .roue-zone { padding-left:0; justify-content:center; } }
+  @media (max-width:420px) {
+    .carte .roue-zone { padding-left:0; justify-content:center; flex-wrap:wrap; }
+    .carte { padding:10px 12px; }
+    .carte .ligne { gap:8px; }
+    .carte .ligne > span { width:56px; }
+    .carte .ligne output { width:auto; min-width:40px; }
+  }
   .inter { position:relative; width:46px; height:26px; flex:none; display:inline-block; }
   .inter input { position:absolute; inset:0; opacity:0; margin:0; cursor:pointer; width:100%; height:100%; }
   .inter span { position:absolute; inset:0; border-radius:99px; background:var(--bord); transition:background .2s; pointer-events:none; }
@@ -187,8 +195,15 @@
     return c.intensite != null ? c.intensite + ' %' : 'allumé';
   }
 
-  // Appel au serveur, carte « occupée » pendant l'envoi, puis redessinée avec l'état renvoyé
+  // Appel au serveur, carte « occupée » pendant l'envoi, puis redessinée avec l'état renvoyé.
+  // Deux réglages coup sur coup (curseur relâché deux fois) : seule la réponse au dernier redessine la
+  // carte. Sinon la première réponse remplaçait la carte, la seconde visait l'ancienne (déjà retirée) et
+  // la carte restait sur l'avant-dernière valeur.
+  const dernierEnvoi = new Map();
   async function envoyer(el, conv, corpsJson) {
+    const cle = conv + ' ' + corpsJson.entity_id, num = (dernierEnvoi.get(cle) || 0) + 1;
+    dernierEnvoi.set(cle, num);
+    const perime = () => dernierEnvoi.get(cle) !== num;
     el.classList.add('occupee');
     // carte détaillée d'un groupe : le message va au pied du groupe
     const note = (el.parentElement?.closest('.carte-groupe') || el).querySelector(':scope > .pied-carte .note');
@@ -197,6 +212,7 @@
         body: JSON.stringify({conversation: conv, ...corpsJson})});
       const o = await r.json().catch(() => ({}));
       if (!r.ok) throw new Error(typeof o.detail === 'string' ? o.detail : 'HTTP ' + r.status);
+      if (perime()) return;          // un réglage plus récent est parti : c'est sa réponse qui redessine
       if (o.carte) {
         const neuve = dessiner(o.carte, conv);
         if (el.parentElement?.classList.contains('cartes')) habiller(neuve, el.classList.contains('repliee'));
@@ -206,6 +222,7 @@
         if (neuve.closest('.carte-groupe')) majRang(neuve, o.carte);
       }
     } catch (e) {
+      if (perime()) return;
       el.classList.remove('occupee');
       if (note) { note.textContent = 'Pas fait : ' + e.message; note.classList.add('ko'); }
     }

@@ -148,6 +148,53 @@ def compatible(c: dict, champs: dict) -> bool:
     return True       # allumer / éteindre : tout appareil joignable
 
 
+def atteint(c: dict | None, champs: dict) -> bool:
+    """La carte `c` (état lu dans Home Assistant) montre-t-elle déjà le réglage demandé ? Tolérances :
+    HA arrondit l'intensité sur 255 crans, le blanc en mireds, et la couleur selon la gamme de la lampe."""
+    if not c:
+        return False
+    if champs.get("allume") is False or champs.get("intensite") == 0:
+        return not (c.get("allume") or c.get("ouvert"))
+    if "position" in champs:
+        p = c.get("position")
+        return p is not None and abs(p - champs["position"]) <= 2
+    if "teinte" in champs:
+        hs = c.get("hs")
+        if not hs:
+            return False
+        dt = abs(hs[0] - champs["teinte"]) % 360
+        sat = 100.0 if champs.get("saturation") is None else champs["saturation"]
+        return min(dt, 360 - dt) <= 6 or sat < 8 and abs(hs[1] - sat) <= 8
+    if "kelvin" in champs:
+        k = c.get("kelvin")
+        return k is not None and abs(k - champs["kelvin"]) <= max(100, champs["kelvin"] * 0.04)
+    if "intensite" in champs:
+        i = c.get("intensite")
+        return i is not None and abs(i - champs["intensite"]) <= 1
+    if champs.get("allume"):
+        return bool(c.get("allume") or c.get("ouvert"))
+    return True
+
+
+ATTENTE_REGLAGE = 12            # lectures espacées de 0,25 s : 3 s au plus
+
+
+async def _carte_apres(maison: Maison, e: Entite, champs: dict, avant: dict | None) -> dict | None:
+    """Carte relue après un geste. Home Assistant met souvent quelques centaines de millisecondes (plus
+    avec une transition) à montrer la nouvelle valeur : lue trop tôt, la carte redessinée remettait le
+    curseur sur l'ancienne valeur, d'où « toujours une valeur de retard ». On relit donc jusqu'à voir la
+    valeur demandée ; si la lampe ne la rend pas exactement (gamme de couleurs), on s'arrête dès que son
+    état a changé puis n'a plus bougé entre deux lectures."""
+    c = carte(e, await maison.ha.etat_entite(e.entity_id))
+    precedente = None
+    for _ in range(ATTENTE_REGLAGE):
+        if atteint(c, champs) or (c is not None and c != avant and c == precedente):
+            break
+        await asyncio.sleep(0.25)
+        precedente, c = c, carte(e, await maison.ha.etat_entite(e.entity_id))
+    return c
+
+
 async def regler(maison: Maison, entity_id: str, conversation: str = "", **champs) -> tuple[ReponseMaison | None, dict | None]:
     """Un geste sur une carte. Renvoie (réponse de Maison, carte à jour) ; (None, None) si l'appareil
     n'est pas pilotable (inconnu, hors des domaines autorisés, caché ou sensible)."""
@@ -156,8 +203,9 @@ async def regler(maison: Maison, entity_id: str, conversation: str = "", **champ
     if not e or maison.masque(e) or maison.sensible(e):
         return None, None
     cmd = _commande(**champs)
+    avant = carte(e, await maison.ha.etat_entite(entity_id))
     r = await maison._executer(cmd, [e], conversation)
-    return r, carte(e, await maison.ha.etat_entite(entity_id))
+    return r, await _carte_apres(maison, e, champs, avant)
 
 
 async def regler_plusieurs(maison: Maison, entity_ids: list[str], conversation: str = "",
@@ -176,6 +224,7 @@ async def regler_plusieurs(maison: Maison, entity_ids: list[str], conversation: 
         (cibles if c and compatible(c, champs) else ecartes).append(e)
     if not cibles:
         return None, [], [e.entity_id for e in ecartes]
+    avants = {e.entity_id: carte(e, await maison.ha.etat_entite(e.entity_id)) for e in cibles}
     r = await maison._executer(cmd, cibles, conversation)
-    cartes = [c for e in cibles if (c := carte(e, await maison.ha.etat_entite(e.entity_id)))]
+    cartes = [c for e in cibles if (c := await _carte_apres(maison, e, champs, avants.get(e.entity_id)))]
     return r, cartes, [e.entity_id for e in ecartes]

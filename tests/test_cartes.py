@@ -146,3 +146,52 @@ def test_groupe_un_choix_et_refus(tmp_path, monkeypatch):
     c.post("/api/maison/carte/groupe", json={"entity_ids": ["light.cuisine", "switch.prise_tv"], "allume": True})
     assert [a[:2] for a in faux.appels[-2:]] == [("light", "turn_on"), ("switch", "turn_on")]
     assert len(faux.appels) == 3
+
+
+# --- la carte renvoyée montre la valeur demandée, pas l'avant-dernière ------------------
+
+class _HALent:
+    """Home Assistant qui ne montre le nouvel état qu'après quelques lectures (comme une vraie lampe)."""
+
+    def __init__(self, etat, lectures_avant_maj=3):
+        self.etat, self.suivant, self.reste = etat, None, 0
+        self.lectures_avant_maj = lectures_avant_maj
+
+    def appliquer(self, attributs):
+        self.suivant = {**self.etat, "attributes": {**self.etat["attributes"], **attributs}}
+        self.reste = self.lectures_avant_maj
+
+    async def etat_entite(self, eid):
+        if self.suivant is not None:
+            if self.reste <= 0:
+                self.etat, self.suivant = self.suivant, None
+            else:
+                self.reste -= 1
+        return self.etat
+
+
+def test_carte_apres_attend_la_valeur_demandee(monkeypatch):
+    from assistant.maison import cartes as mod
+    monkeypatch.setattr(mod, "ATTENTE_REGLAGE", 12)
+    dormir = asyncio.sleep
+    monkeypatch.setattr(mod.asyncio, "sleep", lambda _s: dormir(0))
+    ha = _HALent(LAMPE_COULEUR)
+    m = type("M", (), {"ha": ha})()
+    e = Entite("light.lampe_pied", "Lampe sur pied", "Salon")
+    avant = carte(e, LAMPE_COULEUR)
+    ha.appliquer({"brightness": 191})                     # 75 %
+    c = asyncio.run(mod._carte_apres(m, e, {"intensite": 75}, avant))
+    assert c["intensite"] == 75
+    ha.appliquer({"color_temp_kelvin": 4000})
+    c = asyncio.run(mod._carte_apres(m, e, {"kelvin": 4000}, c))
+    assert c["kelvin"] == 4000
+
+
+def test_atteint_tolerances():
+    from assistant.maison.cartes import atteint
+    lampe = {"allume": True, "intensite": 49, "kelvin": 3984, "hs": [358.0, 97.0]}
+    assert atteint(lampe, {"intensite": 50}) and not atteint(lampe, {"intensite": 60})
+    assert atteint(lampe, {"kelvin": 4000}) and not atteint(lampe, {"kelvin": 3000})
+    assert atteint(lampe, {"teinte": 2, "saturation": 100}) and not atteint(lampe, {"teinte": 120})
+    assert atteint({"allume": False}, {"allume": False}) and not atteint(lampe, {"allume": False})
+    assert atteint({"ouvert": True, "position": 49}, {"position": 50})
