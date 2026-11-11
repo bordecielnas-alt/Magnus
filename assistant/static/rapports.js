@@ -1,5 +1,6 @@
 // Cartes de rapport : « fais-moi un rapport météo », « rapport du CAC 40 », « fais le point sur Docker ».
-// Le serveur construit la carte (assistant/rapports.py) ; la page la dessine sous la réponse, dépliée.
+// Le serveur construit la carte (assistant/rapports.py) ; la page la dessine sous la réponse, dépliée
+// (repliée pour une question fermée), toujours repliable d'un toucher sur l'en-tête.
 // Modèles : meteo (icônes dessinées ici), bourse (courbe du mois), agenda, docker, actus et libre
 // (chiffres clés, points, articles, sources). « Actualiser » redemande la même carte (POST /api/rapport).
 (() => {
@@ -221,16 +222,16 @@
       + (c.demande ? '<button type="button">Actualiser</button>' : '') + '</div>';
     const b = el.querySelector('.r-pied button');
     if (b) b.onclick = () => actualiser(el, c, conversation);
-    if (c.repliee) {
-      // carte repliée (« il pleut demain ? ») : un toucher sur l'en-tête la déplie
-      el.classList.add('repliable', 'repliee');
-      const tete = el.querySelector('.r-tete');
-      tete.setAttribute('role', 'button'); tete.tabIndex = 0;
-      tete.setAttribute('aria-expanded', 'false');
-      const basculer = () => tete.setAttribute('aria-expanded', String(!el.classList.toggle('repliee')));
-      tete.onclick = basculer;
-      tete.onkeydown = e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); basculer(); } };
-    }
+    // toujours repliable d'un toucher sur l'en-tête ; repliée dès l'arrivée pour une question fermée
+    // (« il pleut demain ? »). Le repli et la disparition automatiques sont dans cartes.js.
+    el.classList.add('repliable');
+    el.classList.toggle('repliee', !!c.repliee);
+    const tete = el.querySelector('.r-tete');
+    tete.setAttribute('role', 'button'); tete.tabIndex = 0;
+    tete.setAttribute('aria-expanded', String(!c.repliee));
+    const basculer = () => tete.setAttribute('aria-expanded', String(!el.classList.toggle('repliee')));
+    tete.onclick = e => { if (!e.target.closest('a, button')) basculer(); };
+    tete.onkeydown = e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); basculer(); } };
     return el;
   }
 
