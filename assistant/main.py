@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import os
@@ -27,7 +28,7 @@ from .maison.cartes import cartes_pour, regler as regler_carte
 from .maison.historique import Historique
 from .maison.historique import demande as demande_en_cours
 from .maison.alias import AliasAppris
-from .routeur import SIMPLE, Decision, Routeur
+from .routeur import COMPLEXE, SIMPLE, Decision, Routeur
 from . import reglages as R
 from .reveil import Reveil
 from .agenda import JOURS, Agenda, decrire
@@ -38,7 +39,7 @@ from .habitudes import Routines, automatisation, detecter
 from .memoire import Memoire
 from .fil import Fil
 from .proactif import Annonces
-from .docker_diag import Docker, UnraidDocker, causes_probables
+from .docker_diag import Docker, UnraidDocker, causes_probables, normaliser_nom
 from .locuteur import Locuteurs
 from .diagnostic import Diagnostic, GestionnaireJournal
 from .securite import COMPTE_MACHINE, NOM_COOKIE, AccesRefuse, Securite, est_locale
@@ -179,9 +180,12 @@ NOTE_RAPPELS = (
 )
 RE_SUITE_AGENDA = re.compile(r"\b(supprime|efface|annule|enl[èe]ve|retire|d[ée]place|d[ée]cale|change|modifie|"
                              r"celui|celle|ce|cet|le premier|le deuxi[èe]me|oui|non)\b", re.I)
-RE_DOCKER = re.compile(r"\b(docker|conteneurs?|containers?|unraid|serveur|plex|nginx|npm|logs?|journaux|disques?( durs?)?|"
+RE_DOCKER = re.compile(r"\b(dockers?\w*|conteneurs?|containers?|unraid|serveur|plex|nginx|npm|logs?|journaux|disques?( durs?)?|"
                        r"hdd|array|parit[ée]|smart|stockage|espace (libre|disque)|"
                        r"plant[ée]s?|crash|red[ée]marr\w*|ne (r[ée]pond|marche|fonctionne) plus)\b", re.I)
+# Désigne sans ambiguïté le serveur ou un conteneur : passe avant les commandes de maison
+# (« allume le docker MeTube », « quel est l'état des dockers », « Dockerplex » mal transcrit)
+RE_DOCKER_FORT = re.compile(r"\b(dockers?\w*|conteneurs?|containers?|unraid|serveur)\b", re.I)
 NOTE_OUTILS_DOCKER = (
     "Tu as aussi lister_conteneurs et diagnostiquer_conteneur (serveur Unraid, lecture seule). Pour un service "
     "qui ne marche pas, diagnostique d'abord, puis donne la cause probable et un correctif concret que la "
@@ -192,7 +196,9 @@ NOTE_OUTILS_DOCKER = (
     "diagnostiquer_conteneur, puis réponds en deux ou trois phrases simples : la cause probable (appuie-toi sur "
     "causes_probables et cite la ligne de journal qui le montre), et ce qu'il faudrait corriger. Si un redémarrage "
     "peut aider et que redemarrage_possible est vrai, appelle demander_redemarrage et termine par « Je redémarre "
-    "<nom> ? ». Si la cause reviendra au redémarrage (disque plein, config invalide…), dis-le au lieu de le proposer."
+    "<nom> ? ». Si la cause reviendra au redémarrage (disque plein, config invalide…), dis-le au lieu de le proposer. "
+    "Pour allumer (démarrer) ou éteindre (arrêter) un conteneur, appelle demander_redemarrage avec l'action "
+    "« demarrer » ou « arreter », puis termine par « Je démarre <nom> ? » ou « J'arrête <nom> ? »."
 )
 
 
@@ -246,6 +252,7 @@ class NouveauRappel(BaseModel):
 
 class DemandeRedemarrage(BaseModel):
     nom: str = Field(min_length=1, max_length=100)
+    action: Literal["redemarrer", "demarrer", "arreter"] = "redemarrer"
     conversation: str = Field(default="", max_length=64)
 
 
@@ -404,7 +411,22 @@ def creer_app(config: Config | None = None, registre: Registre | None = None,
             except Exception:  # noqa: BLE001
                 journal.exception("rappels : erreur")
             await aio.sleep(5)
-    redemarrage_attente: dict[str, tuple[str, str, float]] = {}   # conversation -> (conteneur, compte, instant)
+    redemarrage_attente: dict[str, tuple[str, str, float, str]] = {}   # conversation -> (conteneur, compte, instant, action)
+    noms_conteneurs = {"noms": [], "instant": -1e9}        # pour reconnaître « allume Adminer » sans le mot docker
+
+    async def evoque_docker(message: str) -> bool:
+        """Le message parle du serveur ou d'un conteneur existant (alors pas une commande de maison)."""
+        if RE_DOCKER_FORT.search(message):
+            return True
+        if time.monotonic() - noms_conteneurs["instant"] > 300:
+            noms_conteneurs["instant"] = time.monotonic()
+            try:
+                liste = await asyncio.wait_for(docker.conteneurs(), 3)
+                noms_conteneurs["noms"] = [n for n in (normaliser_nom(c["nom"]) for c in liste) if len(n) >= 4]
+            except Exception:  # noqa: BLE001 - serveur injoignable : on garde la liste précédente
+                pass
+        mots = {normaliser_nom(m) for m in re.findall(r"[\w'-]+", message)}
+        return any(n in mots for n in noms_conteneurs["noms"])
 
     async def signaler(texte: str, priorite: str, source: str, cle: str, vers_telegram: bool = True) -> None:
         """Une alerte : gardée dans les annonces (sans doublon) et envoyée sur Telegram la première fois."""
@@ -1149,8 +1171,10 @@ def creer_app(config: Config | None = None, registre: Registre | None = None,
         c = await docker_ou_erreur(docker.trouver(r.nom))
         if not c:
             raise HTTPException(404, f"conteneur « {r.nom} » introuvable ou ambigu")
-        redemarrage_attente[r.conversation] = (c["nom"], compte, time.monotonic())
-        return {"en_attente": f"demande « Je redémarre {c['nom']} ? » ; rien n'est fait avant le oui"}
+        redemarrage_attente[r.conversation] = (c["nom"], compte, time.monotonic(), r.action)
+        question = {"redemarrer": "Je redémarre", "demarrer": "Je démarre", "arreter": "J'arrête"}[r.action]
+        return {"en_attente": f"demande « {question} {c['nom']} ? » ; rien n'est fait avant le oui",
+                "etat_actuel": c.get("etat", "")}
 
     @app.get("/api/unraid")
     async def etat_unraid(requete: Request) -> dict:
@@ -1930,17 +1954,23 @@ def creer_app(config: Config | None = None, registre: Registre | None = None,
         attente_r = redemarrage_attente.get(d.conversation)
         if attente_r and time.monotonic() - attente_r[2] < 120 and (RE_OUI.match(d.message) or RE_NON.match(d.message)):
             redemarrage_attente.pop(d.conversation, None)
+            nom_c, action_c = attente_r[0], attente_r[3]
             if RE_NON.match(d.message) or attente_r[1] != compte:
-                return _reponse_ha(d.flux, "D'accord, je ne redémarre rien.", {"role": "docker", "raison": "annulé"},
+                rien = {"redemarrer": "je ne redémarre rien", "demarrer": "je ne démarre rien",
+                        "arreter": "je n'arrête rien"}[action_c]
+                return _reponse_ha(d.flux, f"D'accord, {rien}.", {"role": "docker", "raison": "annulé"},
                                    "docker", "unraid", 0)
+            fait = {"redemarrer": ("redémarre", "Le redémarrage", "conteneur_redémarré"),
+                    "demarrer": ("démarre", "Le démarrage", "conteneur_démarré"),
+                    "arreter": ("s'arrête", "L'arrêt", "conteneur_arrêté")}[action_c]
             try:
-                res = await docker.redemarrer(attente_r[0], cfg.docker.cle_unraid_actions())
-                texte_r = f"C'est fait : {res['nom']} redémarre ({res['statut'] or res['etat']})."
-                auditer(requete, "conteneur_redémarré", nom=res["nom"])
+                res = await docker.agir(nom_c, action_c, cfg.docker.cle_unraid_actions())
+                texte_r = f"C'est fait : {res['nom']} {fait[0]} ({res['statut'] or res['etat']})."
+                auditer(requete, fait[2], nom=res["nom"])
             except Exception as e:  # noqa: BLE001
-                texte_r = f"Le redémarrage de {attente_r[0]} a échoué : {e}"
-                journal.info("redémarrage de %s impossible : %s", attente_r[0], e)
-            return _reponse_ha(d.flux, texte_r, {"role": "docker", "raison": "redémarrage confirmé"}, "docker", "unraid", 0)
+                texte_r = f"{fait[1]} de {nom_c} a échoué : {e}"
+                journal.info("%s de %s impossible : %s", action_c, nom_c, e)
+            return _reponse_ha(d.flux, texte_r, {"role": "docker", "raison": f"{action_c} confirmé"}, "docker", "unraid", 0)
 
         # --- mémoire : réponse à une proposition, « retiens que… », souvenirs utiles à la réponse ---------
         qui = ((voix_de[0] if route_locuteur else compte) or "")
@@ -2003,7 +2033,13 @@ def creer_app(config: Config | None = None, registre: Registre | None = None,
             pour_agenda = False
         if creer_routine:
             d = d.model_copy(update={"role": cfg.routeur.role_complexe})
-        if (d.role == ROLE_AUTO and ha.configure and not creer_routine and not pour_agenda
+        # serveur, conteneurs : avant la maison (sinon « allume le docker X » finit en « introuvable »)
+        pour_docker = bool(not creer_routine and not pour_agenda and docker.configure
+                           and securite.est_admin(compte) and await evoque_docker(d.message))
+        if pour_docker and d.role == ROLE_AUTO:
+            decision = Decision(COMPLEXE, cfg.routeur.role_complexe, "demande Docker", 0.0)
+            role = decision.role
+        elif (d.role == ROLE_AUTO and ha.configure and not creer_routine and not pour_agenda
                 and (maison.en_attente(d.conversation) or maison.reconnait(d.message, d.conversation))):
             # Commande de maison reconnue (ou réponse à « Lequel ? ») : inutile de consulter le routeur
             decision = Decision(SIMPLE, cfg.routeur.role_simple, "commande maison", 0.0)
@@ -2022,9 +2058,11 @@ def creer_app(config: Config | None = None, registre: Registre | None = None,
         # Maison : réponse à une question « lequel ? » en cours, ou demande simple
         echec_ha = ""
         simple = decision is not None and decision.categorie == SIMPLE
-        if decision is None and ha.configure and not creer_routine and not pour_agenda and maison.reconnait(d.message, d.conversation):
+        if (decision is None and ha.configure and not creer_routine and not pour_agenda and not pour_docker
+                and maison.reconnait(d.message, d.conversation)):
             simple = True    # rôle choisi à la main : une commande de maison reste une commande de maison
-        if ha.configure and cfg.home_assistant.pour_simples and (simple or maison.en_attente(d.conversation)):
+        if (ha.configure and cfg.home_assistant.pour_simples and not pour_docker
+                and (simple or maison.en_attente(d.conversation))):
             rm = await maison.traiter(d.message, d.conversation)
             route["maison"] = {"traite": rm.traite, **{k: v for k, v in rm.detail.items() if k != "commande"}}
             if rm.traite:
@@ -2089,7 +2127,7 @@ def creer_app(config: Config | None = None, registre: Registre | None = None,
             role = cfg.routeur.role_complexe
             route["outils"] = "Claude avec l'agenda"
             outils = outils_maison(d.conversation)
-        elif docker.configure and claude_outille and RE_DOCKER.search(d.message) and securite.est_admin(compte):
+        elif docker.configure and claude_outille and (pour_docker or RE_DOCKER.search(d.message)) and securite.est_admin(compte):
             # serveur, conteneurs : Claude avec les outils de diagnostic (administrateurs seulement)
             role = cfg.routeur.role_complexe
             route["outils"] = "Claude avec diagnostic Docker"

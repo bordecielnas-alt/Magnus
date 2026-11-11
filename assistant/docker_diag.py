@@ -11,8 +11,10 @@ Les correctifs sont proposés (par Claude), jamais appliqués.
 
 from __future__ import annotations
 
+import difflib
 import re
 import struct
+import unicodedata
 import httpx
 
 CHEMINS_AUTORISES = re.compile(r"/containers/json|/containers/[0-9a-f]{12,64}/(json|logs)")
@@ -94,6 +96,36 @@ def causes_probables(diag: dict) -> list[str]:
     return causes[:4]
 
 
+RE_PREFIXE_CONTENEUR = re.compile(r"^(?:(?:le|la|les|l'|du|des|de)\s*)?(?:dockers?|conteneurs?|containers?)\s*", re.I)
+
+
+def normaliser_nom(nom: str) -> str:
+    """« Le docker MiTube » -> « mitube » ; « Dockerplex » -> « plex » : minuscules, sans accents ni ponctuation."""
+    t = unicodedata.normalize("NFKD", nom.strip()).encode("ascii", "ignore").decode().lower()
+    t = RE_PREFIXE_CONTENEUR.sub("", t)
+    return re.sub(r"[^a-z0-9]", "", t)
+
+
+def choisir_conteneur(nom: str, liste: list[dict]) -> dict | None:
+    """Le conteneur désigné : nom exact, puis inclus, puis approchant (transcription vocale : MiTube -> MeTube).
+    None si rien ne correspond ou si plusieurs correspondent autant."""
+    cible = normaliser_nom(nom)
+    if not cible:
+        return None
+    noms = {c["nom"]: normaliser_nom(c["nom"]) for c in liste}
+    exact = [c for c in liste if noms[c["nom"]] == cible]
+    if exact:
+        return exact[0] if len(exact) == 1 else None
+    inclus = [c for c in liste if cible in noms[c["nom"]] or (len(noms[c["nom"]]) >= 4 and noms[c["nom"]] in cible)]
+    if inclus:
+        return inclus[0] if len(inclus) == 1 else None
+    scores = sorted(((difflib.SequenceMatcher(None, cible, noms[c["nom"]]).ratio(), c) for c in liste),
+                    key=lambda x: -x[0])
+    if scores and scores[0][0] >= 0.75 and (len(scores) == 1 or scores[1][0] < scores[0][0] - 0.05):
+        return scores[0][1]
+    return None
+
+
 class Docker:
     def __init__(self, url: str, timeout: float = 8, transport: httpx.AsyncBaseTransport | None = None) -> None:
         self.url = url.rstrip("/")
@@ -133,11 +165,7 @@ class Docker:
         return sorted(sortie, key=lambda c: c["nom"].lower())
 
     async def trouver(self, nom: str) -> dict | None:
-        cible = nom.strip().lower()
-        liste = await self.conteneurs()
-        exact = [c for c in liste if c["nom"].lower() == cible]
-        proches = exact or [c for c in liste if cible in c["nom"].lower()]
-        return proches[0] if len(proches) == 1 else None
+        return choisir_conteneur(nom, await self.conteneurs())
 
     async def diagnostic(self, nom: str, lignes: int = 120) -> dict:
         """État, santé, redémarrages, code de sortie et lignes d'erreur récentes d'un conteneur."""
@@ -330,14 +358,33 @@ class UnraidDocker(Docker):
                                                          "utilise": to(cap.get("used"))},
                 "parite": parite, "disques": disques, "alertes": alertes}
 
-    # --- redémarrer un conteneur (2e clé, droits Docker) --------------------------------------------------
-    async def redemarrer(self, nom: str, cle_actions: str) -> dict:
+    # --- démarrer, arrêter, redémarrer un conteneur (2e clé, droits Docker) -----------------------------
+    MUTATIONS = {"redemarrer": "restart", "demarrer": "start", "arreter": "stop"}
+
+    async def agir(self, nom: str, action: str, cle_actions: str) -> dict:
+        if action not in self.MUTATIONS:
+            raise ValueError(f"action inconnue : {action}")
         if not cle_actions:
             raise PermissionError("pas de clé Unraid pour les actions Docker (UNRAID_CLE_ACTIONS)")
         c = await self.trouver(nom)
         if not c:
             raise ValueError(f"conteneur « {nom} » introuvable ou ambigu")
-        data = await self._graphql("mutation($id: PrefixedID!) { docker { restart(id: $id) { id state status } } }",
-                                   {"id": c["id"]}, cle=cle_actions)
-        r = ((data.get("docker") or {}).get("restart")) or {}
+
+        async def muter(m: str) -> dict:
+            data = await self._graphql(f"mutation($id: PrefixedID!) {{ docker {{ {m}(id: $id) {{ id state status }} }} }}",
+                                       {"id": c["id"]}, cle=cle_actions)
+            return ((data.get("docker") or {}).get(m)) or {}
+
+        m = self.MUTATIONS[action]
+        try:
+            r = await muter(m)
+        except RuntimeError as e:
+            # certaines versions de l'API Unraid n'ont pas « restart » : arrêt puis démarrage
+            if m != "restart" or not re.search(r"cannot query field|unknown field|restart", str(e), re.I):
+                raise
+            await muter("stop")
+            r = await muter("start")
         return {"nom": c["nom"], "etat": (r.get("state") or "").lower(), "statut": r.get("status", "")}
+
+    async def redemarrer(self, nom: str, cle_actions: str) -> dict:
+        return await self.agir(nom, "redemarrer", cle_actions)
