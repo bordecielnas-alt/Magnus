@@ -144,7 +144,7 @@ class DockerConfig(BaseModel):
     """Diagnostic des conteneurs, en lecture seule, via un docker-socket-proxy (jamais le socket lui-même)."""
     url: str = ""                  # unix:///var/run/docker.sock (socket monté) ou http://proxy:2375 ; vide = désactivé
     # API officielle d'Unraid (7.2+) : adresse GraphQL ; la clé est le secret UNRAID_CLE (rôle lecture seule)
-    unraid_url: str = ""           # ex. http://192.168.1.2/graphql ; prioritaire sur « url »
+    unraid_url: str = ""           # ex. http://192.168.1.2/graphql ; prioritaire sur « url », qui sert alors aux journaux
 
     def cle_unraid(self) -> str:
         return os.environ.get("UNRAID_CLE", "")

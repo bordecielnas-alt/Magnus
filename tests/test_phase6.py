@@ -105,6 +105,9 @@ def test_redemarrage_confirme_dans_la_conversation(tmp_path, monkeypatch):
     c = TestClient(main.creer_app(cfg, r.registre, securite=Securite(SecuriteConfig(), tmp_path)), client=("127.0.0.1", 1))
     c.post("/api/chat", json={"message": "bonjour", "conversation": "d1"})          # la conversation a un compte
     h = {"X-Jeton-Interne": "j"}
+    diag = c.get("/interne/docker/diagnostic", params={"nom": "plex"}, headers=h).json()
+    assert diag["redemarrage_possible"] is True and diag["causes_probables"] == []
+    assert "pas de journaux" in diag["remarque"]
     assert c.post("/interne/docker/redemarrer", json={"nom": "plex", "conversation": "d1"}, headers=h).status_code == 200
     assert not any("restart" in str(v) for v in vus)                                  # rien avant le oui
     rep = c.post("/api/chat", json={"message": "oui", "conversation": "d1"}).json()
