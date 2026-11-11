@@ -97,4 +97,6 @@ class Routeur:
         if c:
             return Decision(c, self._role(c), "classeur", ms())
         d = self.cfg.defaut
-        return Decision(d, self._role(d), "défaut : classeur indisponible ou indécis", ms())
+        raison = ("défaut : classeur indisponible ou indécis" if self.cfg.classeur
+                  else "défaut : pas de classeur, tout ce que les règles ne trient pas va au rôle par défaut")
+        return Decision(d, self._role(d), raison, ms())

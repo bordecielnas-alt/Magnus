@@ -149,3 +149,14 @@ def test_theme_change_le_mot_de_reveil(monkeypatch):
     info = c.get("/api/info").json()
     assert info["wake_word"] == "akatosh" and info["nom"] == "Akatosh"
     assert c.post("/api/theme", json={"theme": "autre"}).status_code == 422
+
+
+def test_bruit_mal_transcrit_ignore():
+    from assistant.reveil import Reveil, semble_charabia
+    assert semble_charabia("Escortrack, SIL, SALVAF") and semble_charabia("Etant, L1, Binder")
+    for vrai in ("Oui", "état adminer", "allume le globe", "Démar Adminer", "combien de stockage", "Globe, lampe"):
+        assert not semble_charabia(vrai), vrai
+    r = Reveil(10)
+    assert r.analyser("Magnus, Escortrack, SIL, SALVAF", "Magnus", "c")["action"] == "reveil"   # on écoute la suite
+    assert r.analyser("Etant, L1, Binder", "Magnus", "c")["action"] == "ignorer"
+    assert r.analyser("état de Plex", "Magnus", "c")["action"] == "commande"
