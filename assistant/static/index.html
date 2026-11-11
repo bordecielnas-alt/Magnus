@@ -109,6 +109,12 @@
   .msg.annonce .corps { border-left:2px solid var(--muted); padding-left:10px; }
   .msg.annonce.important .corps, .msg.annonce.urgent .corps { border-left-color:#e8b04a; }
   .msg.annonce.urgent .corps { font-weight:600; }
+  .actions-annonce { display:flex; align-items:center; gap:8px; flex-wrap:wrap; margin-top:10px; font-weight:400; font-style:normal; }
+  .actions-annonce button { border:1px solid var(--bord); background:transparent; color:var(--fg); border-radius:999px; padding:6px 14px; font-size:.88rem; cursor:pointer; }
+  .actions-annonce button.principal { border-color:var(--accent); color:var(--accent); }
+  .actions-annonce button:disabled { opacity:.45; cursor:default; }
+  .actions-annonce .note { color:var(--muted); font-size:.82rem; }
+  .actions-annonce .note.ko { color:var(--rouge); }
   .pied { display:flex; align-items:center; gap:6px; flex-wrap:wrap; margin-top:8px; font-size:.78rem; color:var(--muted); }
   .puce { border:0; border-radius:999px; padding:2px 4px; background:transparent; color:var(--muted); cursor:pointer; font-size:.78rem; }
   .puce:hover { color:var(--fg); }
@@ -914,6 +920,7 @@ async function traiterAnnonces() {
       const h = a.heure ? new Date(a.heure) : new Date();
       pied.innerHTML = '<span></span>';
       pied.firstChild.textContent = (isNaN(h) ? '' : h.toLocaleTimeString('fr-FR', {hour: '2-digit', minute: '2-digit'}) + ' · ') + (a.source || 'annonce');
+      if (Array.isArray(a.actions) && a.actions.length && !a.decision && !a.resolue) corps.appendChild(boutonsAnnonce(a));
       corps.appendChild(pied);
       marquerDerniers(); defiler();
       orbe.impulsion(12);
@@ -924,6 +931,42 @@ async function traiterAnnonces() {
       estomper();
     }
   } finally { annoncesEnCours = false; }
+}
+// Boutons d'une annonce (ex. « Mettre à jour » / « Ignorer » une image Docker) → POST /api/annonces/<id>/action
+function boutonsAnnonce(a) {
+  const zone = document.createElement('div');
+  zone.className = 'actions-annonce';
+  const note = document.createElement('span');
+  note.className = 'note';
+  const boutons = a.actions.map((x, i) => {
+    const b = document.createElement('button');
+    b.type = 'button'; b.textContent = x.libelle || x.id;
+    if (i === 0) b.className = 'principal';
+    b.addEventListener('click', async () => {
+      boutons.forEach(y => y.disabled = true);
+      note.classList.remove('ko');
+      const nom = (a.cible && a.cible.conteneur) || '';
+      note.textContent = x.id === 'mettre_a_jour' ? `Mise à jour de ${nom} en cours, ça peut prendre quelques minutes…` : '';
+      try {
+        const r = await fetch('/api/annonces/' + encodeURIComponent(a.id) + '/action', {method: 'POST',
+          headers: {'Content-Type': 'application/json'}, body: JSON.stringify({action: x.id})});
+        const o = await r.json().catch(() => ({}));
+        if (r.status === 409 && !/clé/.test(o.detail || '')) { note.textContent = o.detail; boutons.forEach(y => y.remove()); return; }
+        if (!r.ok) throw new Error(o.detail || ('HTTP ' + r.status));
+        note.textContent = o.texte || 'C\'est fait.';
+        boutons.forEach(y => y.remove());
+        diag('annonce ' + a.id + ' : ' + x.id + ' → ' + note.textContent);
+      } catch (e) {
+        note.textContent = e.message; note.classList.add('ko');
+        boutons.forEach(y => y.disabled = false);
+        diag('annonce ' + a.id + ' : ' + x.id + ' en échec : ' + e.message);
+      }
+    });
+    zone.appendChild(b);
+    return b;
+  });
+  zone.appendChild(note);
+  return zone;
 }
 setTimeout(verifierAnnonces, 1500); setInterval(verifierAnnonces, 10000);
 document.addEventListener('visibilitychange', () => { if (!document.hidden) verifierAnnonces(); });

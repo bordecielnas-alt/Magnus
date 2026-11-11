@@ -6,8 +6,9 @@
   et sont seulement affichées.
 - Présence : si Home Assistant dit que personne n'est à la maison (entités person.*), rien n'est dit ;
   les annonces restent pour le retour (« en ton absence… »).
-- Sources : conteneurs Docker qui tombent, appareils restés dans un état trop longtemps (règles de
-  config), rappels de l'agenda, briefing du matin.
+- Sources : conteneurs Docker qui tombent, serveur Unraid (disques, espace, parité), mises à jour
+  d'images Docker (annonce avec boutons « Mettre à jour / Ignorer »), appareils restés dans un état
+  trop longtemps (règles de config), rappels de l'agenda, briefing du matin.
 """
 
 from __future__ import annotations
@@ -52,15 +53,21 @@ class Annonces:
         except OSError:
             pass
 
-    def ajouter(self, texte: str, priorite: str = "info", source: str = "", cle: str = "") -> dict | None:
-        """`cle` évite de répéter la même annonce (ex. « docker:radarr ») tant qu'elle n'est pas résolue."""
+    def ajouter(self, texte: str, priorite: str = "info", source: str = "", cle: str = "",
+                actions: list[dict] | None = None, cible: dict | None = None) -> dict | None:
+        """`cle` évite de répéter la même annonce (ex. « docker:radarr ») tant qu'elle n'est pas résolue.
+
+        `actions` : boutons proposés sous l'annonce ([{"id": "mettre_a_jour", "libelle": "Mettre à jour"}, …]) ;
+        `cible` : ce sur quoi ils portent (ex. {"type": "maj_docker", "conteneur": "plex"}). Le choix fait est
+        gardé dans « decision »."""
         with self._verrou:
             if cle and any(a.get("cle") == cle and not a.get("resolue") for a in self.liste[-100:]):
                 return None
             a = {"id": f"{int(time.time() * 1000):x}{secrets.token_hex(2)}",
                  "heure": datetime.now().astimezone().isoformat(timespec="seconds"),
                  "texte": texte, "priorite": priorite if priorite in PRIORITES else "info",
-                 "source": source, "cle": cle, "lue": False, "resolue": False}
+                 "source": source, "cle": cle, "lue": False, "resolue": False,
+                 **({"actions": actions, "cible": cible or {}, "decision": None} if actions else {})}
             self.liste.append(a)
             self.liste = self.liste[-100:]
             self._ecrire()
@@ -73,6 +80,28 @@ class Annonces:
                 if a.get("cle") == cle:
                     a["resolue"] = True
             self._ecrire()
+
+    def trouver(self, ident: str) -> dict | None:
+        return next((a for a in self.liste if a["id"] == ident), None)
+
+    def decider(self, ident: str, decision: str) -> dict | None:
+        """Note le bouton choisi ; None si l'annonce est inconnue ou déjà tranchée (autre appareil, double clic)."""
+        with self._verrou:
+            a = self.trouver(ident)
+            if not a or not a.get("actions") or a.get("decision"):
+                return None
+            a["decision"] = decision
+            a["lue"] = True
+            self._ecrire()
+            return a
+
+    def annuler_decision(self, ident: str) -> None:
+        """L'action a échoué : les boutons redeviennent utilisables."""
+        with self._verrou:
+            a = self.trouver(ident)
+            if a:
+                a["decision"] = None
+                self._ecrire()
 
     def marquer_lue(self, ident: str) -> bool:
         with self._verrou:
@@ -101,3 +130,40 @@ class Annonces:
         else:
             choix = self.liste[debut:]
         return [{**a, "parler": self.parler(a, maintenant)} for a in choix]
+
+
+class MisesAJourIgnorees:
+    """Conteneurs dont la mise à jour a été ignorée (bouton « Ignorer ») : <état>/maj_ignorees.json.
+
+    Unraid ne dit pas quelle version est proposée : l'oubli dure tant que le conteneur n'est pas à jour,
+    avec un rappel au bout de `jours` jours (la mise à jour attend peut-être depuis longtemps)."""
+
+    def __init__(self, dossier: Path, jours: float = 30) -> None:
+        self.fichier = dossier / "maj_ignorees.json"
+        self.jours = jours
+        try:
+            self.noms: dict[str, float] = dict(json.loads(self.fichier.read_text(encoding="utf-8")))
+        except (OSError, ValueError, TypeError):
+            self.noms = {}
+
+    def _ecrire(self) -> None:
+        try:
+            self.fichier.parent.mkdir(parents=True, exist_ok=True)
+            self.fichier.write_text(json.dumps(self.noms, ensure_ascii=False), encoding="utf-8")
+        except OSError:
+            pass
+
+    def ignorer(self, nom: str, maintenant: float | None = None) -> None:
+        self.noms[nom] = maintenant or time.time()
+        self._ecrire()
+
+    def est_ignoree(self, nom: str, maintenant: float | None = None) -> bool:
+        quand = self.noms.get(nom)
+        return quand is not None and (maintenant or time.time()) - quand < self.jours * 86400
+
+    def garder_seulement(self, en_attente: set[str]) -> None:
+        """Les conteneurs mis à jour entre-temps sont oubliés : leur prochaine mise à jour sera annoncée."""
+        avant = len(self.noms)
+        self.noms = {n: t for n, t in self.noms.items() if n in en_attente}
+        if len(self.noms) != avant:
+            self._ecrire()

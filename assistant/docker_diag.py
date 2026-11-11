@@ -6,7 +6,8 @@ Deux façons de joindre Docker :
 Dans les deux cas, ce module n'envoie que des GET sur trois chemins autorisés (liste, détail, journaux) :
 il ne peut rien démarrer, arrêter ni supprimer. Attention : avec le socket monté, cette limite est dans
 le code de l'assistant, pas dans Docker.
-Les correctifs sont proposés (par Claude), jamais appliqués.
+Les correctifs sont proposés (par Claude), jamais appliqués. Seule exception, avec l'API Unraid et une 2e clé
+(droits Docker) : redémarrer ou mettre à jour un conteneur, toujours après un oui ou un bouton de la personne.
 """
 
 from __future__ import annotations
@@ -15,6 +16,8 @@ import difflib
 import re
 import struct
 import unicodedata
+from datetime import datetime, timezone
+
 import httpx
 
 CHEMINS_AUTORISES = re.compile(r"/containers/json|/containers/[0-9a-f]{12,64}/(json|logs)")
@@ -32,6 +35,19 @@ def demultiplexer(brut: bytes) -> str:
         morceaux.append(brut[i + 8:i + 8 + taille])
         i += 8 + taille
     return b"".join(morceaux).decode("utf-8", "replace")
+
+
+def age_jours(date: str | None, maintenant: datetime | None = None) -> int | None:
+    """Jours écoulés depuis une date ISO (« 2026-11-01 » ou « 2026-11-01T03:00:00Z ») ; None si illisible."""
+    if not date:
+        return None
+    try:
+        d = datetime.fromisoformat(str(date).replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if d.tzinfo is None:
+        d = d.replace(tzinfo=timezone.utc)
+    return max(0, ((maintenant or datetime.now(timezone.utc)) - d).days)
 
 
 # Signatures connues dans les journaux : (motif, cause probable en une phrase). Ordre = priorité.
@@ -237,8 +253,9 @@ class UnraidDocker(Docker):
         except ValueError:
             return True
 
-    async def _graphql(self, requete: str, variables: dict | None = None, cle: str | None = None) -> dict:
-        async with httpx.AsyncClient(timeout=self.timeout, transport=self._transport,
+    async def _graphql(self, requete: str, variables: dict | None = None, cle: str | None = None,
+                       timeout: float | None = None) -> dict:
+        async with httpx.AsyncClient(timeout=timeout or self.timeout, transport=self._transport,
                                      verify=self._verifier_certificat()) as c:
             r = await c.post(self.url, json={"query": requete, **({"variables": variables} if variables else {})},
                              headers={"x-api-key": cle or self.cle, "Content-Type": "application/json"})
@@ -315,8 +332,12 @@ class UnraidDocker(Docker):
       disks { name device smartStatus temperature }
     }"""
 
-    async def serveur(self) -> dict:
-        """État de l'array : disques (état, température, erreurs, espace), SMART, parité, alertes."""
+    async def serveur(self, plein_pct: int = 95, libre_min_pct: int = 10, parite_max_jours: int = 45) -> dict:
+        """État de l'array : disques (état, température, erreurs, espace), SMART, parité, alertes.
+
+        `plein_pct` : un disque utilisé à ce pourcentage ou plus est signalé ; `libre_min_pct` : alerte si l'array
+        entier a moins de ce pourcentage libre ; `parite_max_jours` : alerte si le dernier contrôle de parité
+        est plus vieux (0 = jamais)."""
         data = await self._graphql(self.REQUETE_SERVEUR)
         a = data.get("array") or {}
         smart = {(d.get("device") or "").split("/")[-1]: d for d in data.get("disks") or []}
@@ -345,18 +366,65 @@ class UnraidDocker(Docker):
                     alertes.append(f"{nom} : {info['erreurs']} erreur(s) de lecture/écriture")
                 if info["smart"] and info["smart"] != "OK":
                     alertes.append(f"{nom} : SMART {info['smart']}")
-                if info["utilise_pct"] and info["utilise_pct"] >= 95:
+                if plein_pct and info["utilise_pct"] and info["utilise_pct"] >= plein_pct:
                     alertes.append(f"{nom} : plein à {info['utilise_pct']} %")
         parite = a.get("parityCheckStatus") or {}
         if parite.get("errors"):
             alertes.append(f"parité : {parite['errors']} erreur(s) au dernier contrôle")
+        age = age_jours(parite.get("date"))
+        parite["age_jours"] = age
+        if parite_max_jours and age is not None and age > parite_max_jours and not parite.get("running") \
+                and any(d["type"] == "parity" for d in disques):
+            alertes.append(f"parité : dernier contrôle il y a {age} jours")
         if a.get("state") and a["state"] != "STARTED":
             alertes.append(f"array : {a['state']}")
         cap = ((a.get("capacity") or {}).get("kilobytes") or {})
         to = lambda v: round(int(v) / 1024 / 1024 / 1024, 2) if v not in (None, "") else None  # noqa: E731
-        return {"array": a.get("state"), "capacite_to": {"total": to(cap.get("total")), "libre": to(cap.get("free")),
-                                                         "utilise": to(cap.get("used"))},
-                "parite": parite, "disques": disques, "alertes": alertes}
+        capacite = {"total": to(cap.get("total")), "libre": to(cap.get("free")), "utilise": to(cap.get("used"))}
+        if capacite["total"] and capacite["libre"] is not None:
+            capacite["libre_pct"] = round(100 * capacite["libre"] / capacite["total"])
+            if libre_min_pct and capacite["libre_pct"] < libre_min_pct:
+                alertes.append(f"array : plus que {capacite['libre_pct']} % d'espace libre ({capacite['libre']} To)")
+        return {"array": a.get("state"), "capacite_to": capacite, "parite": parite, "disques": disques, "alertes": alertes}
+
+    # --- mises à jour des images Docker -----------------------------------------------------------------
+    # Unraid garde l'état des mises à jour (le contrôle qu'il fait lui-même, page Docker) : on le lit seulement.
+    REQUETES_MAJ = [
+        ("statuts", "query { docker { containerUpdateStatuses { name updateStatus } } }"),
+        ("conteneurs", "query { docker { containers { names isUpdateAvailable } } }"),
+    ]
+
+    async def mises_a_jour(self) -> list[str]:
+        """Noms des conteneurs dont l'image a une mise à jour disponible (triés)."""
+        erreurs = []
+        for forme, requete in self.REQUETES_MAJ:
+            try:
+                docker = (await self._graphql(requete)).get("docker") or {}
+            except RuntimeError as e:
+                erreurs.append(str(e))
+                continue
+            if forme == "statuts" and docker.get("containerUpdateStatuses") is not None:
+                noms = [x.get("name") for x in docker["containerUpdateStatuses"]
+                        if (x.get("updateStatus") or "").upper() == "UPDATE_AVAILABLE"]
+            elif forme == "conteneurs" and docker.get("containers") is not None:
+                noms = [(x.get("names") or [""])[0] for x in docker["containers"] if x.get("isUpdateAvailable")]
+            else:
+                erreurs.append(f"pas de {forme} dans la réponse")
+                continue
+            return sorted({(n or "").lstrip("/") for n in noms if n}, key=str.lower)
+        raise RuntimeError("mises à jour Docker illisibles (Unraid 7.2+ requis) : " + " | ".join(erreurs[-2:]))
+
+    async def mettre_a_jour(self, nom: str, cle_actions: str, timeout: float = 900) -> dict:
+        """Télécharge la nouvelle image et recrée le conteneur (comme « update » dans Unraid). 2e clé, droits Docker."""
+        if not cle_actions:
+            raise PermissionError("pas de clé Unraid pour les actions Docker (UNRAID_CLE_ACTIONS)")
+        c = await self.trouver(nom)
+        if not c:
+            raise ValueError(f"conteneur « {nom} » introuvable ou ambigu")
+        data = await self._graphql("mutation($id: PrefixedID!) { docker { updateContainer(id: $id) { id state status } } }",
+                                   {"id": c["id"]}, cle=cle_actions, timeout=timeout)
+        r = ((data.get("docker") or {}).get("updateContainer")) or {}
+        return {"nom": c["nom"], "etat": (r.get("state") or "").lower(), "statut": r.get("status", "")}
 
     # --- démarrer, arrêter, redémarrer un conteneur (2e clé, droits Docker) -----------------------------
     MUTATIONS = {"redemarrer": "restart", "demarrer": "start", "arreter": "stop"}

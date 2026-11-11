@@ -38,7 +38,7 @@ from .telegram import Telegram
 from .habitudes import Routines, automatisation, detecter
 from .memoire import Memoire
 from .fil import Fil
-from .proactif import Annonces
+from .proactif import Annonces, MisesAJourIgnorees
 from .rapports import CONSIGNE_JSON, MODELES as MODELES_RAPPORT, Demande, RapportIndisponible, Rapports
 from .rapports import detecter as detecter_rapport
 from .docker_diag import Docker, UnraidDocker, causes_probables, normaliser_nom
@@ -265,6 +265,10 @@ class NouveauRappel(BaseModel):
     conversation: str = Field(default="", max_length=64)
 
 
+class ChoixAnnonce(BaseModel):
+    action: str = Field(min_length=1, max_length=40)
+
+
 class DemandeRedemarrage(BaseModel):
     nom: str = Field(min_length=1, max_length=100)
     action: Literal["redemarrer", "demarrer", "arreter"] = "redemarrer"
@@ -424,6 +428,7 @@ def creer_app(config: Config | None = None, registre: Registre | None = None,
     if isinstance(docker, UnraidDocker) and cfg.docker.url:
         docker.journaux = Docker(cfg.docker.url, cfg.docker.timeout)   # l'API Unraid ne donne pas les journaux
     annonces = Annonces(securite.fichier.parent, cfg.proactif.heures_calmes)
+    maj_ignorees = MisesAJourIgnorees(securite.fichier.parent)
     telegram = Telegram(cfg.telegram.jeton(), cfg.telegram.chat_id)
     rappels = Rappels(securite.fichier.parent)
 
@@ -457,9 +462,10 @@ def creer_app(config: Config | None = None, registre: Registre | None = None,
         mots = {normaliser_nom(m) for m in re.findall(r"[\w'-]+", message)}
         return any(n in mots for n in noms_conteneurs["noms"])
 
-    async def signaler(texte: str, priorite: str, source: str, cle: str, vers_telegram: bool = True) -> None:
+    async def signaler(texte: str, priorite: str, source: str, cle: str, vers_telegram: bool = True,
+                       actions: list[dict] | None = None, cible: dict | None = None) -> None:
         """Une alerte : gardée dans les annonces (sans doublon) et envoyée sur Telegram la première fois."""
-        a = annonces.ajouter(texte, priorite, source, cle)
+        a = annonces.ajouter(texte, priorite, source, cle, actions, cible)
         if a and vers_telegram and telegram.configure:
             try:
                 await telegram.envoyer(f"{cfg.identite.nom_effectif} : {texte}")
@@ -567,7 +573,7 @@ def creer_app(config: Config | None = None, registre: Registre | None = None,
                 await signaler(texte, regle.priorite, "surveillance", cle)
         if isinstance(docker, UnraidDocker) and docker.configure:
             try:
-                alertes = (await docker.serveur())["alertes"]
+                alertes = (await serveur_unraid())["alertes"]
             except Exception:  # noqa: BLE001
                 alertes = None
             if alertes is not None:
@@ -577,6 +583,9 @@ def creer_app(config: Config | None = None, registre: Registre | None = None,
                 for ancienne in etat_veille.get("disques", set()) - set(alertes):
                     annonces.resoudre(f"disque:{ancienne}")
                 etat_veille["disques"] = set(alertes)
+            if cfg.docker.mises_a_jour and time.monotonic() >= etat_veille.get("maj_prochaine", 0):
+                etat_veille["maj_prochaine"] = time.monotonic() + cfg.docker.mises_a_jour_intervalle_h * 3600
+                await surveiller_mises_a_jour()
         if agenda.configure and cfg.agenda.annonce_avant_min:
             from datetime import datetime as dt, timedelta
             maintenant = dt.now().astimezone()
@@ -600,6 +609,30 @@ def creer_app(config: Config | None = None, registre: Registre | None = None,
                 annonces.ajouter(await briefing(), "info", "briefing", f"briefing:{jour}")
             except Exception as e:  # noqa: BLE001
                 journal.info("briefing impossible : %s", e)
+
+    def serveur_unraid():
+        return docker.serveur(cfg.docker.plein_pct, cfg.docker.libre_min_pct, cfg.docker.parite_max_jours)
+
+    async def surveiller_mises_a_jour() -> None:
+        """Une annonce par conteneur dont l'image a une mise à jour, avec « Mettre à jour » et « Ignorer »."""
+        try:
+            en_attente = set(await docker.mises_a_jour())
+        except Exception as e:  # noqa: BLE001 - Unraid trop ancien ou injoignable : on réessaiera
+            journal.info("mises à jour Docker illisibles : %s", e)
+            return
+        maj_ignorees.garder_seulement(en_attente)
+        for nom in sorted(en_attente, key=str.lower):
+            if maj_ignorees.est_ignoree(nom):
+                continue
+            await signaler(f"Une mise à jour de l'image de {nom} est disponible.", "info", "mises à jour",
+                           f"maj:{nom}", cfg.telegram.mises_a_jour,
+                           actions=[{"id": "mettre_a_jour", "libelle": "Mettre à jour"},
+                                    {"id": "ignorer", "libelle": "Ignorer"}],
+                           cible={"type": "maj_docker", "conteneur": nom})
+        for a in annonces.liste:          # mis à jour ailleurs (page Docker d'Unraid) : l'annonce est close
+            nom = (a.get("cible") or {}).get("conteneur")
+            if a.get("cle", "").startswith("maj:") and not a.get("resolue") and nom not in en_attente:
+                annonces.resoudre(a["cle"])
 
     async def boucle_surveillance() -> None:
         import asyncio as aio
@@ -1246,7 +1279,7 @@ def creer_app(config: Config | None = None, registre: Registre | None = None,
         verifier_jeton(x_jeton_interne)
         if not isinstance(docker, UnraidDocker):
             raise HTTPException(503, "l'état du serveur demande l'API Unraid (docker.unraid_url)")
-        return await docker_ou_erreur(docker.serveur())
+        return {**(await docker_ou_erreur(serveur_unraid())), **(await mises_a_jour_sures())}
 
     @app.post("/interne/docker/redemarrer", include_in_schema=False)
     async def interne_redemarrer(r: DemandeRedemarrage, x_jeton_interne: str | None = Header(None)) -> dict:
@@ -1269,7 +1302,15 @@ def creer_app(config: Config | None = None, registre: Registre | None = None,
         exiger_admin(requete)
         if not isinstance(docker, UnraidDocker):
             return {"configure": False}
-        return {"configure": True, **(await docker_ou_erreur(docker.serveur()))}
+        return {"configure": True, **(await docker_ou_erreur(serveur_unraid())), **(await mises_a_jour_sures())}
+
+    async def mises_a_jour_sures() -> dict:
+        """Pour l'état du serveur : la liste des mises à jour est un bonus (absente sur un vieil Unraid)."""
+        try:
+            return {"mises_a_jour": await docker.mises_a_jour()}
+        except Exception as e:  # noqa: BLE001
+            journal.info("mises à jour Docker illisibles : %s", e)
+            return {}
 
     @app.post("/api/telegram/{action}")
     async def essai_telegram(action: Literal["test", "trouver"], requete: Request) -> dict:
@@ -1606,6 +1647,8 @@ def creer_app(config: Config | None = None, registre: Registre | None = None,
         liste = annonces.depuis(depuis)
         if "historique" in caches:         # appareil partagé / enfant : seulement les urgences
             liste = [a for a in liste if a["priorite"] == "urgent"]
+        if not securite.est_admin(compte_de(requete)):     # les boutons (mise à jour…) : administrateurs seulement
+            liste = [{k: v for k, v in a.items() if k not in ("actions", "cible")} for a in liste]
         return {"annonces": liste, "heures_calmes": cfg.proactif.heures_calmes, "presents": annonces.presents}
 
     @app.post("/api/annonces/{ident}/lue")
@@ -1613,6 +1656,42 @@ def creer_app(config: Config | None = None, registre: Registre | None = None,
         if not annonces.marquer_lue(ident):
             raise HTTPException(404, "annonce inconnue")
         return {"ok": True}
+
+    @app.post("/api/annonces/{ident}/action")
+    async def action_annonce(ident: str, c: ChoixAnnonce, requete: Request) -> dict:
+        """Bouton d'une annonce : « Mettre à jour » ou « Ignorer » une mise à jour d'image Docker."""
+        exiger_admin(requete)
+        a = annonces.trouver(ident)
+        if not a or not a.get("actions"):
+            raise HTTPException(404, "annonce inconnue ou sans action")
+        if c.action not in {x["id"] for x in a["actions"]}:
+            raise HTTPException(422, f"action inconnue : {c.action}")
+        cible = a.get("cible") or {}
+        nom = cible.get("conteneur", "")
+        if cible.get("type") != "maj_docker" or not nom:
+            raise HTTPException(422, "annonce sans cible connue")
+        if a.get("resolue") and not a.get("decision"):
+            raise HTTPException(409, f"{nom} : plus de mise à jour en attente (faite ailleurs ?)")
+        if c.action == "mettre_a_jour" and not (isinstance(docker, UnraidDocker) and cfg.docker.cle_unraid_actions()):
+            raise HTTPException(409, "mise à jour impossible : ajoute la clé Unraid « actions Docker » dans Réglages")
+        if not annonces.decider(ident, c.action):
+            deja = {"mettre_a_jour": "déjà mis à jour", "ignorer": "déjà ignoré"}.get(a.get("decision"), "déjà traité")
+            raise HTTPException(409, f"{nom} : {deja}")
+        if c.action == "ignorer":
+            maj_ignorees.ignorer(nom)
+            annonces.resoudre(a["cle"])
+            auditer(requete, "mise_a_jour_docker", conteneur=nom, decision="ignorée")
+            return {"ok": True, "texte": f"D'accord, j'ignore la mise à jour de {nom}."}
+        try:
+            r = await docker_ou_erreur(docker.mettre_a_jour(nom, cfg.docker.cle_unraid_actions()))
+        except HTTPException as e:
+            annonces.annuler_decision(ident)
+            auditer(requete, "mise_a_jour_docker", conteneur=nom, decision="échec", erreur=str(e.detail)[:200])
+            raise
+        annonces.resoudre(a["cle"])
+        auditer(requete, "mise_a_jour_docker", conteneur=nom, decision="mise à jour", etat=r["etat"])
+        etat = "et tourne" if r["etat"] == "running" else f"({r['statut'] or r['etat'] or 'état inconnu'})"
+        return {"ok": True, "texte": f"C'est fait : {r['nom']} est à jour {etat}.", "etat": r["etat"]}
 
     @app.post("/api/briefing")
     async def demander_briefing() -> dict:
