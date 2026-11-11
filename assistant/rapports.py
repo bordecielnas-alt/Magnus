@@ -28,6 +28,8 @@ from typing import Awaitable, Callable
 
 import httpx
 
+from .docker_diag import statut_lisible
+
 journal = logging.getLogger("assistant.rapports")
 
 MODELES = {
@@ -533,7 +535,7 @@ def carte_docker(liste: list[dict], problemes: set[str], serveur: dict | None) -
     if serveur and serveur.get("alertes"):
         resume += f" Serveur : {len(serveur['alertes'])} alerte(s)."
     conteneurs = [{"nom": c["nom"], "etat": "souci" if c["nom"] in problemes else "marche" if c.get("etat") == "running"
-                   else "arret", "statut": (c.get("statut") or c.get("etat") or "")[:60]}
+                   else "arret", "statut": statut_lisible(c.get("statut"), c.get("etat"))[:80]}
                   for c in souci + en_marche + arretes]
     carte = {"type": "rapport", "modele": "docker", "titre": "Docker · conteneurs",
              "sous_titre": f"{len(liste)} conteneurs", "resume": resume,

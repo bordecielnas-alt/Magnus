@@ -169,6 +169,8 @@ def test_carte_docker():
     assert [x["etat"] for x in c["docker"]["conteneurs"]] == ["souci", "marche", "arret"]
     assert "1 en souci : nginx" in c["resume"] and "1 alerte" in c["resume"]
     assert c["docker"]["serveur"]["total_to"] == 12
+    assert [x["statut"] for x in c["docker"]["conteneurs"]] == [
+        "arrêté après une erreur (code 1)", "en marche depuis 3 jours", "arrêté normalement"]
 
 
 # --- dans le chat et par l'API ---------------------------------------------------------------------------

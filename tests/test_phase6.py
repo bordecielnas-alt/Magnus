@@ -111,10 +111,12 @@ def test_redemarrage_confirme_dans_la_conversation(tmp_path, monkeypatch):
     diag = c.get("/interne/docker/diagnostic", params={"nom": "plex"}, headers=h).json()
     assert diag["redemarrage_possible"] is True and diag["causes_probables"] == []
     assert "pas de journaux" in diag["remarque"]
+    assert diag["etat"] == "en marche" and diag["statut"] == "en marche"          # jamais « running » / « Up » au modèle
+    assert c.get("/interne/docker/conteneurs", headers=h).json()[0]["statut"] == "en marche"
     assert c.post("/interne/docker/redemarrer", json={"nom": "plex", "conversation": "d1"}, headers=h).status_code == 200
     assert not any("restart" in str(v) for v in vus)                                  # rien avant le oui
     rep = c.post("/api/chat", json={"message": "oui", "conversation": "d1"}).json()
-    assert rep["reponse"].startswith("C'est fait : plex redémarre")
+    assert rep["reponse"].startswith("C'est fait, plex a redémarré.") and "Up" not in rep["reponse"]
     assert c.post("/interne/docker/redemarrer", json={"nom": "plex", "conversation": "d1"}, headers=h).status_code == 200
     assert c.post("/api/chat", json={"message": "non", "conversation": "d1"}).json()["reponse"] == "D'accord, je ne redémarre rien."
     assert c.get("/api/unraid").json()["array"] == "STARTED"
@@ -192,13 +194,13 @@ def test_allumer_un_conteneur_passe_par_docker(tmp_path, monkeypatch):
     en_attente = c.post("/interne/docker/redemarrer", json={"nom": "plex", "action": "demarrer", "conversation": "d2"},
                         headers=h).json()["en_attente"]
     assert "Je démarre plex ?" in en_attente and not any("start" in str(v) for v in vus)
-    assert c.post("/api/chat", json={"message": "oui", "conversation": "d2"}).json()["reponse"].startswith("C'est fait : plex démarre")
+    assert c.post("/api/chat", json={"message": "oui", "conversation": "d2"}).json()["reponse"].startswith("C'est fait, plex est démarré.")
     c.post("/interne/docker/redemarrer", json={"nom": "plex", "action": "arreter", "conversation": "d2"}, headers=h)
     assert c.post("/api/chat", json={"message": "non", "conversation": "d2"}).json()["reponse"] == "D'accord, je n'arrête rien."
     # « oui » dans une phrase (« Magnus, oui, je veux que tu l'arrêtes ») vaut confirmation
     c.post("/interne/docker/redemarrer", json={"nom": "plex", "action": "arreter", "conversation": "d2"}, headers=h)
     rep = c.post("/api/chat", json={"message": "oui, je veux que tu éteignes plex", "conversation": "d2"}).json()
-    assert rep["reponse"].startswith("C'est fait : plex s'arrête")
+    assert rep["reponse"].startswith("C'est fait, plex est arrêté.")
     # fenêtre d'écoute relancée après la réponse
     assert c.post("/api/voix/prolonger", json={"conversation": "d2"}).json()["fenetre_s"] > 0
     # Telegram : outil réservé aux administrateurs, pas configuré ici
