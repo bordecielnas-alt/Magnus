@@ -36,6 +36,9 @@ def faux_unraid(vus):
             if req.headers.get("x-api-key") != "cle-actions":
                 return httpx.Response(200, json={"errors": [{"message": "Forbidden resource"}]})
             return httpx.Response(200, json={"data": {"docker": {"restart": {"id": "x:1", "state": "RUNNING", "status": "Up 1 second"}}}})
+        for m in ("start", "stop"):
+            if f"{m}(" in q:
+                return httpx.Response(200, json={"data": {"docker": {m: {"id": "x:1", "state": "RUNNING" if m == "start" else "EXITED", "status": "Up"}}}})
         return httpx.Response(200, json={"data": {"docker": {"containers": [
             {"id": "x:1", "names": ["/plex"], "state": "RUNNING", "status": "Up", "autoStart": True, "image": "plex"}]}}})
     return httpx.MockTransport(repondre)
@@ -115,3 +118,80 @@ def test_redemarrage_confirme_dans_la_conversation(tmp_path, monkeypatch):
     assert c.post("/interne/docker/redemarrer", json={"nom": "plex", "conversation": "d1"}, headers=h).status_code == 200
     assert c.post("/api/chat", json={"message": "non", "conversation": "d1"}).json()["reponse"] == "D'accord, je ne redémarre rien."
     assert c.get("/api/unraid").json()["array"] == "STARTED"
+
+
+def test_choisir_conteneur_approximatif():
+    from assistant.docker_diag import choisir_conteneur, normaliser_nom
+    liste = [{"nom": n} for n in ("adminer", "MeTube", "plex", "Plex-Meta-Manager", "binhex-radarr", "sonarr")]
+    assert normaliser_nom("le docker MiTube") == "mitube" and normaliser_nom("Dockerplex") == "plex"
+    assert choisir_conteneur("MiTube", liste)["nom"] == "MeTube"              # transcription vocale
+    assert choisir_conteneur("le conteneur Adminer", liste)["nom"] == "adminer"
+    assert choisir_conteneur("Dockerplex", liste)["nom"] == "plex"            # exact avant « inclus »
+    assert choisir_conteneur("radarr", liste)["nom"] == "binhex-radarr"
+    assert choisir_conteneur("arr", liste) is None                            # ambigu : radarr ou sonarr
+    assert choisir_conteneur("Omar", liste) is None                           # rien d'approchant
+
+
+def test_demarrer_arreter_et_redemarrer_sans_restart():
+    vus = []
+    d = UnraidDocker("https://192.168.1.50:4436/graphql", "cle-lecture", transport=faux_unraid(vus))
+    assert asyncio.run(d.agir("plex", "demarrer", "cle-actions"))["etat"] == "running"
+    assert asyncio.run(d.agir("plex", "arreter", "cle-actions"))["etat"] == "exited"
+    assert vus[-1][0] == "cle-actions"
+    with pytest.raises(ValueError):
+        asyncio.run(d.agir("plex", "supprimer", "cle-actions"))
+
+    # API Unraid sans « restart » : arrêt puis démarrage
+    requetes = []
+
+    def repondre(req):
+        q = json.loads(req.content)["query"]
+        requetes.append(q)
+        if "restart" in q:
+            return httpx.Response(400, json={"errors": [{"message": 'Cannot query field "restart" on type "DockerMutations".'}]})
+        if "start" in q or "stop" in q:
+            m = "start" if "start(" in q else "stop"
+            return httpx.Response(200, json={"data": {"docker": {m: {"id": "x:1", "state": "RUNNING", "status": "Up"}}}})
+        return httpx.Response(200, json={"data": {"docker": {"containers": [
+            {"id": "x:1", "names": ["/plex"], "state": "RUNNING", "status": "Up", "image": "plex"}]}}})
+    d2 = UnraidDocker("https://192.168.1.50:4436/graphql", "k", transport=httpx.MockTransport(repondre))
+    r = asyncio.run(d2.redemarrer("plex", "cle-actions"))
+    assert r["etat"] == "running"
+    assert ["stop(" in q for q in requetes if "mutation" in q] == [False, True, False]
+
+
+def test_allumer_un_conteneur_passe_par_docker(tmp_path, monkeypatch):
+    from pathlib import Path
+
+    from fastapi.testclient import TestClient
+
+    import assistant.main as main
+    from assistant.config import SecuriteConfig, charger
+    from assistant.securite import Securite
+    from tests.test_routeur import routeur
+    monkeypatch.setattr(main.secrets, "token_urlsafe", lambda n: "j")
+    monkeypatch.setenv("UNRAID_CLE", "cle-lecture")
+    monkeypatch.setenv("UNRAID_CLE_ACTIONS", "cle-actions")
+    vus = []
+
+    class Faux(UnraidDocker):
+        def __init__(self, url, cle, timeout=8):
+            super().__init__(url, cle, timeout, faux_unraid(vus))
+    monkeypatch.setattr(main, "UnraidDocker", Faux)
+    r, _ = routeur()
+    cfg = charger(env={}, fichier=Path("inexistant.yaml"))
+    cfg.docker.unraid_url = "https://192.168.1.50:4436/graphql"
+    c = TestClient(main.creer_app(cfg, r.registre, securite=Securite(SecuriteConfig(), tmp_path)), client=("127.0.0.1", 1))
+    for phrase in ("allume le docker MiTube", "quel est l'état des dockers ?", "Magnus, quel est l'état de Plex ?",
+                   "éteins le conteneur Adminer"):
+        rep = c.post("/api/chat", json={"message": phrase, "conversation": "d2"}).json()
+        assert rep["route"]["raison"] == "demande Docker", phrase
+    assert c.post("/api/chat", json={"message": "allume le salon", "conversation": "d2"}).json()["route"]["raison"] != "demande Docker"
+    # démarrer après le oui seulement
+    h = {"X-Jeton-Interne": "j"}
+    en_attente = c.post("/interne/docker/redemarrer", json={"nom": "plex", "action": "demarrer", "conversation": "d2"},
+                        headers=h).json()["en_attente"]
+    assert "Je démarre plex ?" in en_attente and not any("start" in str(v) for v in vus)
+    assert c.post("/api/chat", json={"message": "oui", "conversation": "d2"}).json()["reponse"].startswith("C'est fait : plex démarre")
+    c.post("/interne/docker/redemarrer", json={"nom": "plex", "action": "arreter", "conversation": "d2"}, headers=h)
+    assert c.post("/api/chat", json={"message": "non", "conversation": "d2"}).json()["reponse"] == "D'accord, je n'arrête rien."

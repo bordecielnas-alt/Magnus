@@ -139,9 +139,14 @@ OUTILS_DOCKER += [
     },
     {
         "name": "demander_redemarrage",
-        "description": "Prépare le redémarrage d'un conteneur. Rien n'est fait tout de suite : termine ta réponse par "
-                       "« Je redémarre <nom> ? » ; le redémarrage a lieu seulement si la personne répond oui.",
-        "inputSchema": {"type": "object", "properties": {"nom": {"type": "string"}}, "required": ["nom"]},
+        "description": "Prépare le redémarrage, le démarrage (« allume ») ou l'arrêt (« éteins ») d'un conteneur. "
+                       "Rien n'est fait tout de suite : termine ta réponse par « Je redémarre <nom> ? », « Je démarre "
+                       "<nom> ? » ou « J'arrête <nom> ? » ; l'action a lieu seulement si la personne répond oui. "
+                       "Le nom peut être approximatif (transcription vocale) : utilise le nom renvoyé.",
+        "inputSchema": {"type": "object", "properties": {
+            "nom": {"type": "string"},
+            "action": {"type": "string", "enum": ["redemarrer", "demarrer", "arreter"], "default": "redemarrer"}},
+            "required": ["nom"]},
     },
 ]
 
@@ -215,7 +220,8 @@ def appeler(nom: str, args: dict) -> str:
         elif nom == "etat_serveur":
             r = c.get("/interne/unraid")
         elif nom == "demander_redemarrage":
-            r = c.post("/interne/docker/redemarrer", json={"nom": args["nom"], "conversation": conv})
+            r = c.post("/interne/docker/redemarrer", json={"nom": args["nom"], "action": args.get("action", "redemarrer"),
+                                                           "conversation": conv})
         elif nom == "lister_conteneurs":
             r = c.get("/interne/docker/conteneurs")
         elif nom == "diagnostiquer_conteneur":
