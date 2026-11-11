@@ -1,11 +1,13 @@
 // Cartes du chat : l'état réel d'un appareil, sous la réponse, avec ses réglages.
 // Le serveur construit les cartes (ligne {"cartes": [...]} du flux /api/chat) ; un geste appelle
 // POST /api/maison/carte, sans passer par un modèle, et la carte est redessinée avec l'état renvoyé.
-// Les cartes arrivent repliées (un toucher sur l'en-tête les déplie). Sur écran tactile, les réglages
+// Les cartes arrivent repliées (un toucher sur l'en-tête les déplie) ; elles disparaissent d'elles-mêmes
+// (voir « Vie d'une carte » plus bas). Sur écran tactile, les réglages
 // sont verrouillés pour ne pas gêner le défilement : un appui long sur la carte les active, et ils se
 // verrouillent d'eux-mêmes après DUREE_ACTIF ms sans toucher la carte.
 (() => {
   const css = `
+  .cartes > .disparue, .rapports > .disparue, .cartes[hidden], .rapports[hidden] { display:none !important; }
   .cartes { display:grid; gap:10px; margin-top:.7em; font-size:.95rem; text-shadow:none; }
   .carte { background:var(--surface); border:1px solid var(--bord); border-radius:16px; padding:12px 14px; display:grid; gap:10px; max-width:380px; }
   .carte.occupee { opacity:.75; }
@@ -478,9 +480,76 @@
 
   const tactile = () => matchMedia('(pointer: coarse)').matches;
 
+  // Vie d'une carte (appareils et rapports) : toujours repliable ; dépliée, elle se replie après
+  // UNE_MINUTE sans qu'on y touche ; repliée, elle disparaît UNE_MINUTE plus tard. Un nouveau message
+  // replie tout de suite les cartes déjà là (elles disparaissent une minute après). Toucher, survoler à
+  // la souris ou régler une carte relance sa minute. L'échéance vit dans data-echeance, sur la carte :
+  // une carte redessinée après un réglage (nouvel élément) repart pour une minute.
+  const UNE_MINUTE = 60000, SELECTEUR = '.cartes > .carte, .rapports > .rapport';
+  const ouverte = el => !el.classList.contains('repliee');
+  function plier(el) {
+    if (!ouverte(el)) return;
+    el.classList.add('repliee');
+    el.querySelector(':scope > .carte-tete, :scope > .r-tete')?.setAttribute('aria-expanded', 'false');
+    el.closest('.cartes')?.dispatchEvent(new Event('carte-basculee'));
+  }
+  function retirer(el) {
+    el.classList.add('disparue');
+    const zone = el.parentElement;
+    if (zone && !zone.querySelector(':scope > :is(.carte, .rapport):not(.disparue)')) zone.hidden = true;
+    // la bulle ne montrait que la carte : la phrase (déjà dite) redevient visible
+    const corps = el.closest('.corps');
+    if (corps && !corps.querySelector(':is(.carte, .rapport):not(.disparue)')) corps.classList.remove('carte-seule');
+  }
+  // ne : moment où la carte est apparue (heure du tour pour une conversation relue au chargement)
+  function demarrer(el, ne = Date.now()) {
+    const age = Date.now() - ne;
+    if (age >= 2 * UNE_MINUTE) { plier(el); retirer(el); return; }
+    if (age >= UNE_MINUTE) plier(el);
+    // une carte repliée dès l'arrivée garde ses deux minutes
+    el.dataset.echeance = ne + (age >= UNE_MINUTE || !ouverte(el) ? 2 : 1) * UNE_MINUTE;
+  }
+  function relancer(e) {
+    const el = e.target.closest?.(SELECTEUR);
+    if (el && !el.classList.contains('disparue')) el.dataset.echeance = Date.now() + UNE_MINUTE;
+  }
+  // après le clic qui déplie ou replie (phase de bouillonnement, une fois le basculement fait)
+  for (const t of ['pointerdown', 'click', 'keydown', 'input', 'change', 'wheel', 'focusin'])
+    document.addEventListener(t, relancer, {passive: true});
+  function enUsage(el) {
+    return (el.matches(':hover') && !tactile()) || !!el.closest('.cartes.active');   // réglages actifs (appui long) sur téléphone
+  }
+  setInterval(() => {
+    const t = Date.now();
+    for (const el of document.querySelectorAll(SELECTEUR)) {
+      if (el.classList.contains('disparue')) continue;
+      if (!el.dataset.echeance) { demarrer(el); continue; }
+      if (enUsage(el)) { el.dataset.echeance = t + UNE_MINUTE; continue; }
+      if (t < +el.dataset.echeance) continue;
+      if (ouverte(el)) { plier(el); el.dataset.echeance = t + UNE_MINUTE; } else retirer(el);
+    }
+  }, 2000);
+  window.cartesCycle = {
+    demarrer,
+    // la conversation continue : les cartes encore dépliées se replient, et toutes disparaissent d'ici une minute
+    replierTout() {
+      const limite = Date.now() + UNE_MINUTE;
+      for (const el of document.querySelectorAll(SELECTEUR)) {
+        if (el.classList.contains('disparue')) continue;
+        if (ouverte(el)) { plier(el); el.dataset.echeance = limite; }
+        else el.dataset.echeance = Math.min(+el.dataset.echeance || limite, limite);
+      }
+    },
+  };
+
   window.cartesChat = {
-    afficher(corps, cartes, conversation) {
+    afficher(corps, cartes, conversation, ne) {
       if (!Array.isArray(cartes) || !cartes.length) return;
+      const avant = new Set(corps.querySelectorAll(SELECTEUR));
+      this._afficher(corps, cartes, conversation);
+      for (const el of corps.querySelectorAll(SELECTEUR)) if (!avant.has(el)) demarrer(el, ne);
+    },
+    _afficher(corps, cartes, conversation) {
       // cartes de rapport (météo, bourse…) : dessinées par rapports.js, dépliées, sans réglages à verrouiller
       const rapports = cartes.filter(c => c.type === 'rapport');
       if (rapports.length && window.rapportsChat) rapportsChat.afficher(corps, rapports, conversation);

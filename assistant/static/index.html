@@ -765,9 +765,11 @@ function ecrireTexte(corps, texte) {
   z.innerHTML = miseEnForme(texte);
 }
 // Cartes d'une réponse ; masquer : la bulle ne montre que la carte (la phrase reste lue à voix haute).
-function montrerCartes(corps, cartes, masquer) {
+// ne : heure d'arrivée de la carte (celle du tour quand la conversation est relue) ; voir « Vie d'une carte »
+// dans cartes.js : repliée après une minute, disparue une minute plus tard.
+function montrerCartes(corps, cartes, masquer, ne) {
   corps.querySelector(':scope > .reflechit')?.remove();
-  if (window.cartesChat) cartesChat.afficher(corps, cartes, conversation);
+  if (window.cartesChat) cartesChat.afficher(corps, cartes, conversation, ne);
   if (masquer) corps.classList.add('carte-seule');
 }
 function duree(ms) { return ms >= 1000 ? (ms / 1000).toFixed(1).replace('.', ',') + ' s' : Math.round(ms) + ' ms'; }
@@ -814,6 +816,7 @@ function commandeVoix(message) {
 
 function demander(message, vocal) {
   if (commandeVoix(message)) return null;
+  window.cartesCycle?.replierTout();   // la conversation continue : les cartes précédentes se replient
   const r = role;
   if (r !== 'auto') choisirRole('auto');
   if (occupe || file.length) {
@@ -1008,6 +1011,7 @@ function afficherTour(t, ancien) {
       el.appendChild(s);
     }
     if (!ancien) {
+      window.cartesCycle?.replierTout();   // question posée depuis un autre appareil : même chose
       const corps = bulleReponse();
       corps.innerHTML = '<span class="reflechit">' + echapper(nom) + ' réfléchit…</span>';
       enCoursAilleurs.set(t.id, {corps, texte: ''});
@@ -1024,7 +1028,10 @@ function afficherTour(t, ancien) {
     } else {
       corps.innerHTML = '';
       ecrireTexte(corps, t.texte);
-      if (t.extra && t.extra.cartes) montrerCartes(corps, t.extra.cartes, t.extra.masquer_texte);
+      if (t.extra && t.extra.cartes) {
+        const ne = ancien ? Date.parse(t.quand) : Date.now();   // en direct : l'horloge de cet appareil
+        montrerCartes(corps, t.extra.cartes, t.extra.masquer_texte, isNaN(ne) ? undefined : ne);
+      }
       const pied = document.createElement('div'); pied.className = 'pied';
       pied.innerHTML = '<span></span>'; pied.firstChild.textContent = heureDe(t.quand);
       corps.appendChild(pied);
