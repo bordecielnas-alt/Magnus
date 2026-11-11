@@ -1890,6 +1890,19 @@ function ouvrirFenetre(s) {
   majVeille();
   if (s > 0) minuteurFenetre = setInterval(() => { majVeille(); if (Date.now() >= continu.fin) { clearInterval(minuteurFenetre); if (!occupe && !lecture) orbe.etat('repos'); } }, 500);
 }
+// Quand l'assistant a fini de parler après une commande vocale, la fenêtre d'écoute repart de zéro :
+// sinon elle se ferme pendant sa réponse et le « oui » qui suit est ignoré.
+let parlaitAvant = false;
+setInterval(() => {
+  const parle = voixActive || occupe;
+  if (parlaitAvant && !parle && continu.actif && !continu.toujours && Date.now() - (continu.derniereCommande || 0) < 180000) {
+    fetch('/api/voix/prolonger', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({conversation})})
+      .then(r => r.ok ? r.json() : null)
+      .then(o => { if (o && typeof o.fenetre_s === 'number') { ouvrirFenetre(o.fenetre_s); diag('écoute continue : fenêtre relancée après la réponse (' + o.fenetre_s + ' s)'); } })
+      .catch(() => {});
+  }
+  parlaitAvant = parle;
+}, 300);
 $('btnEndormir').onclick = () => {
   fetch('/api/voix/endormir', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({conversation})}).catch(() => {});
   ouvrirFenetre(0);
@@ -1910,6 +1923,8 @@ function bip() {
 
 async function basculerContinu(on) {
   if (on === continu.actif) return;
+  // un seul démarrage à la fois : deux appels rapprochés ouvraient deux micros (chaque morceau envoyé en double)
+  if (on && continu.demarrage) return;
   if (!on) {
     continu.actif = false;
     if (continu.rec && continu.rec.state === 'recording') continu.rec.stop();
@@ -1919,12 +1934,15 @@ async function basculerContinu(on) {
     continu.flux = continu.ctx = null;
     ouvrirFenetre(0);
   } else {
+    continu.demarrage = true;
     try {
       lacherMicroChaud();   // un seul micro ouvert à la fois (Android)
       continu.flux = await ouvrirMicro('écoute continue');
     } catch (e) {
       erreurMicro(e);
       on = false;
+    } finally {
+      continu.demarrage = false;
     }
     if (on) { continu.actif = true; analyserContinu(); }
   }
@@ -2111,6 +2129,7 @@ function envoyerMorceau(rec) {
         bip();
         if (!occupe) orbe.etat('ecoute');
       } else if (o.action === 'commande' && o.commande) {
+        continu.derniereCommande = Date.now();
         if (phraseInachevee(o.commande)) {
           // pas de ponctuation finale, ou « ... » : on attend un peu une éventuelle suite
           continu.suspens = {texte: o.commande, o, depuis: performance.now()};
