@@ -4,8 +4,9 @@
   dans <état>/voix_comptes.json (jamais l'audio).
 - À chaque phrase dite, l'empreinte est comparée (cosinus) ; au-dessus du seuil et assez nettement
   devant le deuxième, la phrase est attribuée à ce compte.
-- Sert seulement à appliquer le bon profil (ton, pièce, préférences). Jamais à donner des droits :
-  ceux-ci restent ceux de la session connectée.
+- Sert à appliquer le bon profil (ton, pièce, préférences, rappels) et les limites de la personne
+  (ex. un enfant reconnu sur la tablette d'un parent ne touche pas au chauffage). Jamais à donner des
+  droits : une voix ne peut que retirer des droits à la session connectée, pas en ajouter.
 Caractéristiques : fbank 80 bandes façon Kaldi (25 ms / 10 ms, Hamming, pré-accentuation 0,97), moyenne
 retirée, comme à l'entraînement du modèle.
 """

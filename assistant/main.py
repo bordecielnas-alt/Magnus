@@ -22,7 +22,7 @@ from . import __version__
 from .config import Config, charger, charger_secrets, chemin_alias, dossier_etat, enregistrer_reglages
 from .fournisseurs import FournisseurIndisponible, Message, Registre, Reponse
 from .home_assistant import HomeAssistant
-from .maison import Maison, masques, piece_preferee
+from .maison import CATEGORIES_DROITS, Maison, domaines_interdits, interdits, masques, piece_preferee
 from .maison.cartes import cartes_pour, regler as regler_carte
 from .maison.historique import Historique
 from .maison.historique import demande as demande_en_cours
@@ -257,6 +257,13 @@ class Profil(BaseModel):
     consigne: str | None = Field(default=None, max_length=500)
     piece: str | None = Field(default=None, max_length=40)
     type: Literal["adulte", "enfant"] | None = None       # modifiable par un administrateur seulement
+    # droits : catégories d'appareils que la personne ne pilote pas (administrateur seulement)
+    interdits: list[Literal["lumieres", "prises", "volets", "chauffage", "medias", "ventilateurs"]] | None = None
+
+
+CHAMPS_ADMIN = {"type", "interdits"}
+NOMS_DROITS = {"lumieres": "les lumières", "prises": "les prises", "volets": "les volets", "chauffage": "le chauffage",
+               "medias": "la télé et la musique", "ventilateurs": "les ventilateurs"}
 
 
 TONS = {"concis": "Réponds de la façon la plus brève possible, sans formule de politesse.",
@@ -276,6 +283,10 @@ def note_profil(nom: str, p: dict) -> str:
         morceaux.append(f"Sa pièce habituelle : {p['piece']} (pièce par défaut quand il n'en précise pas).")
     if p.get("consigne"):
         morceaux.append(f"Ses préférences : {p['consigne']}")
+    if p.get("interdits"):
+        noms = ", ".join(NOMS_DROITS.get(c, c) for c in p["interdits"])
+        morceaux.append(f"Elle n'a pas le droit de piloter : {noms}. Si elle le demande, dis-lui simplement "
+                        "que ce n'est pas permis pour elle, sans le faire.")
     return " ".join(morceaux)
 
 
@@ -393,7 +404,10 @@ def creer_app(config: Config | None = None, registre: Registre | None = None,
         while True:
             try:
                 for r in rappels.echus():
-                    await signaler(f"Rappel : {r['texte']}", "urgent", "rappel", f"rappel:{r['id']}", cfg.telegram.agenda)
+                    pour = (securite.comptes.get(r.get("compte") or "", {}).get("nom", "")
+                            if len(securite.comptes) > 1 else "")
+                    await signaler(f"Rappel{' pour ' + pour if pour else ''} : {r['texte']}", "urgent", "rappel",
+                                   f"rappel:{r['id']}", cfg.telegram.agenda)
             except Exception:  # noqa: BLE001
                 journal.exception("rappels : erreur")
             await aio.sleep(5)
@@ -625,6 +639,15 @@ def creer_app(config: Config | None = None, registre: Registre | None = None,
     cartes_conversation: dict[str, list[str]] = {}           # conversation -> appareils lus ou touchés par Claude
     agenda_recent: dict[str, float] = {}                     # conversation -> dernier échange sur l'agenda
     masques_conversation: dict[str, frozenset] = {}          # conversation -> ce qu'on ne révèle pas (outils de Claude)
+    interdits_conversation: dict[str, frozenset] = {}        # conversation -> domaines que la personne ne pilote pas
+    personne_conversation: dict[str, str] = {}               # conversation -> qui parle (compte, ou voix reconnue)
+
+    def interdits_de(compte: str | None, conversation: str = "") -> frozenset:
+        """Droits effectifs : ceux du compte connecté, réduits par ceux de la voix reconnue dans la
+        conversation. La voix ne peut que retirer des droits, jamais en donner."""
+        propres = (domaines_interdits(securite.profil(compte)["interdits"])
+                   if compte and compte != COMPTE_MACHINE else frozenset())
+        return propres | interdits_conversation.get(conversation, frozenset())
 
     def contexte_de(requete: Request) -> dict:
         """D'où vient la demande : à distance ? appareil partagé ? compte enfant ? Et donc ce qu'on masque."""
@@ -988,8 +1011,8 @@ def creer_app(config: Config | None = None, registre: Registre | None = None,
         if not compte or compte == COMPTE_MACHINE:
             raise HTTPException(409, "pas de profil pour la machine elle-même")
         maj = p.model_dump(exclude_none=True)
-        if "type" in maj and not securite.est_admin(compte):
-            raise HTTPException(403, "seul un administrateur change le type d'un compte")
+        if CHAMPS_ADMIN & set(maj) and not securite.est_admin(compte):
+            raise HTTPException(403, "seul un administrateur change le type ou les droits d'un compte")
         auditer(requete, "profil_modifié", champs=sorted(maj))
         return {"profil": securite.definir_profil(compte, maj)}
 
@@ -1058,6 +1081,7 @@ def creer_app(config: Config | None = None, registre: Registre | None = None,
         if not ha.configure:
             raise HTTPException(503, "Home Assistant n'est pas configuré")
         masques.set(frozenset(contexte_de(requete)["masques"]))
+        interdits.set(interdits_de(compte_de(requete), g.conversation))
         demande_en_cours.set(("carte", texte_conversation.get(g.conversation, "")))
         champs = g.model_dump(exclude={"entity_id", "conversation"}, exclude_none=True)
         try:
@@ -1075,6 +1099,7 @@ def creer_app(config: Config | None = None, registre: Registre | None = None,
     async def annuler_carte(c: Conv, requete: Request) -> dict:
         """Bouton « Annuler » d'une carte : comme dire « annule » dans la même conversation."""
         masques.set(frozenset(contexte_de(requete)["masques"]))
+        interdits.set(interdits_de(compte_de(requete), c.conversation))
         r = await maison.annuler(c.conversation)
         auditer(requete, "action_maison", par="carte", action="annuler", resultat=r.texte[:200])
         return {"ok": r.traite, "texte": r.texte, "cartes": await cartes_sures(r.detail.get("entites"))}
@@ -1113,6 +1138,7 @@ def creer_app(config: Config | None = None, registre: Registre | None = None,
     @app.post("/api/actions/{ident}/annuler")
     async def annuler_action(ident: str, requete: Request) -> dict:
         exiger_revelation(requete, "historique")
+        interdits.set(interdits_de(compte_de(requete)))
         ok, message = await maison.annuler_action(ident)
         if not ok:
             raise HTTPException(404 if message == "action inconnue" else 409, message)
@@ -1384,6 +1410,11 @@ def creer_app(config: Config | None = None, registre: Registre | None = None,
             raise HTTPException(422, str(e)) from e
         return {"ok": True, "en_attente": "la personne doit répondre oui ou non", "souvenir": sv["texte"]}
 
+    def personne_de(conversation: str) -> str:
+        """À qui sont les rappels de cette conversation : la voix reconnue, sinon le compte connecté."""
+        compte = personne_conversation.get(conversation) or compte_conversation.get(conversation, ("", ""))[0]
+        return "" if compte == COMPTE_MACHINE else compte
+
     @app.post("/interne/rappels", include_in_schema=False)
     def interne_creer_rappel(n: NouveauRappel, x_jeton_interne: str | None = Header(None)) -> dict:
         verifier_jeton(x_jeton_interne)
@@ -1391,7 +1422,7 @@ def creer_app(config: Config | None = None, registre: Registre | None = None,
         try:
             quand = dt.fromisoformat(n.quand)
             r = rappels.ajouter(n.texte, quand.astimezone() if quand.tzinfo is None else quand,
-                                compte_conversation.get(n.conversation, ("", ""))[0], n.conversation)
+                                personne_de(n.conversation), n.conversation)
         except ValueError as e:
             raise HTTPException(422, str(e)) from e
         return {"ok": True, "id": r["id"], "quand": r["quand"], "texte": r["texte"]}
@@ -1399,13 +1430,13 @@ def creer_app(config: Config | None = None, registre: Registre | None = None,
     @app.get("/interne/rappels", include_in_schema=False)
     def interne_lister_rappels(conversation: str = "", x_jeton_interne: str | None = Header(None)) -> list[dict]:
         verifier_jeton(x_jeton_interne)
-        compte = compte_conversation.get(conversation, ("", ""))[0]
+        compte = personne_de(conversation)
         return [{k: r[k] for k in ("id", "quand", "texte")} for r in rappels.a_venir(compte or None)]
 
     @app.delete("/interne/rappels/{ident}", include_in_schema=False)
-    def interne_supprimer_rappel(ident: str, x_jeton_interne: str | None = Header(None)) -> dict:
+    def interne_supprimer_rappel(ident: str, conversation: str = "", x_jeton_interne: str | None = Header(None)) -> dict:
         verifier_jeton(x_jeton_interne)
-        r = rappels.supprimer(ident)
+        r = rappels.supprimer(ident, personne_de(conversation) or None)
         if not r:
             raise HTTPException(404, "rappel inconnu ou déjà passé")
         return {"ok": True, "supprime": r["texte"]}
@@ -1509,6 +1540,7 @@ def creer_app(config: Config | None = None, registre: Registre | None = None,
     async def interne_agir(a: Action, x_jeton_interne: str | None = Header(None)) -> dict:
         verifier_jeton(x_jeton_interne)
         demande_en_cours.set(("claude", texte_conversation.get(a.conversation, "")))
+        interdits.set(interdits_conversation.get(a.conversation, frozenset()))
         r = await maison.agir_ids(a.entity_ids, a.action, a.valeur, a.couleur, a.conversation)
         cartes_conversation.setdefault(a.conversation, []).extend(r.detail.get("entites", []))
         journal.info("outil agir %s %s -> %s", a.action, a.entity_ids, r.texte[:120])
@@ -1520,6 +1552,7 @@ def creer_app(config: Config | None = None, registre: Registre | None = None,
     @app.post("/interne/maison/annuler", include_in_schema=False)
     async def interne_annuler(c: Conv, x_jeton_interne: str | None = Header(None)) -> dict:
         verifier_jeton(x_jeton_interne)
+        interdits.set(interdits_conversation.get(c.conversation, frozenset()))
         r = await maison.annuler(c.conversation)
         journal.info("outil annuler -> %s", r.texte[:120])
         compte, ip = compte_conversation.get(c.conversation, ("", ""))
@@ -1906,13 +1939,23 @@ def creer_app(config: Config | None = None, registre: Registre | None = None,
         nom_profil = securite.comptes.get(compte or "", {}).get("nom", "")
         voix_de = locuteur_conversation.get(d.conversation)
         if d.source == "voix" and voix_de and time.monotonic() - voix_de[1] < 60 and voix_de[0] in securite.comptes:
-            # reconnu à la voix : son ton, sa pièce, ses préférences (pas ses droits)
+            # reconnu à la voix : son ton, sa pièce, ses préférences, et ses limites (jamais plus de droits
+            # que le compte connecté : les interdits des deux s'additionnent)
             profil, nom_profil = securite.profil(voix_de[0]), securite.comptes[voix_de[0]].get("nom", voix_de[0])
             route_locuteur = nom_profil
+            interdits_voix = domaines_interdits(profil.get("interdits"))
         else:
             route_locuteur = ""
+            interdits_voix = frozenset()
+        interdits_conversation[d.conversation] = interdits_voix
+        interdits_effectifs = interdits_de(compte, d.conversation)
+        interdits_conversation[d.conversation] = interdits_effectifs
+        interdits.set(interdits_effectifs)
+        if profil:
+            profil = {**profil, "interdits": sorted(c for c, doms in CATEGORIES_DROITS.items()
+                                                    if set(doms) <= interdits_effectifs)}
         if "personnel" in ctx_revel:
-            profil = {k: v for k, v in profil.items() if k in ("type", "ton")}   # ni pièce ni préférences
+            profil = {k: v for k, v in profil.items() if k in ("type", "ton", "interdits")}   # ni pièce ni préférences
         piece_preferee.set(profil.get("piece", ""))
         consigne_profil = note_profil(nom_profil, profil) if profil else ""
 
@@ -1934,6 +1977,7 @@ def creer_app(config: Config | None = None, registre: Registre | None = None,
 
         # --- mémoire : réponse à une proposition, « retiens que… », souvenirs utiles à la réponse ---------
         qui = ((voix_de[0] if route_locuteur else compte) or "")
+        personne_conversation[d.conversation] = qui
         attente = memoire.proposition_en_attente(d.conversation, qui) if d.conversation else None
         if attente and RE_OUI.match(d.message):
             memoire.changer_statut(attente["id"], "valide", qui)
@@ -2030,8 +2074,9 @@ def creer_app(config: Config | None = None, registre: Registre | None = None,
                 _tracer(route, d.message)
                 return _reponse_ha(d.flux, "Je ne pilote pas ça : action sensible, à faire depuis Home Assistant.",
                                    route, "maison", "inventaire", 0)
-            if "commande" in rm.detail and cfg.maison.assist_en_secours:
+            if "commande" in rm.detail and cfg.maison.assist_en_secours and not interdits_effectifs:
                 # commande comprise mais appareil introuvable : l'agent Assist de HA tente sa chance
+                # (pas pour une personne aux droits limités : Assist ne les connaît pas)
                 debut_ha = time.perf_counter()
                 rha = await ha.conversation(maison.texte_pour_assist(d.message))
                 duree = round((time.perf_counter() - debut_ha) * 1000)

@@ -69,7 +69,7 @@ async def cartes_pour(maison: Maison, entity_ids: list[str]) -> list[dict]:
     vus, cartes = set(), []
     for eid in entity_ids:
         e = connus.get(eid)
-        if not e or eid in vus or maison.masque(e) or maison.sensible(e):
+        if not e or eid in vus or maison.masque(e) or maison.sensible(e) or maison.interdit(e):
             continue          # appareil caché en ce moment, ou à piloter depuis Home Assistant
         vus.add(eid)
         c = carte(e, await maison.ha.etat_entite(eid))

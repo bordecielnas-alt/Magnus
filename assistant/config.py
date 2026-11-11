@@ -260,7 +260,7 @@ class VoixConfig(BaseModel):
     # (prolongée à chaque phrase). toujours_a_l_ecoute = plus besoin du wake word du tout.
     fenetre_s: float = Field(default=10, ge=0, le=3600)
     toujours_a_l_ecoute: bool = False
-    # Reconnaître qui parle (empreinte vocale) pour appliquer son profil ; jamais pour donner des droits
+    # Reconnaître qui parle (empreinte vocale) pour appliquer son profil et ses limites ; jamais pour donner des droits
     identification: bool = True
     seuil_locuteur: float = Field(default=0.5, ge=0, le=1)
     locuteur: str = ""         # modèle ONNX WeSpeaker ; vide = modeles/locuteur/voxceleb_resnet34_LM.onnx

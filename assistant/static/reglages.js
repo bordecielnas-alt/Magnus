@@ -37,6 +37,9 @@
     #config .compte { display:flex; gap:8px; align-items:center; justify-content:space-between; padding:8px 0;
                       border-bottom:1px dashed var(--bord); font-size:.85rem; flex-wrap:wrap; }
     #config .compte small { color:var(--muted); display:block; font-size:.75rem; }
+    #config .compte .droits { display:flex; flex-wrap:wrap; gap:4px 10px; margin-top:4px; font-size:.75rem; color:var(--muted); }
+    #config .compte .droits small { display:inline; }
+    #config .compte .droits label { display:inline-flex; gap:3px; align-items:center; }
     #config .codes { display:grid; grid-template-columns:1fr 1fr; gap:4px 10px; font-family:var(--f-mono, monospace);
                      font-size:.85rem; user-select:all; margin-top:8px; }
     #config .journal { max-height:240px; overflow:auto; margin-top:8px; font-size:.75rem; color:var(--muted); }
@@ -257,6 +260,8 @@
 
   // --- comptes ---------------------------------------------------------------------------------
   const texte = (balise, contenu) => Object.assign(document.createElement(balise), {textContent: contenu});
+  const DROITS = [['lumieres', 'lumières'], ['prises', 'prises'], ['volets', 'volets'], ['chauffage', 'chauffage'],
+    ['medias', 'télé et musique'], ['ventilateurs', 'ventilateurs']];
   const quand = d => d ? new Date(d).toLocaleString('fr-FR', {dateStyle: 'short', timeStyle: 'short'}) : 'jamais';
   const LIBELLES = {connexion: 'connexion', 'déconnexion': 'déconnexion', action_maison: 'maison', 'réglages': 'réglages',
     secret_modifié: 'secret modifié', 'redémarrage': 'redémarrage', compte_créé: 'compte créé', compte_supprimé: 'compte supprimé',
@@ -362,10 +367,25 @@
         for (const t of ['adulte', 'enfant']) type.appendChild(Object.assign(document.createElement('option'), {value: t, textContent: t}));
         type.value = c.type || 'adulte';
         type.onchange = async () => {
-          try { await api(`/api/comptes/${encodeURIComponent(c.id)}/profil`, {type: type.value}); msg('comptes', `${c.nom} : compte ${type.value}.`, true); }
+          try { await api(`/api/comptes/${encodeURIComponent(c.id)}/profil`, {type: type.value}); msg('comptes', `${c.nom} : compte ${type.value}.`, true); chargerComptes(); }
           catch (e) { msg('comptes', e.message, false); }
         };
         boutons.appendChild(type);
+        // Droits par personne : ce qu'elle ne pilote pas (appliqué aussi quand sa voix est reconnue ailleurs)
+        const droits = document.createElement('div'); droits.className = 'droits';
+        droits.appendChild(texte('small', 'Ne pilote pas :'));
+        for (const [cle, lib] of DROITS) {
+          const l = document.createElement('label'); const cb = document.createElement('input');
+          cb.type = 'checkbox'; cb.checked = (c.interdits || []).includes(cle);
+          cb.onchange = async () => {
+            const choix = [...droits.querySelectorAll('input')].filter(x => x.checked).map(x => x.dataset.cle);
+            try { await api(`/api/comptes/${encodeURIComponent(c.id)}/profil`, {interdits: choix});
+                  msg('comptes', `${c.nom} : ${choix.length ? 'ne pilote pas ' + choix.map(x => DROITS.find(d => d[0] === x)[1]).join(', ') : 'pilote tout'}.`, true); }
+            catch (e) { cb.checked = !cb.checked; msg('comptes', e.message, false); }
+          };
+          cb.dataset.cle = cle; l.append(cb, ' ' + lib); droits.appendChild(l);
+        }
+        nom.appendChild(droits);
         if (c.id !== moi) {
           const suppr = texte('button', 'Supprimer'); suppr.type = 'button'; suppr.className = 'bouton';
           suppr.onclick = async () => {
