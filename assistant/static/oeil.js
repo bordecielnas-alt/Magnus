@@ -131,14 +131,17 @@ function creerOeil(cv, opts = {}) {
   requestAnimationFrame(frame);
 
   // ----- Style « classique » : proche de l'œil du film, il bouge très peu, seule la lumière varie -----
-  const ECLAT = { repos: .55, ecoute: .95, reflexion: .75, parole: .85, erreur: .4 };
-  let eclatC = .55;
+  // Écarts nets entre les états (retour de Benjamin : « effet pas assez prononcé ») :
+  // repos tamisé qui respire, écoute franchement allumée, réflexion qui baisse et remonte, parole sur les syllabes.
+  const ECLAT = { repos: .4, ecoute: 1.1, reflexion: .72, parole: .9, erreur: .35 };
+  const RESPIRE = { repos: .12, ecoute: .05, reflexion: 0, parole: .02, erreur: .02 };
+  let eclatC = .4;
   function classique(t) {
-    eclatC += (ECLAT[etat] - eclatC) * (reduit ? .2 : .03);   // transitions lentes
-    let vie = eclatC + syllabe * .22 + micro * .15 + flash * .15;
+    eclatC += (ECLAT[etat] - eclatC) * (reduit ? .2 : .06);   // transitions douces mais visibles
+    let vie = eclatC + syllabe * .55 + micro * .35 + flash * .45;
     if (!reduit) {
-      vie += Math.sin(t / 1000 * 1.1) * .025;                         // respiration à peine visible
-      if (etat === 'reflexion') vie += Math.sin(t / 1000 * 2.4) * .14; // lente baisse et remontée
+      vie += Math.sin(t / 1000 * 1.3) * RESPIRE[etat];                 // respiration (surtout au repos)
+      if (etat === 'reflexion') vie += Math.sin(t / 1000 * 2.4) * .3;  // baisse puis remonte
       if (etat === 'erreur' && Math.random() < .08) vie -= .25;        // vacille
       vie += (Math.sin(t / 61) + Math.sin(t / 43)) * .004;
     }
@@ -147,7 +150,7 @@ function creerOeil(cv, opts = {}) {
     g.clearRect(0, 0, W, W);
     // halo très doux autour
     const h = g.createRadialGradient(cx, cy, R * .85, cx, cy, R * 1.25);
-    h.addColorStop(0, `rgba(255,30,20,${.10 * vie * lueur})`); h.addColorStop(1, 'rgba(255,30,20,0)');
+    h.addColorStop(0, `rgba(255,30,20,${.2 * vie * lueur})`); h.addColorStop(1, 'rgba(255,30,20,0)');
     g.fillStyle = h; g.beginPath(); g.arc(cx, cy, R * 1.25, 0, TOUR); g.fill();
     // collier noir, puis anneau chromé brossé
     g.fillStyle = '#060606'; g.beginPath(); g.arc(cx, cy, R, 0, TOUR); g.fill();
@@ -177,13 +180,14 @@ function creerOeil(cv, opts = {}) {
     g.restore();
     // la lueur : rouge large, rouge vif, cœur jaune-blanc
     g.save(); g.globalCompositeOperation = 'lighter';
-    const L = Math.min(1.4, vie * lueur);
+    const L = Math.min(1.7, Math.max(0, vie) * lueur);
     const l1 = g.createRadialGradient(cx, cy, 0, cx, cy, Rl * .85);
     l1.addColorStop(0, `rgba(230,20,15,${.55 * L})`); l1.addColorStop(.35, `rgba(170,5,10,${.35 * L})`); l1.addColorStop(1, 'rgba(90,0,0,0)');
     g.fillStyle = l1; g.beginPath(); g.arc(cx, cy, Rl * .85, 0, TOUR); g.fill();
-    const l2 = g.createRadialGradient(cx, cy, 0, cx, cy, Rl * .32);
+    const r2 = Rl * (.24 + .1 * Math.min(1.2, Math.max(0, vie)));   // le rouge vif s'élargit quand il s'allume
+    const l2 = g.createRadialGradient(cx, cy, 0, cx, cy, r2);
     l2.addColorStop(0, `rgba(255,80,40,${.85 * L})`); l2.addColorStop(.5, `rgba(250,30,20,${.5 * L})`); l2.addColorStop(1, 'rgba(220,0,0,0)');
-    g.fillStyle = l2; g.beginPath(); g.arc(cx, cy, Rl * .32, 0, TOUR); g.fill();
+    g.fillStyle = l2; g.beginPath(); g.arc(cx, cy, r2, 0, TOUR); g.fill();
     const rc = Rl * .075;
     const l3 = g.createRadialGradient(cx, cy, 0, cx, cy, rc);
     l3.addColorStop(0, `rgba(255,250,215,${Math.min(1, L)})`); l3.addColorStop(.4, `rgba(255,215,110,${.85 * L})`); l3.addColorStop(1, 'rgba(255,110,40,0)');
