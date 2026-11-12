@@ -96,6 +96,14 @@ def test_ignorees(tmp_path):
     assert m.noms == {}
 
 
+def attendre(condition, delai=5.0):
+    import time
+    fin = time.monotonic() + delai
+    while not condition():
+        assert time.monotonic() < fin, "délai dépassé"
+        time.sleep(0.02)
+
+
 def app_de_test(tmp_path, monkeypatch, vus, cle_actions="cle-actions", **faux):
     from fastapi.testclient import TestClient
 
@@ -129,12 +137,14 @@ def test_annonce_mettre_a_jour(tmp_path, monkeypatch):
     a = next(x for x in c.get("/api/annonces").json()["annonces"] if x["id"] == maj[0]["id"])
     assert [b["id"] for b in a["actions"]] == ["mettre_a_jour", "ignorer"] and a["cible"]["conteneur"] == "plex"
     assert not any("updateContainer" in v[1] for v in vus)                  # rien sans le bouton
-    r = c.post(f"/api/annonces/{a['id']}/action", json={"action": "mettre_a_jour"})
-    assert r.status_code == 200 and r.json()["texte"] == "C'est fait : plex est à jour et tourne."
+    with c:                                                                  # garde la boucle pour la tâche de fond
+        r = c.post(f"/api/annonces/{a['id']}/action", json={"action": "mettre_a_jour"})
+        assert r.status_code == 200 and r.json()["texte"] == "Mise à jour de plex lancée. Je te préviens quand c'est fini."
+        deux = c.post(f"/api/annonces/{a['id']}/action", json={"action": "mettre_a_jour"})   # double clic, autre appareil
+        assert deux.status_code == 409 and "déjà mis à jour" in deux.json()["detail"]
+        attendre(lambda: app.state.annonces.trouver(a["id"])["resolue"])
     assert any("updateContainer" in v[1] and v[0] == "cle-actions" for v in vus)
-    assert app.state.annonces.trouver(a["id"])["resolue"]
-    deux = c.post(f"/api/annonces/{a['id']}/action", json={"action": "mettre_a_jour"})       # double clic, autre appareil
-    assert deux.status_code == 409 and "déjà mis à jour" in deux.json()["detail"]
+    assert any(x["texte"] == "C'est fait, plex est à jour et tourne." for x in app.state.annonces.liste)
     assert c.get("/api/unraid").json()["mises_a_jour"] == ["plex"]
 
 
@@ -171,3 +181,30 @@ def test_mise_a_jour_faite_ailleurs_close_l_annonce(tmp_path, monkeypatch):
     asyncio.run(app.state.surveiller_une_fois({}))
     assert app.state.annonces.trouver(a["id"])["resolue"]
     assert c.post(f"/api/annonces/{a['id']}/action", json={"action": "mettre_a_jour"}).status_code == 409
+
+
+def test_mise_a_jour_au_dela_du_proxy(tmp_path, monkeypatch):
+    """Le proxy d'Unraid coupe à 60 s (504) pendant que l'image se télécharge : on suit au lieu d'échouer."""
+    import assistant.main as main
+    app, _ = app_de_test(tmp_path, monkeypatch, [])
+
+    async def coupe(self, nom, cle, timeout=900):
+        req = httpx.Request("POST", URL)
+        raise httpx.HTTPStatusError("504 Gateway Time-out", request=req, response=httpx.Response(504, request=req))
+    etapes = iter([["plex"], []])                    # encore en attente, puis à jour
+
+    async def en_attente(self):
+        return next(etapes)
+    monkeypatch.setattr(UnraidDocker, "mettre_a_jour", coupe)
+    monkeypatch.setattr(UnraidDocker, "mises_a_jour", en_attente)
+    r = asyncio.run(app.state.mise_a_jour_suivie("plex", intervalle=0))
+    assert r["ok"] and r["nom"] == "plex" and r["etat"] == "running"
+
+    async def toujours(self):
+        return ["plex"]
+    monkeypatch.setattr(UnraidDocker, "mises_a_jour", toujours)
+    r = asyncio.run(app.state.mise_a_jour_suivie("plex", intervalle=0, essais=2))
+    assert not r["ok"] and "http" not in r["raison"]
+    req = httpx.Request("POST", URL)
+    assert main.erreur_docker_courte(httpx.HTTPStatusError("x", request=req, response=httpx.Response(504, request=req))) \
+        == "le serveur Unraid n'a pas répondu à temps"
