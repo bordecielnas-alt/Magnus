@@ -36,6 +36,8 @@ def faux_unraid(vus):
             if req.headers.get("x-api-key") != "cle-actions":
                 return httpx.Response(200, json={"errors": [{"message": "Forbidden resource"}]})
             return httpx.Response(200, json={"data": {"docker": {"restart": {"id": "x:1", "state": "RUNNING", "status": "Up 1 second"}}}})
+        if "updateContainer" in q:
+            return httpx.Response(200, json={"data": {"docker": {"updateContainer": {"id": "x:1", "state": "RUNNING", "status": "Up"}}}})
         for m in ("start", "stop"):
             if f"{m}(" in q:
                 return httpx.Response(200, json={"data": {"docker": {m: {"id": "x:1", "state": "RUNNING" if m == "start" else "EXITED", "status": "Up"}}}})
@@ -201,6 +203,15 @@ def test_allumer_un_conteneur_passe_par_docker(tmp_path, monkeypatch):
     c.post("/interne/docker/redemarrer", json={"nom": "plex", "action": "arreter", "conversation": "d2"}, headers=h)
     rep = c.post("/api/chat", json={"message": "oui, je veux que tu éteignes plex", "conversation": "d2"}).json()
     assert rep["reponse"].startswith("C'est fait, plex est arrêté.")
+    # mise à jour d'image à la voix : préparée, puis faite après le oui seulement
+    assert c.post("/api/chat", json={"message": "mets à jour le conteneur N8N", "conversation": "d2"}).json()["route"]["raison"] == "demande Docker"
+    en_attente = c.post("/interne/docker/redemarrer", json={"nom": "plex", "action": "mettre_a_jour", "conversation": "d2"},
+                        headers=h).json()["en_attente"]
+    assert "Je mets à jour plex ?" in en_attente and not any("updateContainer" in str(v) for v in vus)
+    assert c.post("/api/chat", json={"message": "oui", "conversation": "d2"}).json()["reponse"] == "C'est fait, plex est à jour et tourne."
+    assert any(v[0] == "cle-actions" and v[2] == {"id": "x:1"} for v in vus[-2:])
+    c.post("/interne/docker/redemarrer", json={"nom": "plex", "action": "mettre_a_jour", "conversation": "d2"}, headers=h)
+    assert c.post("/api/chat", json={"message": "non", "conversation": "d2"}).json()["reponse"] == "D'accord, je ne mets rien à jour."
     # fenêtre d'écoute relancée après la réponse
     assert c.post("/api/voix/prolonger", json={"conversation": "d2"}).json()["fenetre_s"] > 0
     # Telegram : outil réservé aux administrateurs, pas configuré ici

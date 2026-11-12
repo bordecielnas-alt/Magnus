@@ -1500,6 +1500,7 @@ async function transcrireEtEnvoyer() {
     finirBulle();
     if (!r.ok) throw new Error(o.detail || r.statusText);
     if (!o.texte) { if (!occupe) orbe.etat('repos'); bulle('erreur', 'Je n\'ai rien entendu.'); return; }
+    if (echoDeMaVoix(o.texte)) { diag('transcription : « ' + o.texte + ' » = mes propres mots (écho), ignoré'); if (!occupe) orbe.etat('repos'); return; }
     const derniere = demander(o.texte, true);
     if (derniere) derniere.title = 'Transcrit en ' + o.duree_ms + ' ms (' + o.duree_audio_s + ' s d\'audio)';
     marquerLocuteur(derniere, o.locuteur);
@@ -1521,6 +1522,40 @@ function decouperPhrases(texte) {
     else phrases.push(p);
   }
   return phrases;
+}
+
+// Ce qu'il vient de dire à voix haute (phrases déjà lancées), gardé quelques secondes après la fin.
+// Si une transcription du micro reprend ses propres mots, c'est son écho, pas toi : on la jette.
+// (Journal du 12/11 : coupé à tort, il a enregistré « Mise à jour de N... », le début de sa réponse.)
+const paroleRecente = {mots: [], fin: 0, enCours: false};
+const ECHO_GARDE_MS = 10000;
+function motsNormalises(t) {
+  return (t || '').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '')
+    .replace(/[^a-z0-9]+/g, ' ').trim().split(' ').filter(Boolean);
+}
+function retenirParole(phrase, nouvelle) {
+  if (nouvelle) paroleRecente.mots = [];
+  paroleRecente.mots.push(...motsNormalises(phrase));
+  if (paroleRecente.mots.length > 400) paroleRecente.mots = paroleRecente.mots.slice(-400);
+  paroleRecente.enCours = true;
+}
+function echoDeMaVoix(texte) {
+  if (!paroleRecente.mots.length) return false;
+  if (!paroleRecente.enCours && performance.now() - paroleRecente.fin > ECHO_GARDE_MS) return false;
+  const m = motsNormalises(texte);
+  if (!m.length) return false;
+  const reference = paroleRecente.mots;
+  if (m.length < 3) {
+    // très court : seulement si c'est exactement une suite de mots qu'il a dite
+    const r = ' ' + reference.join(' ') + ' ';
+    return r.includes(' ' + m.join(' ') + ' ') && m.join('').length >= 4;
+  }
+  // assez long : la plupart de ses paires de mots consécutifs se trouvent dans ce qu'il a dit
+  const paires = new Set();
+  for (let i = 0; i + 1 < reference.length; i++) paires.add(reference[i] + ' ' + reference[i + 1]);
+  let communes = 0;
+  for (let i = 0; i + 1 < m.length; i++) if (paires.has(m[i] + ' ' + m[i + 1])) communes++;
+  return communes / (m.length - 1) >= 0.6;
 }
 
 function synthetiser(phrase) {
@@ -1569,9 +1604,33 @@ function jouerAccueil(force) {
   try { analyseAccueil = c.createAnalyser(); analyseAccueil.fftSize = 512; sortie.connect(analyseAccueil); } catch (e) { analyseAccueil = null; }
   try { sonsEveil.jouer(n, c, sortie, c.currentTime + .02); } catch (e) { diag('son d\'éveil : ERREUR ' + e.message); return; }
   orbe.impulsion(10);
-  finAccueil = performance.now() + ((sonsEveil.liste[n - 1] || {}).duree || 2.5) * 1000 + 300;
+  if (sortieAccueil) try { sortieAccueil.disconnect(); } catch (e) {}
+  sortieAccueil = sortie;
+  const duree = ((sonsEveil.liste[n - 1] || {}).duree || 2.5) * 1000;
+  finAccueil = performance.now() + duree + 300;
+  // la réverbération de la « salle » continue plusieurs secondes après la durée annoncée
+  queueAccueil = performance.now() + duree + 6000;
   diag('son d\'éveil n° ' + n + ' joué');
   return true;
+}
+// Dès que sa voix part (ou qu'il baisse sa voix pour vérifier une interruption), le son d'éveil
+// s'efface en ~0,3 s, réverbération comprise. Avant, il continuait sous la voix : le micro entendait
+// ce mélange, et pendant la vérification seule la voix baissait, pas le son d'éveil ; le micro ne
+// baissait donc pas et il se croyait interrompu par toi (vu dans le journal du 12/11 : chaque
+// coupure tombait ~5 s après le son d'éveil, à la fin du son et dans sa réverbération).
+let sortieAccueil = null, queueAccueil = 0;
+function eteindreAccueil(pourquoi) {
+  const s = sortieAccueil, c = ctxAccueil;
+  sortieAccueil = null;
+  if (!s || !c || performance.now() >= queueAccueil) return;
+  try {
+    const g = s.gain, t = c.currentTime;
+    g.cancelScheduledValues(t); g.setValueAtTime(g.value, t); g.setTargetAtTime(0, t, 0.08);
+  } catch (e) { try { s.disconnect(); } catch (e2) {} }
+  setTimeout(() => { try { s.disconnect(); } catch (e) {} }, 900);
+  queueAccueil = Math.min(queueAccueil, performance.now() + 700);   // on mesure encore le fondu
+  finAccueil = Math.min(finAccueil, queueAccueil);
+  diag('son d\'éveil : effacé (' + pourquoi + ')');
 }
 // Quand le jouer : « toujours » (avant chaque réponse) ou « seul » (seulement quand il s'éveille : page
 // rechargée, ou prise de parole de lui-même : annonce, rappel, alerte, règle). Dans les deux cas, au
@@ -1583,8 +1642,17 @@ let dernierEveil = -1e9;
 function eveilAvantParole(spontane) {
   if (!(spontane || eveilEnAttente || quandAccueil === 'toujours')) return;
   // un son d'éveil vient de partir (au rechargement, puis une annonce aussitôt) : pas deux de suite
-  if (performance.now() - dernierEveil < 5000) { eveilEnAttente = false; return; }
-  if (jouerAccueil()) { eveilEnAttente = false; dernierEveil = performance.now(); }
+  if (performance.now() - dernierEveil < 5000) { eveilEnAttente = false; return false; }
+  if (jouerAccueil()) { eveilEnAttente = false; dernierEveil = performance.now(); return true; }
+  return false;
+}
+// Quand il prend la parole de lui-même, sa première phrase attend la fin du son d'éveil
+// (sinon sa voix part par-dessus). finAccueil = fin du son + 300 ms de marge.
+function attendreFinEveil(moi) {
+  return new Promise(ok => {
+    const tic = () => { if (moi !== numeroLecture || performance.now() >= finAccueil) ok(); else setTimeout(tic, 50); };
+    tic();
+  });
 }
 // liste des sons dans Réglages, rangés par famille, avec leur numéro de la page de démonstration
 function remplirChoixAccueil() {
@@ -1641,6 +1709,7 @@ $('btnMuet').onclick = () => {
 };
 majMuet();
 function couperLecture() {
+  eteindreAccueil('voix coupée');
   numeroLecture++;
   voixActive = false;
   baisserVoix(false);
@@ -1656,6 +1725,7 @@ function baisserVoix(oui) {
   if (oui === voixBaissee) return;
   voixBaissee = oui;
   if (oui) {
+    eteindreAccueil('vérification d\'une interruption');
     try { lecteur.volume = 0.1; } catch (e) {}
     if (lecteur.volume > 0.5) { lecteur.muted = true; muetPourVerif = true; }
   } else {
@@ -1678,7 +1748,7 @@ function niveauSortie() {
     n = Interruption.niveauA(sortieVoix.env, lecteur.currentTime || 0) * (lecteur.muted ? 0 : lecteur.volume);
   }
   // son d'éveil en cours : on ajoute son niveau, mesuré en direct
-  if (performance.now() < finAccueil) {
+  if (performance.now() < queueAccueil) {
     if (!analyseAccueil) return null;
     if (!tamponAccueil || tamponAccueil.length !== analyseAccueil.fftSize) tamponAccueil = new Float32Array(analyseAccueil.fftSize);
     n = Math.max(n, mesureMicro(analyseAccueil, tamponAccueil).rms);
@@ -1787,7 +1857,8 @@ async function direAVoixHaute(source, spontane) {
   const moi = ++numeroLecture;
   voixActive = true;
   orbe.etat('parole');
-  eveilAvantParole(spontane);   // pendant que la première phrase se prépare
+  // pendant que la première phrase se prépare ; s'il parle de lui-même, elle attendra la fin du son
+  const attendreEveil = (eveilAvantParole(spontane) || performance.now() < finAccueil) && spontane;
   const pulse = setInterval(() => orbe.impulsion(4), 180);
   const veille = surveillerInterruption(moi);
   try {
@@ -1813,6 +1884,11 @@ async function direAVoixHaute(source, spontane) {
       preparer(i); preparer(i + 1); preparer(i + 2);
       const blob = await prets[i];
       if (moi !== numeroLecture) break;   // coupée pendant la préparation de la phrase
+      if (i === 0 && attendreEveil && performance.now() < finAccueil) {
+        diag('son : première phrase en attente de la fin du son d\'éveil (' + Math.round(finAccueil - performance.now()) + ' ms)');
+        await attendreFinEveil(moi);
+        if (moi !== numeroLecture) break;
+      }
       preparer(i + 1); preparer(i + 2);
       const att = Math.round(performance.now() - attente);
       diag('son : phrase ' + (i + 1) + (f.fini ? '/' + phrases.length : '') + ' prête en ' + Math.round(performance.now() - depart[i]) + ' ms' +
@@ -1823,6 +1899,8 @@ async function direAVoixHaute(source, spontane) {
       lecteur.src = url;
       sortieVoix.env = null; sortieVoix.url = lecteur.src;
       if (blob.enveloppe) blob.enveloppe.then(e => { if (sortieVoix.url === lecteur.src) sortieVoix.env = e; });
+      eteindreAccueil('sa voix commence');
+      retenirParole(phrases[i], i === 0);
       const interrompu = await new Promise(res => {
         lecteur.onended = () => res(false);
         lecteur.onerror = () => res(false);
@@ -1847,6 +1925,7 @@ async function direAVoixHaute(source, spontane) {
     clearInterval(pulse);
     if (veille) veille.arreter();
     if (moi === numeroLecture) { lecture = null; voixActive = false; baisserVoix(false); }
+    paroleRecente.enCours = false; paroleRecente.fin = performance.now();
     if (!occupe && !onTEcoute()) orbe.etat('repos');
   }
 }
@@ -2184,6 +2263,11 @@ function envoyerMorceau(rec) {
       diag('écoute continue : ' + o.action + ' en ' + Math.round(performance.now() - t0) + ' ms' + (o.texte ? ' · entendu « ' + o.texte + ' »' : '') + (o.commande && o.commande !== o.texte ? ' · commande « ' + o.commande + ' »' : '') + texteLocuteur(o.locuteur));
       if (o.wake_word) continu.wake = o.wake_word;
       if (typeof o.toujours === 'boolean') continu.toujours = o.toujours;
+      if ((o.action === 'commande' || o.action === 'ignorer') && echoDeMaVoix(o.commande || o.texte)) {
+        diag('écoute continue : « ' + (o.commande || o.texte) + ' » = mes propres mots (écho), ignoré');
+        majVeille();
+        return;
+      }
       // une phrase coupée en deux par une pause : ce morceau est la suite de la commande en attente
       const suite = o.action === 'commande' ? o.commande : o.action === 'ignorer' ? o.texte : '';
       if (continu.suspens && suite && suite.trim()) {
