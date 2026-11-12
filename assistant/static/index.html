@@ -1569,9 +1569,33 @@ function jouerAccueil(force) {
   try { analyseAccueil = c.createAnalyser(); analyseAccueil.fftSize = 512; sortie.connect(analyseAccueil); } catch (e) { analyseAccueil = null; }
   try { sonsEveil.jouer(n, c, sortie, c.currentTime + .02); } catch (e) { diag('son d\'éveil : ERREUR ' + e.message); return; }
   orbe.impulsion(10);
-  finAccueil = performance.now() + ((sonsEveil.liste[n - 1] || {}).duree || 2.5) * 1000 + 300;
+  if (sortieAccueil) try { sortieAccueil.disconnect(); } catch (e) {}
+  sortieAccueil = sortie;
+  const duree = ((sonsEveil.liste[n - 1] || {}).duree || 2.5) * 1000;
+  finAccueil = performance.now() + duree + 300;
+  // la réverbération de la « salle » continue plusieurs secondes après la durée annoncée
+  queueAccueil = performance.now() + duree + 6000;
   diag('son d\'éveil n° ' + n + ' joué');
   return true;
+}
+// Dès que sa voix part (ou qu'il baisse sa voix pour vérifier une interruption), le son d'éveil
+// s'efface en ~0,3 s, réverbération comprise. Avant, il continuait sous la voix : le micro entendait
+// ce mélange, et pendant la vérification seule la voix baissait, pas le son d'éveil ; le micro ne
+// baissait donc pas et il se croyait interrompu par toi (vu dans le journal du 12/11 : chaque
+// coupure tombait ~5 s après le son d'éveil, à la fin du son et dans sa réverbération).
+let sortieAccueil = null, queueAccueil = 0;
+function eteindreAccueil(pourquoi) {
+  const s = sortieAccueil, c = ctxAccueil;
+  sortieAccueil = null;
+  if (!s || !c || performance.now() >= queueAccueil) return;
+  try {
+    const g = s.gain, t = c.currentTime;
+    g.cancelScheduledValues(t); g.setValueAtTime(g.value, t); g.setTargetAtTime(0, t, 0.08);
+  } catch (e) { try { s.disconnect(); } catch (e2) {} }
+  setTimeout(() => { try { s.disconnect(); } catch (e) {} }, 900);
+  queueAccueil = Math.min(queueAccueil, performance.now() + 700);   // on mesure encore le fondu
+  finAccueil = Math.min(finAccueil, queueAccueil);
+  diag('son d\'éveil : effacé (' + pourquoi + ')');
 }
 // Quand le jouer : « toujours » (avant chaque réponse) ou « seul » (seulement quand il s'éveille : page
 // rechargée, ou prise de parole de lui-même : annonce, rappel, alerte, règle). Dans les deux cas, au
@@ -1583,8 +1607,17 @@ let dernierEveil = -1e9;
 function eveilAvantParole(spontane) {
   if (!(spontane || eveilEnAttente || quandAccueil === 'toujours')) return;
   // un son d'éveil vient de partir (au rechargement, puis une annonce aussitôt) : pas deux de suite
-  if (performance.now() - dernierEveil < 5000) { eveilEnAttente = false; return; }
-  if (jouerAccueil()) { eveilEnAttente = false; dernierEveil = performance.now(); }
+  if (performance.now() - dernierEveil < 5000) { eveilEnAttente = false; return false; }
+  if (jouerAccueil()) { eveilEnAttente = false; dernierEveil = performance.now(); return true; }
+  return false;
+}
+// Quand il prend la parole de lui-même, sa première phrase attend la fin du son d'éveil
+// (sinon sa voix part par-dessus). finAccueil = fin du son + 300 ms de marge.
+function attendreFinEveil(moi) {
+  return new Promise(ok => {
+    const tic = () => { if (moi !== numeroLecture || performance.now() >= finAccueil) ok(); else setTimeout(tic, 50); };
+    tic();
+  });
 }
 // liste des sons dans Réglages, rangés par famille, avec leur numéro de la page de démonstration
 function remplirChoixAccueil() {
@@ -1641,6 +1674,7 @@ $('btnMuet').onclick = () => {
 };
 majMuet();
 function couperLecture() {
+  eteindreAccueil('voix coupée');
   numeroLecture++;
   voixActive = false;
   baisserVoix(false);
@@ -1656,6 +1690,7 @@ function baisserVoix(oui) {
   if (oui === voixBaissee) return;
   voixBaissee = oui;
   if (oui) {
+    eteindreAccueil('vérification d\'une interruption');
     try { lecteur.volume = 0.1; } catch (e) {}
     if (lecteur.volume > 0.5) { lecteur.muted = true; muetPourVerif = true; }
   } else {
@@ -1678,7 +1713,7 @@ function niveauSortie() {
     n = Interruption.niveauA(sortieVoix.env, lecteur.currentTime || 0) * (lecteur.muted ? 0 : lecteur.volume);
   }
   // son d'éveil en cours : on ajoute son niveau, mesuré en direct
-  if (performance.now() < finAccueil) {
+  if (performance.now() < queueAccueil) {
     if (!analyseAccueil) return null;
     if (!tamponAccueil || tamponAccueil.length !== analyseAccueil.fftSize) tamponAccueil = new Float32Array(analyseAccueil.fftSize);
     n = Math.max(n, mesureMicro(analyseAccueil, tamponAccueil).rms);
@@ -1787,7 +1822,8 @@ async function direAVoixHaute(source, spontane) {
   const moi = ++numeroLecture;
   voixActive = true;
   orbe.etat('parole');
-  eveilAvantParole(spontane);   // pendant que la première phrase se prépare
+  // pendant que la première phrase se prépare ; s'il parle de lui-même, elle attendra la fin du son
+  const attendreEveil = (eveilAvantParole(spontane) || performance.now() < finAccueil) && spontane;
   const pulse = setInterval(() => orbe.impulsion(4), 180);
   const veille = surveillerInterruption(moi);
   try {
@@ -1813,6 +1849,11 @@ async function direAVoixHaute(source, spontane) {
       preparer(i); preparer(i + 1); preparer(i + 2);
       const blob = await prets[i];
       if (moi !== numeroLecture) break;   // coupée pendant la préparation de la phrase
+      if (i === 0 && attendreEveil && performance.now() < finAccueil) {
+        diag('son : première phrase en attente de la fin du son d\'éveil (' + Math.round(finAccueil - performance.now()) + ' ms)');
+        await attendreFinEveil(moi);
+        if (moi !== numeroLecture) break;
+      }
       preparer(i + 1); preparer(i + 2);
       const att = Math.round(performance.now() - attente);
       diag('son : phrase ' + (i + 1) + (f.fini ? '/' + phrases.length : '') + ' prête en ' + Math.round(performance.now() - depart[i]) + ' ms' +
@@ -1823,6 +1864,7 @@ async function direAVoixHaute(source, spontane) {
       lecteur.src = url;
       sortieVoix.env = null; sortieVoix.url = lecteur.src;
       if (blob.enveloppe) blob.enveloppe.then(e => { if (sortieVoix.url === lecteur.src) sortieVoix.env = e; });
+      eteindreAccueil('sa voix commence');
       const interrompu = await new Promise(res => {
         lecteur.onended = () => res(false);
         lecteur.onerror = () => res(false);
