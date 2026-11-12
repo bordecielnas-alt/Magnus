@@ -244,6 +244,8 @@ NOTE_OUTILS_DOCKER = (
     "<nom> ? ». Si la cause reviendra au redémarrage (disque plein, config invalide…), dis-le au lieu de le proposer. "
     "Pour allumer (démarrer) ou éteindre (arrêter) un conteneur, appelle demander_redemarrage avec l'action "
     "« demarrer » ou « arreter », puis termine par « Je démarre <nom> ? » ou « J'arrête <nom> ? ». "
+    "Pour mettre à jour un conteneur (nouvelle image), appelle demander_redemarrage avec l'action "
+    "« mettre_a_jour », puis termine par « Je mets à jour <nom> ? » : tu peux le faire, ne renvoie pas vers Unraid. "
     "Dis les états comme on les dit à l'oral (« Plex tourne depuis deux heures », « Radarr est arrêté depuis "
     "cinq minutes ») : jamais de statut Docker brut en anglais ni entre parenthèses."
 )
@@ -320,7 +322,7 @@ class MessageTelegram(BaseModel):
 
 class DemandeRedemarrage(BaseModel):
     nom: str = Field(min_length=1, max_length=100)
-    action: Literal["redemarrer", "demarrer", "arreter"] = "redemarrer"
+    action: Literal["redemarrer", "demarrer", "arreter", "mettre_a_jour"] = "redemarrer"
     conversation: str = Field(default="", max_length=64)
 
 
@@ -1454,7 +1456,8 @@ def creer_app(config: Config | None = None, registre: Registre | None = None,
         if not c:
             raise HTTPException(404, f"conteneur « {r.nom} » introuvable ou ambigu")
         redemarrage_attente[r.conversation] = (c["nom"], compte, time.monotonic(), r.action)
-        question = {"redemarrer": "Je redémarre", "demarrer": "Je démarre", "arreter": "J'arrête"}[r.action]
+        question = {"redemarrer": "Je redémarre", "demarrer": "Je démarre", "arreter": "J'arrête",
+                    "mettre_a_jour": "Je mets à jour"}[r.action]
         return {"en_attente": f"demande « {question} {c['nom']} ? » ; rien n'est fait avant le oui",
                 "etat_actuel": statut_lisible(c.get("statut"), c.get("etat"))}
 
@@ -2468,14 +2471,22 @@ def creer_app(config: Config | None = None, registre: Registre | None = None,
             nom_c, action_c = attente_r[0], attente_r[3]
             if RE_NON_DEBUT.match(d.message) or attente_r[1] != compte:
                 rien = {"redemarrer": "je ne redémarre rien", "demarrer": "je ne démarre rien",
-                        "arreter": "je n'arrête rien"}[action_c]
+                        "arreter": "je n'arrête rien", "mettre_a_jour": "je ne mets rien à jour"}[action_c]
                 return _reponse_ha(d.flux, f"D'accord, {rien}.", {"role": "docker", "raison": "annulé"},
                                    "docker", "unraid", 0)
             fait = {"redemarrer": ("a redémarré", "Le redémarrage", "conteneur_redémarré"),
                     "demarrer": ("est démarré", "Le démarrage", "conteneur_démarré"),
-                    "arreter": ("est arrêté", "L'arrêt", "conteneur_arrêté")}[action_c]
+                    "arreter": ("est arrêté", "L'arrêt", "conteneur_arrêté"),
+                    "mettre_a_jour": ("est à jour et tourne", "La mise à jour", "mise_a_jour_docker")}[action_c]
             try:
-                res = await docker.agir(nom_c, action_c, cfg.docker.cle_unraid_actions())
+                if action_c == "mettre_a_jour":
+                    res = await docker.mettre_a_jour(nom_c, cfg.docker.cle_unraid_actions())
+                    # l'annonce « mise à jour disponible » de ce conteneur n'a plus lieu d'être
+                    for a in annonces.liste:
+                        if (a.get("cible") or {}).get("conteneur") == res["nom"] and a.get("cle", "").startswith("maj:"):
+                            annonces.resoudre(a["cle"])
+                else:
+                    res = await docker.agir(nom_c, action_c, cfg.docker.cle_unraid_actions())
                 attendu = res["etat"] in (("exited", "stopped", "created") if action_c == "arreter" else ("running",))
                 texte_r = (f"C'est fait, {res['nom']} {fait[0]}." if attendu or not (res["etat"] or res["statut"])
                            else f"C'est fait, mais {res['nom']} est {statut_lisible(res['statut'], res['etat'])}.")

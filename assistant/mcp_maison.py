@@ -140,13 +140,16 @@ OUTILS_DOCKER += [
     },
     {
         "name": "demander_redemarrage",
-        "description": "Prépare le redémarrage, le démarrage (« allume ») ou l'arrêt (« éteins ») d'un conteneur. "
+        "description": "Prépare le redémarrage, le démarrage (« allume »), l'arrêt (« éteins ») ou la mise à jour "
+                       "(nouvelle image, comme « Mettre à jour » dans Unraid) d'un conteneur. "
                        "Rien n'est fait tout de suite : termine ta réponse par « Je redémarre <nom> ? », « Je démarre "
-                       "<nom> ? » ou « J'arrête <nom> ? » ; l'action a lieu seulement si la personne répond oui. "
+                       "<nom> ? », « J'arrête <nom> ? » ou « Je mets à jour <nom> ? » ; l'action a lieu seulement si "
+                       "la personne répond oui. "
                        "Le nom peut être approximatif (transcription vocale) : utilise le nom renvoyé.",
         "inputSchema": {"type": "object", "properties": {
             "nom": {"type": "string"},
-            "action": {"type": "string", "enum": ["redemarrer", "demarrer", "arreter"], "default": "redemarrer"}},
+            "action": {"type": "string", "enum": ["redemarrer", "demarrer", "arreter", "mettre_a_jour"],
+                       "default": "redemarrer"}},
             "required": ["nom"]},
     },
 ]
