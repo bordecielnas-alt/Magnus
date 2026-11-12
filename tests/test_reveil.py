@@ -160,3 +160,21 @@ def test_bruit_mal_transcrit_ignore():
     assert r.analyser("Magnus, Escortrack, SIL, SALVAF", "Magnus", "c")["action"] == "reveil"   # on écoute la suite
     assert r.analyser("Etant, L1, Binder", "Magnus", "c")["action"] == "ignorer"
     assert r.analyser("état de Plex", "Magnus", "c")["action"] == "commande"
+
+
+def test_theme_garde_apres_redemarrage(tmp_path, monkeypatch):
+    """Le serveur lancé par run() reçoit sa config : le thème choisi doit quand même être écrit
+    dans config.yaml, sinon il revient à l'orbe au redémarrage du conteneur."""
+    import uvicorn
+    from fastapi.testclient import TestClient
+    from assistant import main as M
+    from assistant.config import charger
+
+    fichier = tmp_path / "config.yaml"
+    monkeypatch.setenv("ASSISTANT_CONFIG", str(fichier))
+    monkeypatch.setattr(M, "charger_secrets", lambda: None)
+    apps = []
+    monkeypatch.setattr(uvicorn, "run", lambda app, **kw: apps.append(app))
+    M.run()
+    TestClient(apps[0]).post("/api/theme", json={"theme": "hal"})
+    assert charger(env={}, fichier=fichier).identite.theme == "hal"   # relu comme au redémarrage

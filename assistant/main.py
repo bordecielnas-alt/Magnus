@@ -3017,7 +3017,9 @@ def run() -> None:
     if secrets:
         print(f"Secrets chargés depuis {secrets}")
     cfg = charger()
-    uvicorn.run(creer_app(cfg), host=cfg.serveur.hote, port=cfg.serveur.port)
+    # persister=True : la config est passée, mais les réglages changés depuis la page (thème, voix,
+    # chat Telegram) doivent quand même être écrits dans config.yaml pour survivre au redémarrage.
+    uvicorn.run(creer_app(cfg, persister=True), host=cfg.serveur.hote, port=cfg.serveur.port)
 
 
 if __name__ == "__main__":
