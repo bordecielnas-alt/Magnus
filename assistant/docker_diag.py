@@ -112,6 +112,95 @@ def causes_probables(diag: dict) -> list[str]:
     return causes[:4]
 
 
+# --- statuts Docker (« Up 2 hours (healthy) », « Exited (137) 5 minutes ago ») dits en français ------------------
+UNITES = {"second": ("seconde", "f"), "minute": ("minute", "f"), "hour": ("heure", "f"), "day": ("jour", "m"),
+          "week": ("semaine", "f"), "month": ("mois", "m"), "year": ("an", "m")}
+RE_DUREE = re.compile(r"(less than a second|about an? (\w+)|(\d+) (\w+?)s?)\b", re.I)
+
+
+def _duree(texte: str) -> str | None:
+    """« 2 hours » → « 2 heures », « About a minute » → « environ une minute » ; None si ce n'est pas une durée."""
+    m = RE_DUREE.match(texte.strip())
+    if not m:
+        return None
+    if m.group(1).lower() == "less than a second":
+        return "moins d'une seconde"
+    if m.group(2):
+        unite = UNITES.get(m.group(2).lower().rstrip("s"))
+        return f"environ {'une' if unite[1] == 'f' else 'un'} {unite[0]}" if unite else None
+    n, unite = int(m.group(3)), UNITES.get(m.group(4).lower())
+    if not unite:
+        return None
+    if n == 1:
+        return f"{'une' if unite[1] == 'f' else 'un'} {unite[0]}"
+    return f"{n} {unite[0] if unite[0].endswith('s') else unite[0] + 's'}"
+
+
+def _arret(code: int | None, duree: str | None) -> str:
+    depuis = f" depuis {duree}" if duree else ""
+    if code is None:
+        return "arrêté" + depuis
+    if code == 0:
+        return "arrêté normalement" + depuis
+    if code == 137:
+        return "arrêté de force" + depuis
+    if code == 143:
+        return "arrêté sur demande" + depuis
+    return f"arrêté{depuis} après une erreur (code {code})"
+
+
+ETATS_FR = {"running": "en marche", "exited": "arrêté", "stopped": "arrêté", "created": "créé mais jamais démarré",
+            "restarting": "en train de redémarrer", "paused": "en pause", "dead": "hors service",
+            "removing": "en cours de suppression"}
+
+
+def statut_lisible(statut: str | None, etat: str | None = "") -> str:
+    """Le statut brut de Docker en français parlé, à placer après « est » :
+    « Up Less than a second » → « démarré à l'instant », « Up 2 hours (healthy) » → « en marche depuis 2 heures »,
+    « Exited (137) 5 minutes ago » → « arrêté de force depuis 5 minutes ». Jamais d'anglais brut en sortie."""
+    s = (statut or "").strip()
+    etat = (etat or "").strip().lower()
+    sante = ""
+    m = re.search(r"\s*\((healthy|unhealthy|health: starting|paused)\)\s*$", s, re.I)
+    if m:
+        s = s[:m.start()].strip()
+        sante = m.group(1).lower()
+    phrase = None
+    if m_up := re.match(r"up\b\s*(.*)$", s, re.I):
+        reste = m_up.group(1)
+        d = _duree(reste) if reste else None
+        if not reste or d is None:
+            phrase = "en marche"
+        elif re.match(r"less than|\d+ seconds?\b", reste, re.I):
+            phrase = "démarré à l'instant"
+        else:
+            phrase = f"en marche depuis {d}"
+        if sante == "paused":
+            phrase = "en pause"
+    elif m_ex := re.match(r"exited\s*(?:\((-?\d+)\))?\s*(.*?)(?:\s+ago)?$", s, re.I):
+        code = int(m_ex.group(1)) if m_ex.group(1) else None
+        d = _duree(m_ex.group(2)) if m_ex.group(2) else None
+        phrase = _arret(code, d)
+    elif m_re := re.match(r"restarting\s*(?:\((-?\d+)\))?", s, re.I):
+        code = m_re.group(1)
+        phrase = "en train de redémarrer" + (f" après une erreur (code {code})" if code and code != "0" else "")
+    elif re.match(r"created$", s, re.I):
+        phrase = "créé mais jamais démarré"
+    elif re.match(r"dead$", s, re.I):
+        phrase = "hors service"
+    elif re.match(r"removal in progress$", s, re.I):
+        phrase = "en cours de suppression"
+    elif re.match(r"paused$", s, re.I):
+        phrase = "en pause"
+    if phrase is None:
+        phrase = ETATS_FR.get(etat) or ("dans un état inconnu" if not s or re.search(r"[a-z]", s, re.I) else s)
+    if sante == "unhealthy":
+        phrase += ", mais en mauvaise santé"
+    elif sante == "health: starting":
+        phrase += ", contrôle de santé en cours"
+    return phrase
+
+
 RE_PREFIXE_CONTENEUR = re.compile(r"^(?:(?:le|la|les|l'|du|des|de)\s*)?(?:dockers?|conteneurs?|containers?)\s*", re.I)
 
 

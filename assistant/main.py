@@ -45,7 +45,7 @@ from .rapports import CONSIGNE_JSON, MODELES as MODELES_RAPPORT, Demande, Rappor
 from .rapports import detecter as detecter_rapport, sujet_de as sujet_rapport
 from .presentation import (NOTE_CARTE, NOTE_VOIR, RE_MARQUEUR, SUITE_VALIDE_S, Choix, choisir as choisir_carte,
                            lire_marqueur, marqueur_possible, masquer_texte, phrase as phrase_carte)
-from .docker_diag import Docker, UnraidDocker, causes_probables, normaliser_nom
+from .docker_diag import ETATS_FR, Docker, UnraidDocker, causes_probables, normaliser_nom, statut_lisible
 from .locuteur import Locuteurs
 from .diagnostic import Diagnostic, GestionnaireJournal
 from .securite import COMPTE_MACHINE, NOM_COOKIE, AccesRefuse, Securite, est_locale
@@ -243,7 +243,9 @@ NOTE_OUTILS_DOCKER = (
     "peut aider et que redemarrage_possible est vrai, appelle demander_redemarrage et termine par « Je redémarre "
     "<nom> ? ». Si la cause reviendra au redémarrage (disque plein, config invalide…), dis-le au lieu de le proposer. "
     "Pour allumer (démarrer) ou éteindre (arrêter) un conteneur, appelle demander_redemarrage avec l'action "
-    "« demarrer » ou « arreter », puis termine par « Je démarre <nom> ? » ou « J'arrête <nom> ? »."
+    "« demarrer » ou « arreter », puis termine par « Je démarre <nom> ? » ou « J'arrête <nom> ? ». "
+    "Dis les états comme on les dit à l'oral (« Plex tourne depuis deux heures », « Radarr est arrêté depuis "
+    "cinq minutes ») : jamais de statut Docker brut en anglais ni entre parenthèses."
 )
 
 
@@ -642,7 +644,8 @@ def creer_app(config: Config | None = None, registre: Registre | None = None,
                 mauvais = None
             if mauvais is not None:
                 for nom, c in mauvais.items():
-                    quoi = "est en mauvaise santé" if c["sante"] == "unhealthy" else f"s'est arrêté ({c['statut']})"
+                    quoi = ("est en mauvaise santé" if c["sante"] == "unhealthy"
+                            else f"est {statut_lisible(c['statut'], c['etat'])}")
                     await signaler(f"Le conteneur {nom} {quoi}. Demande-moi un diagnostic.", "important",
                                    "docker", f"docker:{nom}", cfg.telegram.docker)
                 for nom in etat_veille.get("docker", set()) - set(mauvais):
@@ -1453,7 +1456,7 @@ def creer_app(config: Config | None = None, registre: Registre | None = None,
         redemarrage_attente[r.conversation] = (c["nom"], compte, time.monotonic(), r.action)
         question = {"redemarrer": "Je redémarre", "demarrer": "Je démarre", "arreter": "J'arrête"}[r.action]
         return {"en_attente": f"demande « {question} {c['nom']} ? » ; rien n'est fait avant le oui",
-                "etat_actuel": c.get("etat", "")}
+                "etat_actuel": statut_lisible(c.get("statut"), c.get("etat"))}
 
     @app.post("/interne/telegram", include_in_schema=False)
     async def interne_telegram(m: MessageTelegram, x_jeton_interne: str | None = Header(None)) -> dict:
@@ -1511,7 +1514,7 @@ def creer_app(config: Config | None = None, registre: Registre | None = None,
     @app.get("/interne/docker/conteneurs", include_in_schema=False)
     async def interne_conteneurs(x_jeton_interne: str | None = Header(None)) -> list[dict]:
         verifier_jeton(x_jeton_interne)
-        return await docker_ou_erreur(docker.conteneurs())
+        return [pour_modele(c) for c in await docker_ou_erreur(docker.conteneurs())]
 
     @app.get("/interne/docker/diagnostic", include_in_schema=False)
     async def interne_diagnostic(nom: str, x_jeton_interne: str | None = Header(None)) -> dict:
@@ -1519,7 +1522,18 @@ def creer_app(config: Config | None = None, registre: Registre | None = None,
         d = await docker_ou_erreur(docker.diagnostic(nom))
         d["causes_probables"] = causes_probables(d)
         d["redemarrage_possible"] = isinstance(docker, UnraidDocker) and bool(cfg.docker.cle_unraid_actions())
-        return d
+        return pour_modele(d)
+
+    def pour_modele(c: dict) -> dict:
+        """États Docker en français pour le modèle : il les répète tels quels (« Up Less than a second »)."""
+        c = dict(c)
+        if "statut" in c or "etat" in c:
+            c["statut"] = statut_lisible(c.get("statut"), c.get("etat"))
+        if c.get("etat"):
+            c["etat"] = ETATS_FR.get(str(c["etat"]).lower(), c["etat"])
+        if c.get("sante"):
+            c["sante"] = {"healthy": "bonne", "unhealthy": "mauvaise", "starting": "contrôle en cours"}.get(c["sante"], c["sante"])
+        return c
 
     async def docker_ou_erreur(appel):
         if not docker.configure:
@@ -1955,7 +1969,7 @@ def creer_app(config: Config | None = None, registre: Registre | None = None,
             raise
         annonces.resoudre(a["cle"])
         auditer(requete, "mise_a_jour_docker", conteneur=nom, decision="mise à jour", etat=r["etat"])
-        etat = "et tourne" if r["etat"] == "running" else f"({r['statut'] or r['etat'] or 'état inconnu'})"
+        etat = "et tourne" if r["etat"] == "running" else f"mais il est {statut_lisible(r['statut'], r['etat'])}"
         return {"ok": True, "texte": f"C'est fait : {r['nom']} est à jour {etat}.", "etat": r["etat"]}
 
     @app.post("/api/briefing")
@@ -2457,12 +2471,14 @@ def creer_app(config: Config | None = None, registre: Registre | None = None,
                         "arreter": "je n'arrête rien"}[action_c]
                 return _reponse_ha(d.flux, f"D'accord, {rien}.", {"role": "docker", "raison": "annulé"},
                                    "docker", "unraid", 0)
-            fait = {"redemarrer": ("redémarre", "Le redémarrage", "conteneur_redémarré"),
-                    "demarrer": ("démarre", "Le démarrage", "conteneur_démarré"),
-                    "arreter": ("s'arrête", "L'arrêt", "conteneur_arrêté")}[action_c]
+            fait = {"redemarrer": ("a redémarré", "Le redémarrage", "conteneur_redémarré"),
+                    "demarrer": ("est démarré", "Le démarrage", "conteneur_démarré"),
+                    "arreter": ("est arrêté", "L'arrêt", "conteneur_arrêté")}[action_c]
             try:
                 res = await docker.agir(nom_c, action_c, cfg.docker.cle_unraid_actions())
-                texte_r = f"C'est fait : {res['nom']} {fait[0]} ({res['statut'] or res['etat']})."
+                attendu = res["etat"] in (("exited", "stopped", "created") if action_c == "arreter" else ("running",))
+                texte_r = (f"C'est fait, {res['nom']} {fait[0]}." if attendu or not (res["etat"] or res["statut"])
+                           else f"C'est fait, mais {res['nom']} est {statut_lisible(res['statut'], res['etat'])}.")
                 auditer(requete, fait[2], nom=res["nom"])
             except Exception as e:  # noqa: BLE001
                 texte_r = f"{fait[1]} de {nom_c} a échoué : {e}"

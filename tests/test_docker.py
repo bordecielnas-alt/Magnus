@@ -6,7 +6,7 @@ import struct
 import httpx
 import pytest
 
-from assistant.docker_diag import Docker, demultiplexer
+from assistant.docker_diag import Docker, demultiplexer, statut_lisible
 
 CONTENEURS = [
     {"Id": "a" * 64, "Names": ["/plex"], "Image": "plexinc/pms-docker", "State": "running", "Status": "Up 2 hours (healthy)"},
@@ -193,3 +193,25 @@ def test_unraid_avec_journaux_docker():
     assert all(m == "GET" for m, _ in requetes)
     d.journaux = Docker("http://proxy:2375", transport=httpx.MockTransport(lambda r: httpx.Response(500)))
     assert "journaux Docker illisibles" in asyncio.run(d.diagnostic("radarr"))["remarque"]
+
+
+@pytest.mark.parametrize("brut, etat, attendu", [
+    ("Up Less than a second", "running", "démarré à l'instant"),
+    ("Up 3 seconds", "running", "démarré à l'instant"),
+    ("Up About a minute", "running", "en marche depuis environ une minute"),
+    ("Up 2 hours (healthy)", "running", "en marche depuis 2 heures"),
+    ("Up 1 day", "running", "en marche depuis un jour"),
+    ("Up 4 months", "running", "en marche depuis 4 mois"),
+    ("Up 3 days (unhealthy)", "running", "en marche depuis 3 jours, mais en mauvaise santé"),
+    ("Up 2 hours (Paused)", "paused", "en pause"),
+    ("Exited (0) 1 day ago", "exited", "arrêté normalement depuis un jour"),
+    ("Exited (137) 5 minutes ago", "exited", "arrêté de force depuis 5 minutes"),
+    ("Exited (1) About an hour ago", "exited", "arrêté depuis environ une heure après une erreur (code 1)"),
+    ("Restarting (1) 10 seconds ago", "restarting", "en train de redémarrer après une erreur (code 1)"),
+    ("Created", "created", "créé mais jamais démarré"),
+    ("Up", "running", "en marche"),
+    ("", "exited", "arrêté"),
+    ("Something new", "", "dans un état inconnu"),
+])
+def test_statut_lisible(brut, etat, attendu):
+    assert statut_lisible(brut, etat) == attendu
