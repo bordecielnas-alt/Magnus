@@ -1500,6 +1500,7 @@ async function transcrireEtEnvoyer() {
     finirBulle();
     if (!r.ok) throw new Error(o.detail || r.statusText);
     if (!o.texte) { if (!occupe) orbe.etat('repos'); bulle('erreur', 'Je n\'ai rien entendu.'); return; }
+    if (echoDeMaVoix(o.texte)) { diag('transcription : « ' + o.texte + ' » = mes propres mots (écho), ignoré'); if (!occupe) orbe.etat('repos'); return; }
     const derniere = demander(o.texte, true);
     if (derniere) derniere.title = 'Transcrit en ' + o.duree_ms + ' ms (' + o.duree_audio_s + ' s d\'audio)';
     marquerLocuteur(derniere, o.locuteur);
@@ -1521,6 +1522,40 @@ function decouperPhrases(texte) {
     else phrases.push(p);
   }
   return phrases;
+}
+
+// Ce qu'il vient de dire à voix haute (phrases déjà lancées), gardé quelques secondes après la fin.
+// Si une transcription du micro reprend ses propres mots, c'est son écho, pas toi : on la jette.
+// (Journal du 12/11 : coupé à tort, il a enregistré « Mise à jour de N... », le début de sa réponse.)
+const paroleRecente = {mots: [], fin: 0, enCours: false};
+const ECHO_GARDE_MS = 10000;
+function motsNormalises(t) {
+  return (t || '').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '')
+    .replace(/[^a-z0-9]+/g, ' ').trim().split(' ').filter(Boolean);
+}
+function retenirParole(phrase, nouvelle) {
+  if (nouvelle) paroleRecente.mots = [];
+  paroleRecente.mots.push(...motsNormalises(phrase));
+  if (paroleRecente.mots.length > 400) paroleRecente.mots = paroleRecente.mots.slice(-400);
+  paroleRecente.enCours = true;
+}
+function echoDeMaVoix(texte) {
+  if (!paroleRecente.mots.length) return false;
+  if (!paroleRecente.enCours && performance.now() - paroleRecente.fin > ECHO_GARDE_MS) return false;
+  const m = motsNormalises(texte);
+  if (!m.length) return false;
+  const reference = paroleRecente.mots;
+  if (m.length < 3) {
+    // très court : seulement si c'est exactement une suite de mots qu'il a dite
+    const r = ' ' + reference.join(' ') + ' ';
+    return r.includes(' ' + m.join(' ') + ' ') && m.join('').length >= 4;
+  }
+  // assez long : la plupart de ses paires de mots consécutifs se trouvent dans ce qu'il a dit
+  const paires = new Set();
+  for (let i = 0; i + 1 < reference.length; i++) paires.add(reference[i] + ' ' + reference[i + 1]);
+  let communes = 0;
+  for (let i = 0; i + 1 < m.length; i++) if (paires.has(m[i] + ' ' + m[i + 1])) communes++;
+  return communes / (m.length - 1) >= 0.6;
 }
 
 function synthetiser(phrase) {
@@ -1865,6 +1900,7 @@ async function direAVoixHaute(source, spontane) {
       sortieVoix.env = null; sortieVoix.url = lecteur.src;
       if (blob.enveloppe) blob.enveloppe.then(e => { if (sortieVoix.url === lecteur.src) sortieVoix.env = e; });
       eteindreAccueil('sa voix commence');
+      retenirParole(phrases[i], i === 0);
       const interrompu = await new Promise(res => {
         lecteur.onended = () => res(false);
         lecteur.onerror = () => res(false);
@@ -1889,6 +1925,7 @@ async function direAVoixHaute(source, spontane) {
     clearInterval(pulse);
     if (veille) veille.arreter();
     if (moi === numeroLecture) { lecture = null; voixActive = false; baisserVoix(false); }
+    paroleRecente.enCours = false; paroleRecente.fin = performance.now();
     if (!occupe && !onTEcoute()) orbe.etat('repos');
   }
 }
@@ -2226,6 +2263,11 @@ function envoyerMorceau(rec) {
       diag('écoute continue : ' + o.action + ' en ' + Math.round(performance.now() - t0) + ' ms' + (o.texte ? ' · entendu « ' + o.texte + ' »' : '') + (o.commande && o.commande !== o.texte ? ' · commande « ' + o.commande + ' »' : '') + texteLocuteur(o.locuteur));
       if (o.wake_word) continu.wake = o.wake_word;
       if (typeof o.toujours === 'boolean') continu.toujours = o.toujours;
+      if ((o.action === 'commande' || o.action === 'ignorer') && echoDeMaVoix(o.commande || o.texte)) {
+        diag('écoute continue : « ' + (o.commande || o.texte) + ' » = mes propres mots (écho), ignoré');
+        majVeille();
+        return;
+      }
       // une phrase coupée en deux par une pause : ce morceau est la suite de la commande en attente
       const suite = o.action === 'commande' ? o.commande : o.action === 'ignorer' ? o.texte : '';
       if (continu.suspens && suite && suite.trim()) {
