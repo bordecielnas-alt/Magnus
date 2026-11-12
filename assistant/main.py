@@ -320,6 +320,31 @@ class MessageTelegram(BaseModel):
     conversation: str = Field(default="", max_length=64)
 
 
+def erreur_docker_courte(e: BaseException) -> str:
+    """Une raison d'échec à dire à voix haute : jamais d'URL, de lien ni de message technique entier."""
+    import httpx
+    if isinstance(e, httpx.HTTPStatusError):
+        code = e.response.status_code
+        if code in (502, 503, 504):
+            return "le serveur Unraid n'a pas répondu à temps"
+        return f"le serveur Unraid a répondu par une erreur {code}"
+    if isinstance(e, (httpx.TimeoutException, asyncio.TimeoutError)):
+        return "le serveur Unraid n'a pas répondu à temps"
+    if isinstance(e, httpx.HTTPError):
+        return "le serveur Unraid est injoignable"
+    if isinstance(e, PermissionError):
+        return "la clé Unraid n'a pas les droits pour ça"
+    texte = re.sub(r"https?://\S+", "", str(e)).split("\n")[0].strip(" .:")
+    return texte[:120] or e.__class__.__name__
+
+
+def attente_depassee(e: BaseException) -> bool:
+    """Unraid a lâché la requête (proxy à 60 s) alors que la mise à jour continue peut-être de son côté."""
+    import httpx
+    return (isinstance(e, httpx.HTTPStatusError) and e.response.status_code in (502, 504)) or \
+        isinstance(e, (httpx.TimeoutException, asyncio.TimeoutError))
+
+
 class DemandeRedemarrage(BaseModel):
     nom: str = Field(min_length=1, max_length=100)
     action: Literal["redemarrer", "demarrer", "arreter", "mettre_a_jour"] = "redemarrer"
@@ -1552,6 +1577,59 @@ def creer_app(config: Config | None = None, registre: Registre | None = None,
             journal.info("Docker injoignable : %s : %s", e.__class__.__name__, str(e)[:300])
             raise HTTPException(502, f"Docker injoignable : {e.__class__.__name__} : {str(e)[:200]}") from e
 
+    taches_fond: set[asyncio.Task] = set()
+
+    async def mise_a_jour_suivie(nom: str, intervalle: float = 30, essais: int = 20) -> dict:
+        """Met à jour l'image d'un conteneur. Télécharger une image prend souvent plus d'une minute, et le
+        proxy d'Unraid coupe la requête à 60 s (504) alors que la mise à jour continue : dans ce cas on
+        regarde toutes les 30 s (jusqu'à 10 min) si le conteneur est encore « à mettre à jour ».
+        Renvoie {"ok", "nom", "etat", "statut"} ou {"ok": False, "raison"}."""
+        try:
+            r = await docker.mettre_a_jour(nom, cfg.docker.cle_unraid_actions())
+            return {"ok": True, **r}
+        except Exception as e:  # noqa: BLE001
+            journal.info("mise à jour de %s : %s : %s", nom, e.__class__.__name__, str(e)[:300])
+            if not attente_depassee(e):
+                return {"ok": False, "nom": nom, "raison": erreur_docker_courte(e)}
+        for _ in range(essais):
+            await asyncio.sleep(intervalle)
+            try:
+                if nom in await docker.mises_a_jour():
+                    continue
+                c = await docker.trouver(nom) or {}
+                return {"ok": True, "nom": c.get("nom", nom), "etat": (c.get("etat") or "").lower(),
+                        "statut": c.get("statut", "")}
+            except Exception as e:  # noqa: BLE001 - Unraid encore occupé : on réessaie
+                journal.info("suivi de la mise à jour de %s : %s", nom, e.__class__.__name__)
+        return {"ok": False, "nom": nom, "raison": "le serveur Unraid ne répond plus, regarde l'onglet Docker"}
+
+    def phrase_mise_a_jour(r: dict) -> str:
+        if not r["ok"]:
+            return f"La mise à jour de {r['nom']} n'a pas abouti : {r['raison']}."
+        if r.get("etat") in ("running", ""):
+            return f"C'est fait, {r['nom']} est à jour et tourne."
+        return f"C'est fait, {r['nom']} est à jour, mais il est {statut_lisible(r.get('statut'), r.get('etat'))}."
+
+    def lancer_mise_a_jour(nom: str, conteneur: str, ident_annonce: str = "") -> None:
+        """En arrière-plan : la réponse part tout de suite, le résultat arrive en annonce (dite à voix haute)."""
+        async def suivre() -> None:
+            r = await mise_a_jour_suivie(conteneur)
+            if r["ok"]:
+                for a in annonces.liste:
+                    if (a.get("cible") or {}).get("conteneur") == r["nom"] and a.get("cle", "").startswith("maj:"):
+                        annonces.resoudre(a["cle"])
+            elif ident_annonce:
+                annonces.annuler_decision(ident_annonce)
+            journal.info("mise à jour de %s : %s", conteneur, "faite" if r["ok"] else r["raison"])
+            await signaler(phrase_mise_a_jour(r), "info", "mises à jour", f"majfaite:{conteneur}:{time.time():.0f}",
+                           cfg.telegram.mises_a_jour)
+        t = asyncio.create_task(suivre())
+        taches_fond.add(t)
+        t.add_done_callback(taches_fond.discard)
+
+    app.state.mise_a_jour_suivie = mise_a_jour_suivie
+    app.state.taches_fond = taches_fond
+
     async def agenda_ou_erreur(appel):
         if not agenda.configure:
             raise HTTPException(503, "agenda non configuré (agenda.url)")
@@ -1964,16 +2042,10 @@ def creer_app(config: Config | None = None, registre: Registre | None = None,
             annonces.resoudre(a["cle"])
             auditer(requete, "mise_a_jour_docker", conteneur=nom, decision="ignorée")
             return {"ok": True, "texte": f"D'accord, j'ignore la mise à jour de {nom}."}
-        try:
-            r = await docker_ou_erreur(docker.mettre_a_jour(nom, cfg.docker.cle_unraid_actions()))
-        except HTTPException as e:
-            annonces.annuler_decision(ident)
-            auditer(requete, "mise_a_jour_docker", conteneur=nom, decision="échec", erreur=str(e.detail)[:200])
-            raise
-        annonces.resoudre(a["cle"])
-        auditer(requete, "mise_a_jour_docker", conteneur=nom, decision="mise à jour", etat=r["etat"])
-        etat = "et tourne" if r["etat"] == "running" else f"mais il est {statut_lisible(r['statut'], r['etat'])}"
-        return {"ok": True, "texte": f"C'est fait : {r['nom']} est à jour {etat}.", "etat": r["etat"]}
+        # le téléchargement de l'image peut dépasser la minute (et le proxy d'Unraid) : on suit en arrière-plan
+        lancer_mise_a_jour(nom, nom, ident)
+        auditer(requete, "mise_a_jour_docker", conteneur=nom, decision="lancée")
+        return {"ok": True, "texte": f"Mise à jour de {nom} lancée. Je te préviens quand c'est fini.", "etat": "en cours"}
 
     @app.post("/api/briefing")
     async def demander_briefing() -> dict:
@@ -2478,21 +2550,21 @@ def creer_app(config: Config | None = None, registre: Registre | None = None,
                     "demarrer": ("est démarré", "Le démarrage", "conteneur_démarré"),
                     "arreter": ("est arrêté", "L'arrêt", "conteneur_arrêté"),
                     "mettre_a_jour": ("est à jour et tourne", "La mise à jour", "mise_a_jour_docker")}[action_c]
+            if action_c == "mettre_a_jour":
+                # le téléchargement de l'image peut prendre des minutes : on répond tout de suite
+                lancer_mise_a_jour(nom_c, nom_c)
+                auditer(requete, "mise_a_jour_docker", conteneur=nom_c, decision="lancée à la voix")
+                return _reponse_ha(d.flux, f"Je lance la mise à jour de {nom_c}. Ça peut prendre quelques minutes, "
+                                   "je te préviens quand c'est fini.", {"role": "docker", "raison": "mise à jour lancée"},
+                                   "docker", "unraid", 0)
             try:
-                if action_c == "mettre_a_jour":
-                    res = await docker.mettre_a_jour(nom_c, cfg.docker.cle_unraid_actions())
-                    # l'annonce « mise à jour disponible » de ce conteneur n'a plus lieu d'être
-                    for a in annonces.liste:
-                        if (a.get("cible") or {}).get("conteneur") == res["nom"] and a.get("cle", "").startswith("maj:"):
-                            annonces.resoudre(a["cle"])
-                else:
-                    res = await docker.agir(nom_c, action_c, cfg.docker.cle_unraid_actions())
+                res = await docker.agir(nom_c, action_c, cfg.docker.cle_unraid_actions())
                 attendu = res["etat"] in (("exited", "stopped", "created") if action_c == "arreter" else ("running",))
                 texte_r = (f"C'est fait, {res['nom']} {fait[0]}." if attendu or not (res["etat"] or res["statut"])
                            else f"C'est fait, mais {res['nom']} est {statut_lisible(res['statut'], res['etat'])}.")
                 auditer(requete, fait[2], nom=res["nom"])
             except Exception as e:  # noqa: BLE001
-                texte_r = f"{fait[1]} de {nom_c} a échoué : {e}"
+                texte_r = f"{fait[1]} de {nom_c} a échoué : {erreur_docker_courte(e)}."
                 journal.info("%s de %s impossible : %s", action_c, nom_c, e)
             return _reponse_ha(d.flux, texte_r, {"role": "docker", "raison": f"{action_c} confirmé"}, "docker", "unraid", 0)
 

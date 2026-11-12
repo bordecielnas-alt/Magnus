@@ -208,8 +208,13 @@ def test_allumer_un_conteneur_passe_par_docker(tmp_path, monkeypatch):
     en_attente = c.post("/interne/docker/redemarrer", json={"nom": "plex", "action": "mettre_a_jour", "conversation": "d2"},
                         headers=h).json()["en_attente"]
     assert "Je mets à jour plex ?" in en_attente and not any("updateContainer" in str(v) for v in vus)
-    assert c.post("/api/chat", json={"message": "oui", "conversation": "d2"}).json()["reponse"] == "C'est fait, plex est à jour et tourne."
-    assert any(v[0] == "cle-actions" and v[2] == {"id": "x:1"} for v in vus[-2:])
+    avant = len(vus)
+    with c:                                                             # garde la boucle pour la tâche de fond
+        rep = c.post("/api/chat", json={"message": "oui", "conversation": "d2"}).json()["reponse"]
+        assert rep.startswith("Je lance la mise à jour de plex.")
+        from tests.test_unraid_surveillance import attendre
+        attendre(lambda: any(a["texte"] == "C'est fait, plex est à jour et tourne." for a in c.app.state.annonces.liste))
+    assert any(v[0] == "cle-actions" and v[1].startswith("mutation") for v in vus[avant:])
     c.post("/interne/docker/redemarrer", json={"nom": "plex", "action": "mettre_a_jour", "conversation": "d2"}, headers=h)
     assert c.post("/api/chat", json={"message": "non", "conversation": "d2"}).json()["reponse"] == "D'accord, je ne mets rien à jour."
     # fenêtre d'écoute relancée après la réponse
