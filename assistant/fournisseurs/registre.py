@@ -57,7 +57,8 @@ class Registre:
         secours = self.fournisseurs.get(self.roles.get(ROLE_SECOURS, ""))
         return [principal] + ([secours] if secours and secours is not principal else [])
 
-    async def repondre(self, role: str, messages: list[Message], outils: dict | None = None) -> Reponse:
+    async def repondre(self, role: str, messages: list[Message], outils: dict | None = None,
+                       json_brut: bool = False) -> Reponse:
         if outils:
             morceaux, fin = [], None
             async for x in self.flux(role, messages, outils):
@@ -66,13 +67,14 @@ class Registre:
                 else:
                     morceaux.append(x)
             return fin
-        return await self._repondre(role, messages)
+        return await self._repondre(role, messages, json_brut)
 
-    async def _repondre(self, role: str, messages: list[Message]) -> Reponse:
+    async def _repondre(self, role: str, messages: list[Message], json_brut: bool = False) -> Reponse:
         erreurs = []
         for i, f in enumerate(self._candidats(role)):
             try:
-                texte = await f.repondre(messages)
+                brut = getattr(f, "repondre_json", None) if json_brut else None
+                texte = await (brut(messages) if brut else f.repondre(messages))
                 return Reponse(texte, f.ident, f.modele, secours=i > 0)
             except FournisseurIndisponible as e:
                 erreurs.append(str(e))

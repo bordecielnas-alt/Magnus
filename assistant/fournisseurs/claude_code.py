@@ -48,6 +48,15 @@ NOTE_WEB = (
     "sur ta machine d'exécution (dossier, système, shell) ne concernent pas l'utilisateur : n'en parle pas."
 )
 
+# Carte de rapport : la réponse est un objet JSON lu par le serveur, pas une phrase lue à voix haute.
+# Sources et liens y sont voulus (champs « url ») : ni la consigne orale ni le nettoyage ne s'appliquent.
+NOTE_WEB_JSON = (
+    "Tu peux chercher sur le web (WebSearch, WebFetch) : fais-le pour toute information récente. "
+    "Ta réponse n'est pas lue à voix haute : elle est lue par un programme. Réponds uniquement par l'objet JSON "
+    "demandé, sans texte avant ni après, et mets les adresses des sources dans ses champs « url ». "
+    "Tu ne peux ni exécuter de commande, ni lire ou écrire de fichier."
+)
+
 
 # La recherche web demande au modèle de lister ses sources : la réponse est lue à voix haute, on les retire.
 RE_SOURCES = re.compile(r"(?:^|\n)[ \t]*[*_#>-]*[ \t]*(?:sources?|r[ée]f[ée]rences?|liens?)[ \t]*[*_]*[ \t]*:", re.I)
@@ -150,7 +159,7 @@ class FournisseurClaudeCode(Fournisseur):
         self.dossier = Path(tempfile.gettempdir()) / "assistant-claude"  # dossier neutre, sans CLAUDE.md
         self._dispo: tuple[float, bool] | None = None
 
-    def _arguments(self, binaire: str, systeme: str, outils: dict | None = None) -> list[str]:
+    def _arguments(self, binaire: str, systeme: str, outils: dict | None = None, json_brut: bool = False) -> list[str]:
         args = [
             binaire, "-p",
             "--output-format", "stream-json", "--verbose", "--include-partial-messages",
@@ -169,6 +178,8 @@ class FournisseurClaudeCode(Fournisseur):
         note = NOTE_WEB if self.recherche_web else NOTE_SANS_OUTILS
         if outils:
             note = outils["note"] + "\n\n" + (NOTE_WEB if self.recherche_web else "")
+        if json_brut:
+            note = NOTE_WEB_JSON if self.recherche_web else NOTE_SANS_OUTILS
         args += ["--system-prompt", (systeme + "\n\n" + note).strip()]
         if self.effort:
             args += ["--effort", self.effort]
@@ -187,13 +198,14 @@ class FournisseurClaudeCode(Fournisseur):
         async for x in sans_sources(self._flux_brut(messages, outils)):
             yield x
 
-    async def _flux_brut(self, messages: list[Message], outils: dict | None = None) -> AsyncIterator[str]:
+    async def _flux_brut(self, messages: list[Message], outils: dict | None = None,
+                         json_brut: bool = False) -> AsyncIterator[str]:
         binaire = resoudre_binaire(self.commande)
         if not binaire:
             raise FournisseurIndisponible(f"{self.ident} : commande « {self.commande} » introuvable")
         systeme, invite = construire_invite(messages)
         try:
-            proc = self._lancer(self._arguments(binaire, systeme, outils))
+            proc = self._lancer(self._arguments(binaire, systeme, outils, json_brut))
         except OSError as e:
             raise FournisseurIndisponible(f"{self.ident} : {e}") from e
 
@@ -259,6 +271,11 @@ class FournisseurClaudeCode(Fournisseur):
 
     async def repondre(self, messages: list[Message], options: dict | None = None) -> str:
         return "".join([m async for m in self.flux(messages)])
+
+    async def repondre_json(self, messages: list[Message]) -> str:
+        """Réponse brute pour une carte de rapport : sans « Sources : » coupé ni adresses retirées
+        (sinon les champs « url » du JSON deviennent des guillemets ouverts et le JSON est illisible)."""
+        return "".join([m async for m in self._flux_brut(messages, json_brut=True)])
 
     async def disponible(self) -> bool:
         """Binaire présent et compte connecté (`claude auth status`), en cache 60 s."""
