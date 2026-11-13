@@ -1792,7 +1792,26 @@ function analyseInterruption(texte) {
 function ecouteParNom(flux, surCoupe) {
   const d = window.Interruption ? Interruption.creerDetecteur({gain: gainEcho, verifier: false}) : null;
   let rec = null, recus = [], entendu = false, debutRec = 0, derniereVoix = 0, envois = 0;
+  // tot : son nom (ou « stop ») déjà reconnu dans le début de ta phrase, il s'est tu sans attendre
+  // la fin ; on garde l'enregistrement jusqu'au silence pour envoyer la phrase entière.
+  let tot = false, partiels = 0;
   const arreterRec = () => { const r = rec; rec = null; entendu = false; if (r && r.state === 'recording') r.stop(); return r; };
+  const partiel = async (morceaux, type) => {
+    // début de phrase transcrit pendant que tu parles : s'il contient son nom ou « stop », il se tait tout de suite
+    const blob = new Blob(morceaux, {type: type || 'audio/webm'});
+    if (blob.size < 2000) return;
+    try {
+      const r = await fetch('/api/voix/transcrire?partiel=1&conversation=' + encodeURIComponent(conversation), {method: 'POST', headers: {'Content-Type': blob.type}, body: blob});
+      const o = r.ok ? await r.json() : {};
+      const texte = (o.texte || '').trim();
+      if (!texte || tot || !voixActive || !rec) return;
+      if (!analyseInterruption(texte)) return;
+      tot = true;
+      diag('interruption : « ' + texte + ' »… → il se tait tout de suite');
+      couperLecture();
+      orbe.etat('ecoute');
+    } catch (e) { /* la transcription de fin de phrase fera foi */ }
+  };
   const transcrire = async (morceaux, type) => {
     const blob = new Blob(morceaux, {type: type || 'audio/webm'});
     if (blob.size < 2000) return;
@@ -1801,9 +1820,11 @@ function ecouteParNom(flux, surCoupe) {
       const r = await fetch('/api/voix/transcrire?conversation=' + encodeURIComponent(conversation), {method: 'POST', headers: {'Content-Type': blob.type}, body: blob});
       const o = r.ok ? await r.json() : {};
       const texte = (o.texte || '').trim();
-      if (!texte) return;
-      if (!voixActive) { diag('interruption : « ' + texte + ' » arrivé après sa réponse, ignoré'); return; }
+      const dejaTu = tot; tot = false;
+      if (!texte) { if (dejaTu) surCoupe('', o); return; }
+      if (!voixActive && !dejaTu) { diag('interruption : « ' + texte + ' » arrivé après sa réponse, ignoré'); return; }
       const a = analyseInterruption(texte);
+      if (!a && dejaTu) { surCoupe('', o); return; }   // il s'est déjà tu : il t'écoute
       if (!a) { diag('interruption : « ' + texte + ' » sans son nom ni « stop » (ou ses propres mots), il continue'); return; }
       diag('interruption : « ' + texte + ' » → il se tait');
       surCoupe(a.reste, o);
@@ -1815,18 +1836,25 @@ function ecouteParNom(flux, surCoupe) {
       if (!d) return;
       const r = d.image(rms, pic, niveauSortie(), t);
       if (r === 'debut' && !rec) {
-        recus = []; rec = new MediaRecorder(flux); debutRec = t;
+        recus = []; rec = new MediaRecorder(flux); debutRec = t; partiels = 0;
         rec.ondataavailable = ev => { if (ev.data.size) recus.push(ev.data); };
         rec.start(250);
       }
       if (r === 'debut' || d.candidat) derniereVoix = t;
       if (r === 'coupe') entendu = true;   // ça dure : on garde l'enregistrement jusqu'au silence
       else if (r === 'abandon' && !entendu) arreterRec();
-      if (rec && entendu && (t - derniereVoix > 900 || t - debutRec > 8000) && envois < 2) {
+      // son nom vient en général en premier : on transcrit le début de phrase à ~1 s et ~2 s sans attendre le silence
+      if (rec && entendu && !tot && voixActive && partiels < 2 && t - debutRec > 1000 * (partiels + 1)) {
+        partiels++;
+        partiel(recus.slice(), rec.mimeType);
+      }
+      if (rec && entendu && (t - derniereVoix > 700 || t - debutRec > 8000) && envois < 2) {
         const r2 = arreterRec(), morceaux = recus;
         r2.onstop = () => transcrire(morceaux, r2.mimeType);
       }
     },
+    // vrai tant qu'il s'est tu sur ton nom et que ta phrase s'enregistre encore : continuer à appeler image()
+    garde() { return tot && !!rec; },
     fin() { arreterRec(); if (d) retenirGainEcho(d); }
   };
 }
@@ -1862,7 +1890,8 @@ function surveillerInterruption(moi) {
     const fbuf = new Float32Array(an.fftSize), ecoute = ecouteParNom(flux, coupeParNom);
     diag('interruption : j\'écoute ton « ' + (continu.wake || nom) + ' » ou « stop » pendant qu\'il parle');
     const tic = () => {
-      if (etat.fini || moi !== numeroLecture || enregistreur || continu.actif || !microChaudPret()) { ecoute.fin(); ctx.close().catch(() => {}); return; }
+      const garde = ecoute.garde();
+      if (!garde && (etat.fini || moi !== numeroLecture || enregistreur || continu.actif || !microChaudPret())) { ecoute.fin(); ctx.close().catch(() => {}); return; }
       if (ctx.state === 'running') { const {rms, pic} = mesureMicro(an, fbuf); ecoute.image(rms, pic, performance.now()); }
       requestAnimationFrame(tic);
     };
@@ -2197,8 +2226,9 @@ function analyserContinu() {
     }
     if (t - dernierC > 5000) { diag('écoute continue : niveau max ' + picC + ' (contexte ' + ctx.state + ')'); picC = 0; dernierC = t; }
     if (enMorceau && ctx.state === 'running') { an.getFloatTimeDomainData(fbufC); volC.ajouter(fbufC); }
-    if (voixActive) {
+    if (voixActive || (det && det.garde())) {
       // L'assistant parle : on n'enregistre pas sa voix ; il se tait seulement si tu dis son nom ou « stop »
+      // (garde : il vient de se taire sur ton nom, ta phrase finit de s'enregistrer)
       enMorceau = false; jeter();
       det = det || ecouteParNom(continu.flux, coupeParNom);
       if (interruption && ctx.state === 'running') { const {rms, pic} = mesureMicro(an, fbufC); det.image(rms, pic, t); }

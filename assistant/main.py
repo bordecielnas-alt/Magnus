@@ -537,6 +537,7 @@ def creer_app(config: Config | None = None, registre: Registre | None = None,
     if isinstance(docker, UnraidDocker) and cfg.docker.url:
         docker.journaux = Docker(cfg.docker.url, cfg.docker.timeout)   # l'API Unraid ne donne pas les journaux
     annonces = Annonces(securite.fichier.parent, cfg.proactif.heures_calmes)
+    conteneurs_en_travaux: dict[str, float] = {}   # nom (minuscules) -> fin de la période sans alerte
     maj_ignorees = MisesAJourIgnorees(securite.fichier.parent)
     telegram = Telegram(cfg.telegram.jeton(), cfg.telegram.chat_id)
     rappels = Rappels(securite.fichier.parent)
@@ -670,6 +671,9 @@ def creer_app(config: Config | None = None, registre: Registre | None = None,
             except Exception:  # noqa: BLE001
                 mauvais = None
             if mauvais is not None:
+                # conteneur en cours de mise à jour (Unraid le recrée : arrêté ou « dead » un moment) : pas d'alerte
+                maintenant_t = time.time()
+                mauvais = {n: c for n, c in mauvais.items() if conteneurs_en_travaux.get(n.lower(), 0) < maintenant_t}
                 for nom, c in mauvais.items():
                     quoi = ("est en mauvaise santé" if c["sante"] == "unhealthy"
                             else f"est {statut_lisible(c['statut'], c['etat'])}")
@@ -902,6 +906,8 @@ def creer_app(config: Config | None = None, registre: Registre | None = None,
     app.state.annonces = annonces
     app.state.fil = fil
     app.state.surveiller_une_fois = surveiller_une_fois     # pour les tests
+    app.state.conteneurs_en_travaux = conteneurs_en_travaux
+    app.state.docker = docker
     app.state.evaluer_regles_une_fois = evaluer_regles_une_fois
     app.state.regles = regles
 
@@ -1612,9 +1618,18 @@ def creer_app(config: Config | None = None, registre: Registre | None = None,
 
     def lancer_mise_a_jour(nom: str, conteneur: str, ident_annonce: str = "") -> None:
         """En arrière-plan : la réponse part tout de suite, le résultat arrive en annonce (dite à voix haute)."""
+        noms = {conteneur.lower(), (nom or conteneur).lower()}
+        for n in noms:   # pendant la mise à jour, puis 3 min après (redémarrage) : pas d'alerte « hors service »
+            conteneurs_en_travaux[n] = time.time() + 20 * 60
+
         async def suivre() -> None:
-            r = await mise_a_jour_suivie(conteneur)
+            try:
+                r = await mise_a_jour_suivie(conteneur)
+            finally:
+                for n in noms:
+                    conteneurs_en_travaux[n] = time.time() + 180
             if r["ok"]:
+                annonces.resoudre(f"docker:{r['nom']}")
                 for a in annonces.liste:
                     if (a.get("cible") or {}).get("conteneur") == r["nom"] and a.get("cle", "").startswith("maj:"):
                         annonces.resoudre(a["cle"])

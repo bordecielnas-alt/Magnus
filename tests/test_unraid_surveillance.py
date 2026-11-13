@@ -208,3 +208,21 @@ def test_mise_a_jour_au_dela_du_proxy(tmp_path, monkeypatch):
     req = httpx.Request("POST", URL)
     assert main.erreur_docker_courte(httpx.HTTPStatusError("x", request=req, response=httpx.Response(504, request=req))) \
         == "le serveur Unraid n'a pas répondu à temps"
+
+
+def test_pas_d_alerte_pendant_une_mise_a_jour(tmp_path, monkeypatch):
+    """Unraid recrée le conteneur pendant sa mise à jour : « n8n est hors service » ne doit pas être annoncé."""
+    import time
+    vus = []
+    app, c = app_de_test(tmp_path, monkeypatch, vus)
+
+    async def problemes():
+        return [{"nom": "plex", "etat": "dead", "statut": "Dead", "sante": ""}]
+    monkeypatch.setattr(app.state.docker, "problemes", problemes)
+    app.state.conteneurs_en_travaux["plex"] = time.time() + 60
+    asyncio.run(app.state.surveiller_une_fois({}))
+    assert not [a for a in app.state.annonces.liste if a["cle"] == "docker:plex"]
+    app.state.conteneurs_en_travaux["plex"] = time.time() - 1          # période finie : l'alerte revient
+    asyncio.run(app.state.surveiller_une_fois({}))
+    assert [a for a in app.state.annonces.liste if a["cle"] == "docker:plex"]
+
