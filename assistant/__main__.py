@@ -39,7 +39,9 @@ def principal() -> None:
     log.info("journal écrit dans %s", journal["handlers"]["fichier"]["filename"])
     if secrets:
         log.info("secrets chargés depuis %s", secrets)
-    uvicorn.run(creer_app(cfg), host=cfg.serveur.hote, port=cfg.serveur.port, log_config=journal)
+    # persister=True : les réglages changés depuis la page (thème, voix, chat Telegram) sont écrits
+    # dans config.yaml, sinon ils sont perdus au redémarrage du conteneur.
+    uvicorn.run(creer_app(cfg, persister=True), host=cfg.serveur.hote, port=cfg.serveur.port, log_config=journal)
 
 
 principal()

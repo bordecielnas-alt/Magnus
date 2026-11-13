@@ -40,8 +40,8 @@ class Faux(cc.FournisseurClaudeCode):
         self.mode = mode
         self.args_vus = None
 
-    def _arguments(self, binaire, systeme, outils=None):
-        self.args_vus = super()._arguments(binaire, systeme, outils)
+    def _arguments(self, binaire, systeme, outils=None, json_brut=False):
+        self.args_vus = super()._arguments(binaire, systeme, outils, json_brut)
         return [sys.executable, str(self.script), self.mode]
 
 
@@ -154,3 +154,24 @@ def test_sources_retirees_de_la_reponse():
     assert r(["Paris est la capitale (source : wiki) de la France."]) == "Paris est la capitale de la France."
     assert r(["Je cherche.", "\n\n", "Il fera 10 °C."]) == "Je cherche.\n\nIl fera 10 °C."
     assert r(["Ligne 1\nLigne 2"]) == "Ligne 1\nLigne 2"
+
+
+def test_reponse_json_garde_les_adresses():
+    """Carte de rapport : le JSON garde ses « url » (le nettoyage pour la voix les retirait et le cassait)."""
+    import json
+    from assistant.rapports import lire_json
+    o = {"titre": "Actus", "articles": [{"titre": "A", "url": "https://www.lemonde.fr/a"}],
+         "sources": [{"titre": "Le Monde", "url": "https://www.lemonde.fr"}]}
+    texte = json.dumps(o, ensure_ascii=False, indent=1)
+    f = cc.FournisseurClaudeCode("claude", "sonnet", commande="inutile")
+
+    async def brut(messages, outils=None, json_brut=False):
+        assert json_brut
+        for i in range(0, len(texte), 7):
+            yield texte[i:i + 7]
+    f._flux_brut = brut
+    lu = lire_json(asyncio.run(f.repondre_json(MSGS)))
+    assert lu["articles"][0]["url"] == "https://www.lemonde.fr/a" and lu["sources"][0]["url"] == "https://www.lemonde.fr"
+    a = f._arguments("claude", "Tu es X.", json_brut=True)
+    consigne = a[a.index("--system-prompt") + 1]
+    assert "JSON" in consigne and "ne cite jamais de sources" not in consigne

@@ -617,7 +617,7 @@ def creer_app(config: Config | None = None, registre: Registre | None = None,
     async def demander_json(consigne: str) -> str:
         """Claude avec le web, pour une carte de rapport ; le secours (sans web) inventerait : refusé."""
         msgs = [Message("system", cfg.consigne_effective + "\n\n" + CONSIGNE_JSON), Message("user", consigne)]
-        r = await reg.repondre(cfg.routeur.role_complexe, msgs)
+        r = await reg.repondre(cfg.routeur.role_complexe, msgs, json_brut=True)
         if r.secours:
             raise RapportIndisponible("Claude ne répond pas pour le moment (le modèle de secours n'a pas accès au web).")
         return r.texte

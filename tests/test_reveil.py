@@ -178,3 +178,24 @@ def test_theme_garde_apres_redemarrage(tmp_path, monkeypatch):
     M.run()
     TestClient(apps[0]).post("/api/theme", json={"theme": "hal"})
     assert charger(env={}, fichier=fichier).identite.theme == "hal"   # relu comme au redémarrage
+
+
+def test_theme_garde_apres_redemarrage_conteneur(tmp_path, monkeypatch):
+    """Le conteneur lance « python -m assistant » (assistant/__main__.py), pas main.run() :
+    ce chemin-là aussi doit écrire le thème dans config.yaml."""
+    import logging.config
+    import runpy
+    import uvicorn
+    from fastapi.testclient import TestClient
+    from assistant import config as C
+
+    fichier = tmp_path / "config.yaml"
+    monkeypatch.setenv("ASSISTANT_CONFIG", str(fichier))
+    monkeypatch.setenv("ASSISTANT_ETAT", str(tmp_path))
+    monkeypatch.setattr(C, "charger_secrets", lambda: None)
+    monkeypatch.setattr(logging.config, "dictConfig", lambda c: None)
+    apps = []
+    monkeypatch.setattr(uvicorn, "run", lambda app, **kw: apps.append(app))
+    runpy.run_module("assistant.__main__", run_name="__main__")
+    TestClient(apps[0]).post("/api/theme", json={"theme": "hal"})
+    assert C.charger(env={}, fichier=fichier).identite.theme == "hal"   # relu comme au redémarrage
