@@ -204,7 +204,7 @@
         <label class="aide" style="margin:0"><input type="checkbox" id="cTgMaj"> mises à jour</label></div>
       <div class="rangee"><button type="button" class="bouton" id="cTgTrouver">Trouver mon chat</button>
         <button type="button" class="bouton" id="cTgTest">Message de test</button><span class="aide" data-msg="telegram"></span></div>
-      <p class="aide">Telegram : crée un bot avec @BotFather, colle son jeton, enregistre et redémarre ; envoie « /start » à ton bot, puis « Trouver mon chat ». Les rappels d'une personne n'y partent que si elle a le droit « recevoir sur Telegram ».</p>
+      <p class="aide">Le bot : crée-le avec @BotFather, colle son jeton, enregistre et redémarre. Chacun relie ensuite SON Telegram dans ⚙ Moi : rappels, règles et alertes du serveur (pour qui y a droit) y arrivent. « Trouver mon chat » ne règle qu'un chat de la maison facultatif, en plus.</p>
       <div class="rangee"><button type="button" class="bouton principal" data-enr="telegram">Enregistrer</button><span class="aide" data-msg="telegram-enr"></span></div>
     </details>
     <details id="cfgSysteme"><summary>Système <span class="etat" id="eSysteme"></span></summary>
