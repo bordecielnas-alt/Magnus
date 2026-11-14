@@ -476,8 +476,8 @@ def test_agenda_personnel(maison_de_test, monkeypatch):
     lus = machine.get("/interne/agenda", headers=H, params={"conversation": "lea-1"}).json()
     assert [e["titre"] for e in lus] == ["Dentiste"]
     assert [e["titre"] for e in lea.get("/api/agenda").json()["evenements"]] == ["Dentiste"]
-    # personne d'autre ne le voit : l'administrateur n'a pas d'agenda personnel branché
-    assert admin.get("/api/compte/outils").json()["agenda"]["url"] == ""
+    # personne d'autre ne le voit : l'agenda de Principal est celui repris de la maison
+    assert admin.get("/api/compte/outils").json()["agenda"]["url"] == "http://agenda.test/cal/"
     ref = lus[0]["ref"]
     assert machine.post("/interne/agenda/supprimer", headers=H, json={"ref": ref, "conversation": "lea-1"}).status_code == 200
     # sans le droit « agenda personnel » : ni écran ni outil
@@ -564,3 +564,23 @@ def test_consigne_au_nom_du_theme():
     d = DemandeChat(message="bonjour")
     assert "Hal" in _messages(cfg, d, nom="Hal")[0].content
     assert cfg.identite.nom in _messages(cfg, d)[0].content
+
+
+def test_telegram_et_agenda_de_la_maison_repris_par_principal_une_fois(maison_de_test, monkeypatch, tmp_path):
+    app, sec, machine, lea, admin, _ = maison_de_test
+    c = sec.comptes["principal"]
+    assert c["telegram"]["id"] == "42" and c["agenda"]["url"] == "http://agenda.test/cal/"
+    assert "moi-principal" in sec._etat["migrations"] and "telegram" not in sec.comptes["lea"]
+    # une seule fois : si Principal délie son Telegram, un redémarrage ne le remet pas
+    assert admin.delete("/api/compte/telegram").status_code == 200
+    r, _ = routeur()
+    cfg = charger(env={}, fichier=Path("inexistant.yaml"))
+    cfg.telegram.chat_id = "42"
+    main.creer_app(cfg, r.registre, securite=sec)
+    assert "telegram" not in sec.comptes["principal"]
+    # même calendrier que l'agenda familial : lu une seule fois
+    FauxAgenda.contenus = {"http://agenda.test/cal/": [{"titre": "Dentiste", "href": "x.ics",
+                                                         "debut": datetime.now().astimezone() + timedelta(hours=2)}]}
+    monkeypatch.setattr(main, "Agenda", FauxAgenda)
+    titres = [e["titre"] for e in admin.get("/api/agenda").json()["evenements"]]
+    assert titres == ["Dentiste"]

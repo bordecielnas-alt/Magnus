@@ -684,6 +684,28 @@ def creer_app(config: Config | None = None, registre: Registre | None = None,
         return f"{r['nom'][:1].upper()}{r['nom'][1:]} : c'est lancé." + (" " + " ".join(echecs) if echecs else "")
     agenda = Agenda(cfg.agenda.url, cfg.agenda.utilisateur, cfg.agenda.mot_de_passe())
 
+    def migrer_moi_principal() -> None:
+        """Une seule fois (demande de Benjamin, 0.29) : le Telegram et l'agenda de la maison (Réglages ›
+        Services) deviennent aussi ceux du compte « principal » (⚙ Moi). Ceux de la maison restent en place :
+        les alertes du serveur et l'agenda familial en ont besoin. Rien n'est écrasé si Principal a déjà les siens."""
+        faites = securite._etat.setdefault("migrations", [])
+        c = securite.comptes.get("principal")
+        if "moi-principal" in faites or not c:
+            return
+        if cfg.telegram.chat_id and not (c.get("telegram") or {}).get("id"):
+            c["telegram"] = {"id": str(cfg.telegram.chat_id), "nom": "repris du Telegram de la maison"}
+        if cfg.agenda.url and not (c.get("agenda") or {}).get("url"):
+            c["agenda"] = {"url": cfg.agenda.url, "utilisateur": cfg.agenda.utilisateur,
+                           "mdp": cfg.agenda.mot_de_passe()}
+        faites.append("moi-principal")
+        securite._ecrire()
+        journal.info("migration : Telegram et agenda de la maison repris dans le compte principal")
+    migrer_moi_principal()
+
+    def meme_agenda(a: Agenda | None) -> bool:
+        """Son agenda personnel est l'agenda familial (même adresse) : on ne le lit et ne l'annonce qu'une fois."""
+        return bool(a and agenda.configure and a.url == agenda.url)
+
     async def demander_json(consigne: str) -> str:
         """Claude avec le web, pour une carte de rapport ; le secours (sans web) inventerait : refusé."""
         msgs = [Message("system", cfg.consigne_effective + "\n\n" + CONSIGNE_JSON), Message("user", consigne)]
@@ -807,7 +829,7 @@ def creer_app(config: Config | None = None, registre: Registre | None = None,
             maintenant = dt.now().astimezone()
             for ident in list(securite.comptes):
                 perso = agenda_perso(ident) if securite.peut(ident, "agenda.personnel") else None
-                if not perso:
+                if not perso or meme_agenda(perso):     # l'agenda familial est déjà annoncé
                     continue
                 try:
                     bientot = await perso.evenements(maintenant, maintenant + timedelta(minutes=cfg.agenda.annonce_avant_min))
@@ -1953,6 +1975,8 @@ def creer_app(config: Config | None = None, registre: Registre | None = None,
         if agenda.configure and "agenda.lire" in perms:
             sortie.append(("famille", agenda))
         perso = agenda_perso(compte) if "agenda.personnel" in perms else None
+        if perso and meme_agenda(perso) and sortie:
+            return [("perso", perso)]          # le même calendrier : une seule fois, écrit dans « le sien »
         if perso:
             sortie.append(("perso", perso))
         return sortie
