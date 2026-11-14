@@ -51,7 +51,8 @@
     #rubriques button { border:1px solid var(--bord); background:transparent; color:var(--fg); border-radius:999px;
                         padding:5px 12px; font:inherit; font-size:.82rem; cursor:pointer; }
     #rubriques button[aria-pressed="true"] { background:var(--accent); color:var(--accent-fg); border-color:var(--accent); }
-    #config details[data-cache] { display:none; }
+    #config details[data-cache], #dlgOrbe section.rubrique[data-cache] { display:none; }
+    #rubriques { position:sticky; top:0; z-index:1; background:var(--bg, #000); padding:6px 0; }
   `;
   document.head.appendChild(css);
 
@@ -86,6 +87,7 @@
     <details id="cfgMesOutils" hidden><summary>Mon agenda et mon Telegram <span class="etat" id="eMesOutils"></span></summary>
       <div id="cMonAgendaBloc">
         <p class="aide">Ton agenda à toi (CalDAV : Radicale, Nextcloud, iCloud…). L'assistant y lit et y ajoute tes rendez-vous, et te les rappelle, à toi seulement.</p>
+        <p class="aide" id="cMonAgendaFamille"></p>
         <label class="champ">Adresse du calendrier<input id="cMonAgendaUrl" placeholder="https://…/moi/agenda/"></label>
         <label class="champ">Identifiant<input id="cMonAgendaUser" autocomplete="off"></label>
         <label class="champ">Mot de passe<input id="cMonAgendaMdp" type="password" autocomplete="off" placeholder="laisser vide pour garder l'actuel"></label>
@@ -119,10 +121,18 @@
       <div id="cReglesListe"></div>
       <p class="aide" data-msg="regles"></p>
     </details>
-    <details id="cfgAssistant"><summary>Assistant <span class="etat" id="eAssistant"></span></summary>
+    <details id="cfgAssistant"><summary>Nom et mot de réveil <span class="etat" id="eAssistant"></span></summary>
       <label class="champ">Nom<input id="cNom" maxlength="40"></label>
       <label class="champ">Mot de réveil (vide = le nom)<input id="cWake" maxlength="40"></label>
       <div class="rangee"><button type="button" class="bouton principal" data-enr="assistant">Enregistrer</button><span class="aide" data-msg="assistant"></span></div>
+    </details>
+    <details id="cfgDefauts"><summary>Valeurs par défaut de la maison <span class="etat" id="eDefauts"></span></summary>
+      <p class="aide">Ce qu'ont les personnes qui n'ont rien choisi elles-mêmes (dans Affichage, Voix et écoute), et les appareils sans compte.</p>
+      <label class="champ">Thème<select id="cThemeDefaut"><option value="orbe">Orbe</option><option value="hal">HAL 9000</option></select></label>
+      <label class="champ">Voix<select id="cVoixDefaut"></select></label>
+      <label class="champ">Écoute après le mot de réveil (secondes)<input id="cFenetreDefaut" type="number" min="0" max="3600" step="5"></label>
+      <label class="aide" style="display:flex;gap:8px;align-items:center;margin-top:10px"><input type="checkbox" id="cToujoursDefaut"> Toujours à l'écoute, sans mot de réveil</label>
+      <div class="rangee"><button type="button" class="bouton principal" data-enr="defauts">Enregistrer</button><span class="aide" data-msg="defauts"></span></div>
     </details>
     <details id="cfgModeles"><summary>Modèles <span class="etat" id="eModeles"></span></summary>
       <label class="champ">Réponses rapides<select id="cRoleRapide"></select></label>
@@ -203,66 +213,51 @@
     </details>`;
   const actions = dlg.querySelector('.actions');
   actions.parentNode.insertBefore(zone, actions);
-  // Raccourci en haut de la fenêtre : les réglages de l'assistant sont sous ceux de l'affichage
-  const raccourci = document.createElement('p');
-  raccourci.className = 'aide';
-  raccourci.style.cssText = 'margin:0 0 12px;display:flex;gap:16px;flex-wrap:wrap;font-size:.95rem;font-weight:600';
-  for (const [cible, texte] of [['cfgMonCompte', 'Mon compte'], ['cfgMemoire', 'Mémoire'], ['cfgAssistant', "Réglages de l'assistant"]]) {
-    const a = Object.assign(document.createElement('a'), {href: '#', textContent: texte + ' ↓'});
-    a.style.color = 'var(--accent)';
-    a.dataset.cible = cible;
-    a.onclick = ev => {
-      ev.preventDefault();
-      const r = Object.keys(RUBRIQUES).find(k => RUBRIQUES[k][1].includes(cible));
-      if (r) choisirRubrique(r);
-      const d = $(cible); d.open = true; d.scrollIntoView({behavior: 'smooth', block: 'start'});
-    };
-    raccourci.appendChild(a);
-  }
-  const titre = dlg.querySelector('h2');
-  if (titre) titre.after(raccourci); else dlg.prepend(raccourci);
-
-  // --- rubriques (onglets) : « Moi » pour tout le monde, le reste pour les administrateurs -------------------
+  // --- rubriques (onglets) en haut de la fenêtre ------------------------------------------------------------
+  // Affichage, Voix et écoute, Moi : à chaque personne (gardés dans son compte ou ce navigateur).
+  // Les suivantes règlent toute la maison : administrateurs seulement.
   const RUBRIQUES = {
+    affichage: ['Affichage', ['@affichage']],
+    voix: ['Voix et écoute', ['@voix']],
     moi: ['Moi', ['cfgMonCompte', 'cfgMesOutils', 'cfgMemoire', 'cfgHabitudes', 'cfgRegles']],
     maison: ['Maison', ['cfgHA']],
-    assistant: ['Assistant', ['cfgAssistant', 'cfgModeles', 'cfgClaude']],
+    assistant: ['Assistant', ['cfgAssistant', 'cfgDefauts', 'cfgModeles', 'cfgClaude']],
     services: ['Services', ['cfgServices', 'cfgAgenda', 'cfgTelegram']],
     serveur: ['Serveur', ['cfgServeur']],
     securite: ['Sécurité', ['cfgComptes', 'cfgAcces', 'cfgJournal']],
     systeme: ['Système', ['cfgSysteme']],
   };
-  let rubrique = 'moi', estAdmin = false;
-  try { rubrique = localStorage.getItem('reglages.rubrique') || 'moi'; } catch (e) {}
+  const POUR_TOUS = ['affichage', 'voix', 'moi'];
+  const titre = dlg.querySelector('h2');
+  if (titre) titre.after($('rubriques')); else dlg.querySelector('form').prepend($('rubriques'));
+  $('rubriques').hidden = false;
+  let rubrique = 'affichage', estAdmin = false;
+  try { rubrique = localStorage.getItem('reglages.rubrique') || 'affichage'; } catch (e) {}
   for (const [cle, [nom]] of Object.entries(RUBRIQUES)) {
     const b = Object.assign(document.createElement('button'), {type: 'button', textContent: nom});
     b.dataset.rubrique = cle;
     b.onclick = () => choisirRubrique(cle);
     $('rubriques').appendChild(b);
   }
+  const blocs = ids => ids.map(id => id.startsWith('@') ? dlg.querySelector(`section.rubrique[data-rubrique="${id.slice(1)}"]`) : $(id));
   function choisirRubrique(cle) {
-    if (!estAdmin) cle = 'moi';
+    if (!estAdmin && !POUR_TOUS.includes(cle)) cle = 'affichage';
     rubrique = cle;
     try { localStorage.setItem('reglages.rubrique', cle); } catch (e) {}
-    for (const b of $('rubriques').children) b.setAttribute('aria-pressed', String(b.dataset.rubrique === cle));
+    for (const b of $('rubriques').children) {
+      b.setAttribute('aria-pressed', String(b.dataset.rubrique === cle));
+      b.hidden = !estAdmin && !POUR_TOUS.includes(b.dataset.rubrique);
+    }
     for (const [r, [, ids]] of Object.entries(RUBRIQUES))
-      for (const id of ids) { const d = $(id); if (d) d.toggleAttribute('data-cache', r !== cle); }
+      for (const d of blocs(ids)) if (d) d.toggleAttribute('data-cache', r !== cle);
+    $('cVersionHaut').hidden = cle !== 'systeme' && cle !== 'affichage';
   }
-  // Réglages de toute la maison dans la fenêtre d'affichage (thème et mot de réveil, voix, écoute du serveur) :
-  // administrateurs seulement ; l'apparence de cette page (orbe, écran, sons) reste à chacun.
-  const REGLAGES_MAISON = ['themes', 'noteTheme', 'listeVoix', 'fenetre', 'toujours'];
+  window.choisirRubriqueReglages = choisirRubrique;
   function appliquerRole(admin) {
     estAdmin = admin;
-    $('rubriques').hidden = !admin;
-    for (const l of raccourci.querySelectorAll('a')) if (l.dataset.cible === 'cfgAssistant') l.style.display = admin ? '' : 'none';
-    for (const id of REGLAGES_MAISON) {
-      const e = $(id);
-      const bloc = e && (e.closest('fieldset') && id === 'listeVoix' ? e.closest('fieldset') : e.closest('.ligne, label.case') || e);
-      if (bloc) bloc.style.display = admin ? '' : 'none';
-    }
-    choisirRubrique(admin ? rubrique : 'moi');
+    choisirRubrique(rubrique);
   }
-  choisirRubrique('moi');
+  choisirRubrique(rubrique);
 
   let donnees = null;
   const msg = (cle, texte, ok) => { const e = zone.querySelector(`[data-msg="${cle}"]`); if (e) { e.textContent = texte; e.className = 'aide ' + (ok ? 'msg-ok' : 'msg-ko'); } };
@@ -291,6 +286,12 @@
     const r = d.reglages, e = d.etat;
     $('bandeauRedemarrage').hidden = !e.redemarrage_necessaire;
     $('cNom').value = r.identite.nom; $('cWake').value = r.identite.wake_word || '';
+    const v_ = r.voix || {};
+    $('cThemeDefaut').value = r.identite.theme || 'orbe';
+    options($('cVoixDefaut'), (d.voix_disponibles || []).map(x => x.id), v_.voix,
+            Object.fromEntries((d.voix_disponibles || []).map(x => [x.id, x.nom || x.id])));
+    $('cFenetreDefaut').value = v_.fenetre_s ?? 30; $('cToujoursDefaut').checked = !!v_.toujours_a_l_ecoute;
+    etat('eDefauts', (r.identite.theme === 'hal' ? 'HAL 9000' : 'Orbe') + ' · écoute ' + (v_.toujours_a_l_ecoute ? 'permanente' : (v_.fenetre_s ?? 30) + ' s'));
     etat('eAssistant', (r.identite.nom_effectif || r.identite.nom) + ' · « ' + r.identite.wake_word_effectif + ' »');
 
     const ids = Object.keys(r.fournisseurs);
@@ -543,12 +544,16 @@
     if (document.activeElement !== $('cMonAgendaUrl')) $('cMonAgendaUrl').value = o.agenda.url;
     if (document.activeElement !== $('cMonAgendaUser')) $('cMonAgendaUser').value = o.agenda.utilisateur;
     $('cMonAgendaMdp').placeholder = o.agenda.mdp_defini ? 'enregistré — laisser vide pour le garder' : 'mot de passe';
+    // Ici : TON agenda et TON Telegram. Ceux de la maison (Réglages › Services) sont rappelés pour ne pas confondre.
+    $('cMonAgendaFamille').textContent = o.agenda.famille ? "Tu lis aussi l'agenda familial (réglé dans Services) : rien à faire ici pour lui." : '';
     $('cMonTgEtat').textContent = !o.telegram.bot ? "pas de bot Telegram (un administrateur doit le brancher)"
-      : o.telegram.relie ? 'relié (' + o.telegram.relie + ')' : 'pas relié';
+      : o.telegram.relie ? 'ton Telegram est relié (' + o.telegram.relie + ')'
+      : o.telegram.maison ? "tu reçois sur le Telegram de la maison (réglé dans Services) ; relie le tien pour l'avoir à part"
+      : 'pas relié';
     $('cMonTgCode').hidden = !o.telegram.bot || !!o.telegram.relie;
     $('cMonTgOff').hidden = !o.telegram.relie;
-    etat('eMesOutils', [o.agenda.permis ? (o.agenda.url ? 'agenda branché' : "pas d'agenda") : '',
-      o.telegram.permis ? (o.telegram.relie ? 'Telegram relié' : 'Telegram pas relié') : ''].filter(Boolean).join(' · '));
+    etat('eMesOutils', [o.agenda.permis ? (o.agenda.url ? 'ton agenda branché' : (o.agenda.famille ? 'agenda familial seulement' : "pas d'agenda")) : '',
+      o.telegram.permis ? (o.telegram.relie ? 'ton Telegram relié' : (o.telegram.maison ? 'Telegram de la maison' : 'Telegram pas relié')) : ''].filter(Boolean).join(' · '));
   }
   $('cMonAgendaBtn').onclick = async () => {
     try {
@@ -699,6 +704,10 @@
     const idOllama = ids.find(i => r.fournisseurs[i].type === 'openai' && (r.fournisseurs[i].url || '').includes('11434'));
     if (b.dataset.enr === 'assistant') {
       enregistrer('assistant', {identite: {nom: $('cNom').value.trim(), wake_word: $('cWake').value.trim()}});
+    } else if (b.dataset.enr === 'defauts') {
+      const voixD = {fenetre_s: Math.max(0, Math.min(3600, +$('cFenetreDefaut').value || 0)), toujours_a_l_ecoute: $('cToujoursDefaut').checked};
+      if ($('cVoixDefaut').value) voixD.voix = $('cVoixDefaut').value;
+      enregistrer('defauts', {identite: {theme: $('cThemeDefaut').value}, voix: voixD});
     } else if (b.dataset.enr === 'modeles') {
       const f = {};
       if (idClaude) f[idClaude] = {modele: $('cClaudeModele').value};

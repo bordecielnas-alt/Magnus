@@ -187,7 +187,6 @@ def test_infos_et_reglages_reserves_aux_administrateurs(maison_de_test):
     _, _, _, lea, admin, _ = maison_de_test
     for methode, url, corps in [("get", "/api/reglages", None), ("get", "/api/maison", None),
                                 ("get", "/api/home-assistant", None), ("post", "/api/maison/rafraichir", None),
-                                ("post", "/api/theme", {"theme": "hal"}), ("post", "/api/voix/reglages", {"fenetre_s": 5}),
                                 ("get", "/api/comptes", None), ("get", "/api/droits", None), ("get", "/api/audit", None),
                                 ("post", "/api/groupes", {"nom": "X"}), ("post", "/api/comptes/lea/droits", {"admin": True}),
                                 ("post", "/api/telegram/test", None), ("post", "/api/redemarrer", None)]:
@@ -515,3 +514,40 @@ def test_telegram_personnel(maison_de_test, monkeypatch):
     # délié : plus rien pour elle (jamais le Telegram de la maison à la place)
     assert lea.delete("/api/compte/telegram").status_code == 200
     assert machine.post("/interne/telegram", headers=H, json={"texte": "x", "conversation": "lea-1"}).status_code == 409
+
+
+def test_theme_voix_et_ecoute_propres_a_chaque_personne(maison_de_test):
+    app, sec, machine, lea, admin, _ = maison_de_test
+    maison_info = admin.get("/api/info").json()
+    assert lea.post("/api/theme", json={"theme": "hal"}).json() == {"theme": "hal", "wake_word": "hal"}
+    i = lea.get("/api/info").json()
+    assert (i["theme"], i["nom"], i["wake_word"]) == ("hal", "Hal", "hal")
+    assert admin.get("/api/info").json() == maison_info                         # rien changé pour les autres
+    assert lea.post("/api/voix/reglages", json={"fenetre_s": 5, "toujours_a_l_ecoute": True}).status_code == 200
+    v = lea.get("/api/voix").json()
+    assert v["fenetre_s"] == 5 and v["toujours_a_l_ecoute"] is True and v["theme"] == "hal"
+    va = admin.get("/api/voix").json()
+    assert va["fenetre_s"] != 5 and va["toujours_a_l_ecoute"] is False
+    assert lea.post("/api/voix/reglages", json={"voix": "inconnue"}).status_code == 422
+    assert sec.comptes["lea"]["assistant"] == {"theme": "hal", "fenetre_s": 5, "toujours_a_l_ecoute": True}
+    # l'écoute de sa conversation suit ses réglages
+    p = lea.post("/api/voix/prolonger", json={"conversation": "lea-v"}).json()
+    assert p["toujours"] is True and p["fenetre_s"] is None          # toujours à l'écoute : pas de fenêtre
+
+
+def test_reveil_par_conversation():
+    from assistant.reveil import Reveil
+    r = Reveil(30, False)
+    r.regler("a", 0, True)
+    assert r.eveille("a") and not r.eveille("b")
+    r.regler("b", 5, False)
+    r.prolonger("b")
+    assert 0 < r.restant_s("b") <= 5 and r.restant_s("a") is None
+
+
+def test_consigne_au_nom_du_theme():
+    from assistant.main import DemandeChat, _messages
+    cfg = charger(env={}, fichier=Path("inexistant.yaml"))
+    d = DemandeChat(message="bonjour")
+    assert "Hal" in _messages(cfg, d, nom="Hal")[0].content
+    assert cfg.identite.nom in _messages(cfg, d)[0].content

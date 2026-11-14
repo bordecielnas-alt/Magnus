@@ -547,10 +547,11 @@ def reponse_horloge(message: str) -> str | None:
     return None
 
 
-def _messages(cfg: Config, d: DemandeChat, outils: bool = False, profil: str = "") -> list[Message]:
+def _messages(cfg: Config, d: DemandeChat, outils: bool = False, profil: str = "", nom: str = "") -> list[Message]:
     # la date et l'heure : sans elles, un modèle invente (« 17:30 » à 17 h 38)
     quand = f"Nous sommes le {date_dite()}, il est {heure_dite()}."
-    msgs = [Message("system", cfg.consigne_effective + "\n\n" + NOTE_STYLE + "\n\n" + quand
+    consigne = cfg.consigne.replace("{nom}", nom) if nom else cfg.consigne_effective   # « Hal » pour qui a ce thème
+    msgs = [Message("system", consigne + "\n\n" + NOTE_STYLE + "\n\n" + quand
                     + ("\n\n" + profil if profil else ""))]
     if cfg.home_assistant.url and not outils:
         msgs.append(Message("system", NOTE_MAISON))
@@ -1570,14 +1571,54 @@ def creer_app(config: Config | None = None, registre: Registre | None = None,
     def health() -> dict:
         return {"status": "ok"}
 
+    # --- thème, voix et écoute : à chaque personne (sinon les valeurs de la maison, réglées par l'admin) ---
+    def prefs(compte: str | None) -> dict:
+        maison_ = {"theme": cfg.identite.theme, "voix": cfg.voix.voix_actuelle(), "fenetre_s": cfg.voix.fenetre_s,
+                   "toujours_a_l_ecoute": cfg.voix.toujours_a_l_ecoute}
+        propres = ((securite.comptes.get(compte or "") or {}).get("assistant")) or {}
+        return {**maison_, **{k: v for k, v in propres.items() if k in maison_ and v is not None}}
+
+    def nom_pour(theme: str) -> str:
+        return "Hal" if theme == "hal" else cfg.identite.nom
+
+    def wake_pour(theme: str) -> str:
+        return "hal" if theme == "hal" else (cfg.identite.wake_word or cfg.identite.nom).strip().lower()
+
+    def variantes_pour(theme: str) -> list[str]:
+        return ["hal", "hall", "halle", "hale"] if theme == "hal" else [wake_pour(theme)]
+
+    def ecrire_prefs(requete: Request, valeurs: dict) -> dict:
+        """Les réglages d'une personne vont dans son compte ; la machine elle-même règle ceux de la maison."""
+        compte = compte_de(requete)
+        if compte and compte in securite.comptes:
+            c = securite.comptes[compte]
+            c["assistant"] = {**(c.get("assistant") or {}), **valeurs}
+            securite._ecrire()
+        else:
+            if "theme" in valeurs:
+                cfg.identite.theme = valeurs["theme"]
+            if "voix" in valeurs:
+                cfg.voix.voix = valeurs["voix"]
+            if "fenetre_s" in valeurs:
+                cfg.voix.fenetre_s = reveil.fenetre_s = valeurs["fenetre_s"]
+            if "toujours_a_l_ecoute" in valeurs:
+                cfg.voix.toujours_a_l_ecoute = reveil.toujours = valeurs["toujours_a_l_ecoute"]
+            if persister:
+                for section, cles in (("identite", ("theme",)), ("voix", ("voix", "fenetre_s", "toujours_a_l_ecoute"))):
+                    morceau = {k: valeurs[k] for k in cles if k in valeurs}
+                    if morceau:
+                        enregistrer_reglages(section, morceau)
+        return prefs(compte)
+
     @app.get("/api/info")
-    def info() -> dict:
+    def info(requete: Request) -> dict:
         ident = cfg.identite
+        p = prefs(compte_de(requete))
         return {
-            "nom": ident.nom_effectif,
+            "nom": nom_pour(p["theme"]),
             "nom_configure": ident.nom,   # le nom du thème « orbe » (bouton de Réglages)
-            "wake_word": ident.wake_word_effectif,
-            "theme": ident.theme,
+            "wake_word": wake_pour(p["theme"]),
+            "theme": p["theme"],
             "langue": ident.langue,
             "version": __version__,
         }
@@ -2015,10 +2056,15 @@ def creer_app(config: Config | None = None, registre: Registre | None = None,
         compte = compte_personnel(requete)
         c = securite.comptes[compte]
         a = c.get("agenda") or {}
+        # « famille » / « maison » : ce que la personne reçoit aussi sans rien brancher (l'agenda familial,
+        # et pour un administrateur le Telegram de la maison), pour ne pas confondre avec Réglages › Services
         return {"agenda": {"permis": securite.peut(compte, "agenda.personnel"), "url": a.get("url", ""),
-                           "utilisateur": a.get("utilisateur", ""), "mdp_defini": bool(a.get("mdp"))},
+                           "utilisateur": a.get("utilisateur", ""), "mdp_defini": bool(a.get("mdp")),
+                           "famille": agenda.configure and securite.peut(compte, "agenda.lire")},
                 "telegram": {"permis": securite.peut(compte, "telegram.recevoir"), "bot": bool(telegram.jeton),
-                             "relie": (c.get("telegram") or {}).get("nom") or ("oui" if c.get("telegram") else "")}}
+                             "relie": (c.get("telegram") or {}).get("nom") or ("oui" if c.get("telegram") else ""),
+                             "maison": bool(telegram.chat_id) and securite.est_admin(compte)
+                             and not (c.get("telegram") or {}).get("id")}}
 
     @app.post("/api/compte/agenda")
     async def mon_agenda(a: MonAgenda, requete: Request) -> dict:
@@ -2594,10 +2640,11 @@ def creer_app(config: Config | None = None, registre: Registre | None = None,
 
     # --- Voix ------------------------------------------------------------------------------
     @app.get("/api/voix")
-    def etat_voix() -> dict:
-        return {**voix.etat(), "wake_word": cfg.identite.wake_word_effectif, "theme": cfg.identite.theme,
-                "fenetre_s": cfg.voix.fenetre_s, "toujours_a_l_ecoute": cfg.voix.toujours_a_l_ecoute,
-                "voix": cfg.voix.voix_actuelle(), "voix_disponibles": voix.disponibles()}
+    def etat_voix(requete: Request) -> dict:
+        p = prefs(compte_de(requete))
+        return {**voix.etat(), "wake_word": wake_pour(p["theme"]), "theme": p["theme"],
+                "fenetre_s": p["fenetre_s"], "toujours_a_l_ecoute": p["toujours_a_l_ecoute"],
+                "voix": p["voix"], "voix_disponibles": voix.disponibles()}
 
     @app.post("/api/voix/transcrire")
     async def transcrire(requete: Request, partiel: bool = False, conversation: str = "") -> dict:
@@ -2636,11 +2683,13 @@ def creer_app(config: Config | None = None, registre: Registre | None = None,
         audio = await requete.body()
         if not audio or len(audio) > cfg.voix.max_audio_mo * 1e6:
             raise HTTPException(400, "audio vide ou trop long")
-        noms = [cfg.identite.nom_effectif] + (["HAL"] if cfg.identite.theme == "hal" else []) \
+        p = prefs(compte_de(requete))            # son thème (mot de réveil) et son écoute
+        reveil.regler(conversation, p["fenetre_s"], p["toujours_a_l_ecoute"])
+        noms = [nom_pour(p["theme"])] + (["HAL"] if p["theme"] == "hal" else []) \
             + sorted({e.nom for e in maison.inventaire.entites})[:60]
         async with verrou_transcription:
             t = await voix.transcrire(audio, ", ".join(noms))
-        r = reveil.analyser(t.texte, cfg.identite.variantes_eveil, conversation)
+        r = reveil.analyser(t.texte, variantes_pour(p["theme"]), conversation)
         if (r["action"] == "ignorer" and r.get("raison") != "bruit" and question_en_attente(conversation)
                 and (RE_OUI_DEBUT.match(t.texte) or RE_NON_DEBUT.match(t.texte))):
             # l'assistant vient de poser une question (« Je démarre adminer ? ») : « oui » suffit, sans son nom
@@ -2652,41 +2701,29 @@ def creer_app(config: Config | None = None, registre: Registre | None = None,
             qui = await reconnaitre(audio, conversation)
             journal.info("écoute : « %s » -> %s (%d ms)%s", t.texte[:120], r["action"], t.duree_ms,
                          f" — {qui['nom']} ({qui['score']})" if qui else "")
-        return {"texte": t.texte, "duree_ms": t.duree_ms, "wake_word": cfg.identite.wake_word_effectif,
-                "toujours": reveil.toujours, "locuteur": qui, **r}
+        return {"texte": t.texte, "duree_ms": t.duree_ms, "wake_word": wake_pour(p["theme"]),
+                "toujours": p["toujours_a_l_ecoute"], "locuteur": qui, **r}
 
     @app.post("/api/voix/reglages")
     def regler_voix(r: ReglagesVoix, requete: Request) -> dict:
-        """Change la fenêtre d'écoute après le wake word et le mode « toujours à l'écoute »,
-        tout de suite et dans config.yaml (gardé au redémarrage). Réglage de toute la maison : administrateurs."""
-        exiger_admin(requete)
+        """⚙ Voix et écoute : sa voix, sa fenêtre d'écoute après le mot de réveil, « toujours à l'écoute ».
+        Gardés dans son compte (chacun les siens) ; depuis la machine elle-même, ceux de la maison."""
         valeurs = {k: v for k, v in r.model_dump().items() if v is not None}
         if not valeurs:
             raise HTTPException(400, "aucun réglage fourni")
-        if "voix" in valeurs:
-            if valeurs["voix"] not in {v["id"] for v in voix.disponibles()}:
-                raise HTTPException(422, f"voix inconnue : {valeurs['voix']}")
-            cfg.voix.voix = valeurs["voix"]
-        if "fenetre_s" in valeurs:
-            cfg.voix.fenetre_s = reveil.fenetre_s = valeurs["fenetre_s"]
-        if "toujours_a_l_ecoute" in valeurs:
-            cfg.voix.toujours_a_l_ecoute = reveil.toujours = valeurs["toujours_a_l_ecoute"]
-        if persister:
-            enregistrer_reglages("voix", valeurs)
-        journal.info("réglages voix : %s", valeurs)
-        return {"fenetre_s": cfg.voix.fenetre_s, "toujours_a_l_ecoute": cfg.voix.toujours_a_l_ecoute,
-                "voix": cfg.voix.voix_actuelle()}
+        if "voix" in valeurs and valeurs["voix"] not in {v["id"] for v in voix.disponibles()}:
+            raise HTTPException(422, f"voix inconnue : {valeurs['voix']}")
+        p = ecrire_prefs(requete, valeurs)
+        journal.info("réglages voix de %s : %s", compte_de(requete) or "?", valeurs)
+        return {"fenetre_s": p["fenetre_s"], "toujours_a_l_ecoute": p["toujours_a_l_ecoute"], "voix": p["voix"]}
 
     @app.post("/api/theme")
     def regler_theme(t: Theme, requete: Request) -> dict:
-        """Thème de la page (⚙ Réglages) : « orbe » ou « hal ». Change aussi le mot de réveil,
-        tout de suite et dans config.yaml. Réglage de toute la maison : administrateurs."""
-        exiger_admin(requete)
-        cfg.identite.theme = t.theme
-        if persister:
-            enregistrer_reglages("identite", {"theme": t.theme})
-        journal.info("thème : %s (mot de réveil « %s »)", t.theme, cfg.identite.wake_word_effectif)
-        return {"theme": t.theme, "wake_word": cfg.identite.wake_word_effectif}
+        """⚙ Affichage : « orbe » ou « hal », pour cette personne. Change aussi son mot de réveil
+        (« Hal ») et le nom sous lequel l'assistant lui répond."""
+        p = ecrire_prefs(requete, {"theme": t.theme})
+        journal.info("thème de %s : %s (mot de réveil « %s »)", compte_de(requete) or "?", t.theme, wake_pour(p["theme"]))
+        return {"theme": p["theme"], "wake_word": wake_pour(p["theme"])}
 
     # --- Page de configuration -------------------------------------------------------------
     etat_appli = {"redemarrage_necessaire": False, "telechargement": None}
@@ -2840,12 +2877,14 @@ def creer_app(config: Config | None = None, registre: Registre | None = None,
             return False
 
     @app.post("/api/voix/prolonger")
-    def prolonger(c: Conv) -> dict:
+    def prolonger(c: Conv, requete: Request) -> dict:
         """La page a fini de lire la réponse : la fenêtre d'écoute repart de là (sinon elle se ferme pendant
         que l'assistant parle et le « oui » qui suit est ignoré)."""
+        p = prefs(compte_de(requete))
+        reveil.regler(c.conversation, p["fenetre_s"], p["toujours_a_l_ecoute"])
         if c.conversation:
             reveil.prolonger(c.conversation)
-        return {"fenetre_s": reveil.restant_s(c.conversation), "toujours": reveil.toujours}
+        return {"fenetre_s": reveil.restant_s(c.conversation), "toujours": p["toujours_a_l_ecoute"]}
 
     @app.post("/api/voix/endormir")
     def endormir(c: Conv) -> dict:
@@ -2853,12 +2892,14 @@ def creer_app(config: Config | None = None, registre: Registre | None = None,
         return {"ok": True}
 
     @app.post("/api/voix/parler")
-    async def parler(p: Parole) -> Response:
+    async def parler(p: Parole, requete: Request) -> Response:
         if not cfg.voix.active or not cfg.voix.synthese_presente():
             raise HTTPException(503, "synthèse vocale indisponible")
         if p.voix and p.voix not in {v["id"] for v in voix.disponibles()}:
             raise HTTPException(422, f"voix inconnue : {p.voix}")
-        wav, duree = await voix.parler(p.texte, p.voix)
+        # sans voix précisée (réponse, annonce) : celle de la personne, sinon celle de la maison
+        choisie = p.voix or ((securite.comptes.get(compte_de(requete) or "") or {}).get("assistant") or {}).get("voix")
+        wav, duree = await voix.parler(p.texte, choisie)
         return Response(wav, media_type="audio/wav", headers={"X-Duree-Ms": str(duree), "Cache-Control": "no-store"})
 
     @app.post("/api/route")
@@ -3363,7 +3404,7 @@ def creer_app(config: Config | None = None, registre: Registre | None = None,
         marqueur_actif = not choix.texte_seul and (role == cfg.routeur.role_complexe or choix.voir)
         if marqueur_actif:
             consigne_profil = (consigne_profil + "\n\n" + NOTE_CARTE + ("\n" + NOTE_VOIR if choix.voir else "")).strip()
-        msgs = _messages(cfg, d, outils=bool(outils), profil=consigne_profil)
+        msgs = _messages(cfg, d, outils=bool(outils), profil=consigne_profil, nom=nom_pour(prefs(compte)["theme"]))
         # garde-fou : le modèle rapide ne doit pas prétendre avoir agi sur la maison
         garde = ha.configure and role == cfg.routeur.role_simple
         if echec_ha:
