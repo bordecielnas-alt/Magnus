@@ -54,15 +54,13 @@ def test_categories():
 
 
 # --- Profils : valeurs par défaut et qui peut les changer ------------------------------------------
-def test_enfant_ne_touche_pas_au_chauffage_par_defaut(tmp_path):
+def test_ne_pilote_pas_par_categorie(tmp_path):
     sec = Securite(SecuriteConfig(), tmp_path)
     sec.creer_premier(MDP)
     sec.creer_compte("Léa")
-    assert sec.profil("lea")["interdits"] == []
-    sec.definir_profil("lea", {"type": "enfant"})
-    assert sec.profil("lea")["interdits"] == ["chauffage"]
+    assert sec.profil("lea")["interdits"] == []                              # groupe Foyer
     sec.definir_profil("lea", {"ton": "chaleureux"})            # un autre champ ne fige pas les droits
-    assert sec.profil("lea")["interdits"] == ["chauffage"]
+    assert sec.profil("lea")["interdits"] == []
     assert sec.definir_profil("lea", {"interdits": ["volets", "chauffage"]})["interdits"] == ["chauffage", "volets"]
     assert sec.definir_profil("lea", {"interdits": []})["interdits"] == []   # choix explicite gardé
     assert [c["interdits"] for c in sec.liste() if c["id"] == "lea"] == [[]]

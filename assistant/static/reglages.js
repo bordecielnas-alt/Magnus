@@ -162,7 +162,7 @@
       <div class="rangee"><button type="button" class="bouton principal" data-enr="acces">Enregistrer</button><span class="aide" data-msg="acces"></span></div>
     </details>
     <details id="cfgComptes" hidden><summary>Personnes et droits <span class="etat" id="eComptes"></span></summary>
-      <p class="aide">Inviter quelqu'un, choisir son rôle, ses groupes (et sous-groupes) et ses droits un par un : serveur, Telegram, agenda, maison, règles…</p>
+      <p class="aide">Inviter quelqu'un et choisir son groupe (Admin, Foyer, Extérieur, ou un groupe créé), avec quelques exceptions si besoin. Les groupes et leurs droits se règlent sur la même page.</p>
       <div class="rangee"><a class="bouton principal" href="/admin" style="text-decoration:none">Ouvrir la page Personnes et droits</a></div>
       <div id="cListeComptes"></div>
       <p class="aide" data-msg="comptes"></p>
@@ -502,12 +502,12 @@
     $('cfgComptes').hidden = $('cfgJournal').hidden = !s.admin;
     if (!s.admin) return;
     try {
-      // Résumé ; la gestion complète (rôle, groupes, sous-groupes, droits un par un) est sur la page /admin
+      // Résumé ; la gestion complète (groupe de chacun, exceptions, groupes et leurs droits) est sur la page /admin
       const {comptes} = await api('/api/comptes');
       etat('eComptes', comptes.length + ' compte' + (comptes.length > 1 ? 's' : ''));
       $('cListeComptes').replaceChildren(...comptes.map(c => {
         const ligne = document.createElement('div'); ligne.className = 'compte';
-        const nom = texte('div', c.nom + (c.admin ? ' · administrateur' : ''));
+        const nom = texte('div', c.nom + ' · ' + ({admin: 'Admin', foyer: 'Foyer', exterieur: 'Extérieur'}[c.groupe] || c.groupe));
         nom.appendChild(texte('small', (!c.actif ? 'invitation en attente' : 'dernière connexion : ' + quand(c.derniere_connexion))
           + (c.admin ? '' : ' · ' + c.effectives.length + ' droit(s)')));
         ligne.append(nom);

@@ -270,7 +270,9 @@ def test_profil_et_consigne(tmp_path):
     c2.post("/api/invitation", json={"invitation": lien.split("invitation=")[1], "mot_de_passe": "mot de passe invité"})
     c2.post("/api/connexion", json={"identifiant": "invite", "mot_de_passe": "mot de passe invité"})
     assert c2.post("/api/compte/profil", json={"type": "enfant"}).status_code == 403
-    assert machine.post("/api/comptes/invite/profil", json={"type": "enfant"}).json()["profil"]["type"] == "enfant"
+    # « parler comme à un enfant » : une case du groupe
+    sec.enregistrer_groupe("", "Enfants", ["assistant.web"], enfant=True)
+    assert machine.post("/api/comptes/invite/droits", json={"groupe": "enfants"}).json()["type"] == "enfant"
     assert "enfant" in note_profil("Invité", sec.profil("invite"))
 
 

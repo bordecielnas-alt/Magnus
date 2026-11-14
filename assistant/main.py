@@ -405,8 +405,8 @@ def note_profil(nom: str, p: dict) -> str:
 
 class NouveauCompte(BaseModel):
     nom: str = Field(min_length=1, max_length=40)
-    admin: bool = False
-    groupes: list[str] | None = None
+    admin: bool = False                     # ancien écran : = groupe « admin »
+    groupe: str = Field(default="", max_length=32)
 
 
 class MonAgenda(BaseModel):
@@ -417,18 +417,16 @@ class MonAgenda(BaseModel):
 
 
 class DroitsCompte(BaseModel):
-    """Page d'administration : rôle, groupes, ajouts et retraits propres à une personne."""
-    admin: bool | None = None
-    groupes: list[str] | None = None
+    """Page d'administration : le groupe d'une personne, et ses exceptions (ajouts, retraits)."""
+    groupe: str | None = Field(default=None, max_length=32)
     permissions: list[str] | None = None
     retraits: list[str] | None = None
 
 
 class Groupe(BaseModel):
     nom: str = Field(min_length=1, max_length=40)
-    parent: str = Field(default="", max_length=32)
     permissions: list[str] = []
-    retraits: list[str] = []
+    enfant: bool = False                     # parler comme à un enfant
 
 
 PERMISSION_DOCKER = {"redemarrer": "serveur.redemarrer", "demarrer": "serveur.demarrer_arreter",
@@ -1360,15 +1358,12 @@ def creer_app(config: Config | None = None, registre: Registre | None = None,
     def creer_compte(n: NouveauCompte, requete: Request) -> dict:
         admin = exiger_admin(requete)
         try:
-            ident, jeton = securite.creer_compte(n.nom, n.admin)
-            if n.groupes is not None:
-                securite.definir_droits(ident, groupes=n.groupes)
+            ident, jeton = securite.creer_compte(n.nom, n.admin, n.groupe)
         except AccesRefuse as e:
             raise HTTPException(409, str(e)) from e
         except D.DroitInvalide as e:
-            securite.supprimer(ident)
             raise HTTPException(422, str(e)) from e
-        audit.noter("compte_créé", admin, ip_de(requete)[1], cible=ident, admin=n.admin)
+        audit.noter("compte_créé", admin, ip_de(requete)[1], cible=ident, groupe=securite.groupe_de(ident))
         return {"id": ident, "lien": lien_invitation(requete, jeton), "expire_jours": 7}
 
     @app.post("/api/comptes/{ident}/invitation")
@@ -1501,7 +1496,7 @@ def creer_app(config: Config | None = None, registre: Registre | None = None,
             return {"evenements": [e for e in audit.derniers(5000, type) if e.get("compte") == compte][:n]}
         return {"evenements": audit.derniers(n, type)}
 
-    # --- droits : groupes, sous-groupes, permissions par personne (page /admin) -------------------------
+    # --- droits : un groupe par personne, ses exceptions, et les groupes (page /admin) ---------------------
     @app.get("/api/droits")
     def lire_droits(requete: Request) -> dict:
         exiger_admin(requete)
@@ -1520,7 +1515,7 @@ def creer_app(config: Config | None = None, registre: Registre | None = None,
         gid = D.ident_groupe(g.nom)
         if gid in securite.groupes:
             raise HTTPException(409, f"le groupe « {g.nom} » existe déjà")
-        gid = droit_ou_422(lambda: securite.enregistrer_groupe("", g.nom, g.parent, g.permissions, g.retraits))
+        gid = droit_ou_422(lambda: securite.enregistrer_groupe("", g.nom, g.permissions, g.enfant))
         audit.noter("groupe_créé", admin, ip_de(requete)[1], cible=gid)
         return {"id": gid, "groupes": securite.liste_groupes()}
 
@@ -1529,7 +1524,7 @@ def creer_app(config: Config | None = None, registre: Registre | None = None,
         admin = exiger_admin(requete)
         if gid not in securite.groupes:
             raise HTTPException(404, "groupe inconnu")
-        droit_ou_422(lambda: securite.enregistrer_groupe(gid, g.nom, g.parent, g.permissions, g.retraits))
+        droit_ou_422(lambda: securite.enregistrer_groupe(gid, g.nom, g.permissions, g.enfant))
         audit.noter("groupe_modifié", admin, ip_de(requete)[1], cible=gid)
         return {"id": gid, "groupes": securite.liste_groupes()}
 
@@ -1545,11 +1540,9 @@ def creer_app(config: Config | None = None, registre: Registre | None = None,
         admin = exiger_admin(requete)
         if ident not in securite.comptes:
             raise HTTPException(404, "compte inconnu")
-        if dc.admin is not None:
-            if ident == admin and not dc.admin:
-                raise HTTPException(409, "impossible de retirer ton propre rôle d'administrateur")
-            droit_ou_422(lambda: securite.definir_admin(ident, dc.admin))
-        droit_ou_422(lambda: securite.definir_droits(ident, dc.groupes, dc.permissions, dc.retraits))
+        if ident == admin and dc.groupe is not None and dc.groupe != D.ADMIN:
+            raise HTTPException(409, "impossible de te sortir toi-même du groupe Admin")
+        droit_ou_422(lambda: securite.definir_droits(ident, dc.groupe, dc.permissions, dc.retraits))
         audit.noter("droits_modifiés", admin, ip_de(requete)[1], cible=ident,
                     champs=sorted(dc.model_dump(exclude_none=True)))
         return next(c for c in securite.liste() if c["id"] == ident)
