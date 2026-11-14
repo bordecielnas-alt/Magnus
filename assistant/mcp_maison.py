@@ -232,10 +232,36 @@ OUTILS_REGLES = [
 ]
 
 
+PILOTER = tuple(f"maison.piloter.{c}" for c in ("lumieres", "prises", "volets", "chauffage", "medias", "ventilateurs"))
+# Permission(s) nécessaire(s) pour voir chaque outil (une seule suffit) ; absent = outil personnel, toujours là.
+PERMISSION_OUTIL: dict[str, tuple[str, ...]] = {
+    "lister_appareils": ("maison.voir",), "lire_etat": ("maison.voir",), "lister_capteurs": ("maison.voir",),
+    "agir": PILOTER, "annuler": PILOTER,
+    "lister_conteneurs": ("serveur.etat",), "etat_serveur": ("serveur.etat",),
+    "diagnostiquer_conteneur": ("serveur.diagnostic",),
+    "demander_redemarrage": ("serveur.demarrer_arreter", "serveur.redemarrer", "serveur.mettre_a_jour"),
+    "lire_agenda": ("agenda.lire",), "ajouter_evenement": ("agenda.ecrire",), "supprimer_evenement": ("agenda.ecrire",),
+    "creer_routine": ("automatismes.routines",), "proposer_regle": ("automatismes.regles",),
+    "proposer_souvenir": ("memoire.utiliser",), "envoyer_telegram": ("telegram.envoyer",),
+    "creer_rappel": ("rappels.utiliser",), "lister_rappels": ("rappels.utiliser",), "supprimer_rappel": ("rappels.utiliser",),
+}
+
+
+def permis(nom: str) -> bool:
+    """Les droits de la personne (ASSISTANT_PERMISSIONS, posé par l'assistant) : un outil interdit n'est même pas
+    proposé au modèle. Le serveur revérifie à chaque appel."""
+    brut = os.environ.get("ASSISTANT_PERMISSIONS")
+    if brut is None:
+        return True
+    perms = set(brut.split(","))
+    return not PERMISSION_OUTIL.get(nom) or any(p in perms for p in PERMISSION_OUTIL[nom])
+
+
 def outils() -> list[dict]:
-    return (OUTILS + OUTILS_ROUTINES + OUTILS_RAPPELS + OUTILS_REGLES + OUTILS_MEMOIRE + (OUTILS_DOCKER if os.environ.get("ASSISTANT_DOCKER") == "1" else [])
+    tous = (OUTILS + OUTILS_ROUTINES + OUTILS_RAPPELS + OUTILS_REGLES + OUTILS_MEMOIRE + (OUTILS_DOCKER if os.environ.get("ASSISTANT_DOCKER") == "1" else [])
             + (OUTILS_AGENDA if os.environ.get("ASSISTANT_AGENDA") == "1" else [])
             + (OUTILS_TELEGRAM if os.environ.get("ASSISTANT_TELEGRAM") == "1" else []))
+    return [o for o in tous if permis(o["name"])]
 
 
 def _client() -> httpx.Client:
@@ -248,6 +274,8 @@ def _client() -> httpx.Client:
 
 def appeler(nom: str, args: dict) -> str:
     conv = os.environ.get("ASSISTANT_CONVERSATION", "")
+    if not permis(nom):
+        raise ValueError("pas permis pour cette personne : dis-le-lui simplement")
     with _client() as c:
         if nom == "lister_appareils":
             r = c.get("/interne/maison/appareils", params={"filtre": args.get("filtre", ""), "conversation": conv})
@@ -256,26 +284,26 @@ def appeler(nom: str, args: dict) -> str:
         elif nom == "agir":
             r = c.post("/interne/maison/agir", json={**args, "conversation": conv})
         elif nom == "etat_serveur":
-            r = c.get("/interne/unraid")
+            r = c.get("/interne/unraid", params={"conversation": conv})
         elif nom == "demander_redemarrage":
             r = c.post("/interne/docker/redemarrer", json={"nom": args["nom"], "action": args.get("action", "redemarrer"),
                                                            "conversation": conv})
         elif nom == "envoyer_telegram":
             r = c.post("/interne/telegram", json={"texte": args["texte"], "conversation": conv})
         elif nom == "lister_conteneurs":
-            r = c.get("/interne/docker/conteneurs")
+            r = c.get("/interne/docker/conteneurs", params={"conversation": conv})
         elif nom == "diagnostiquer_conteneur":
-            r = c.get("/interne/docker/diagnostic", params={"nom": args["nom"]})
+            r = c.get("/interne/docker/diagnostic", params={"nom": args["nom"], "conversation": conv})
         elif nom == "lire_agenda":
-            r = c.get("/interne/agenda", params={"jours": args.get("jours", 7)})
+            r = c.get("/interne/agenda", params={"jours": args.get("jours", 7), "conversation": conv})
         elif nom == "supprimer_evenement":
             r = c.post("/interne/agenda/supprimer", json={"ref": args["ref"], "conversation": conv})
         elif nom == "ajouter_evenement":
-            r = c.post("/interne/agenda", json=args)
+            r = c.post("/interne/agenda", json={**args, "conversation": conv})
         elif nom == "creer_routine":
-            r = c.post("/interne/routines", json=args)
+            r = c.post("/interne/routines", json={**args, "conversation": conv})
         elif nom == "lister_routines":
-            r = c.get("/interne/routines")
+            r = c.get("/interne/routines", params={"conversation": conv})
         elif nom == "proposer_souvenir":
             r = c.post("/interne/memoire", json={**args, "conversation": conv})
         elif nom == "creer_rappel":
@@ -285,11 +313,11 @@ def appeler(nom: str, args: dict) -> str:
         elif nom == "supprimer_rappel":
             r = c.delete(f"/interne/rappels/{args['id']}", params={"conversation": conv})
         elif nom == "lister_capteurs":
-            r = c.get("/interne/capteurs", params={"filtre": args.get("filtre", "")})
+            r = c.get("/interne/capteurs", params={"filtre": args.get("filtre", ""), "conversation": conv})
         elif nom == "proposer_regle":
             r = c.post("/interne/regles", json={**args, "conversation": conv})
         elif nom == "lister_regles":
-            r = c.get("/interne/regles")
+            r = c.get("/interne/regles", params={"conversation": conv})
         elif nom == "changer_regle":
             r = c.post(f"/interne/regles/{args['id']}", params={"conversation": conv},
                        json={"active": bool(args["active"])})

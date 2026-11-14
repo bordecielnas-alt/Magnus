@@ -54,19 +54,19 @@ class Annonces:
             pass
 
     def ajouter(self, texte: str, priorite: str = "info", source: str = "", cle: str = "",
-                actions: list[dict] | None = None, cible: dict | None = None) -> dict | None:
+                actions: list[dict] | None = None, cible: dict | None = None, compte: str = "") -> dict | None:
         """`cle` évite de répéter la même annonce (ex. « docker:radarr ») tant qu'elle n'est pas résolue.
 
         `actions` : boutons proposés sous l'annonce ([{"id": "mettre_a_jour", "libelle": "Mettre à jour"}, …]) ;
         `cible` : ce sur quoi ils portent (ex. {"type": "maj_docker", "conteneur": "plex"}). Le choix fait est
-        gardé dans « decision »."""
+        gardé dans « decision ». `compte` : l'annonce n'est que pour cette personne (son rappel, sa règle)."""
         with self._verrou:
             if cle and any(a.get("cle") == cle and not a.get("resolue") for a in self.liste[-100:]):
                 return None
             a = {"id": f"{int(time.time() * 1000):x}{secrets.token_hex(2)}",
                  "heure": datetime.now().astimezone().isoformat(timespec="seconds"),
                  "texte": texte, "priorite": priorite if priorite in PRIORITES else "info",
-                 "source": source, "cle": cle, "lue": False, "resolue": False,
+                 "source": source, "cle": cle, "lue": False, "resolue": False, **({"compte": compte} if compte else {}),
                  **({"actions": actions, "cible": cible or {}, "decision": None} if actions else {})}
             self.liste.append(a)
             self.liste = self.liste[-100:]

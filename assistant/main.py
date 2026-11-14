@@ -48,6 +48,7 @@ from .presentation import (NOTE_CARTE, NOTE_VOIR, RE_MARQUEUR, SUITE_VALIDE_S, C
 from .docker_diag import ETATS_FR, Docker, UnraidDocker, causes_probables, normaliser_nom, statut_lisible
 from .locuteur import Locuteurs
 from .diagnostic import Diagnostic, GestionnaireJournal
+from . import droits as D
 from .securite import COMPTE_MACHINE, NOM_COOKIE, AccesRefuse, Securite, est_locale
 from .voix import Voix, sans_emoji
 
@@ -272,6 +273,7 @@ class EtapeRoutine(BaseModel):
 class NouvelleRoutine(BaseModel):
     nom: str = Field(min_length=2, max_length=60)
     etapes: list[EtapeRoutine] = Field(min_length=1, max_length=20)
+    conversation: str = Field(default="", max_length=64)
 
 
 class PropositionRegle(BaseModel):
@@ -357,6 +359,7 @@ class NouvelEvenement(BaseModel):
     fin: str = Field(default="", max_length=40)
     lieu: str = Field(default="", max_length=200)
     journee: bool = False
+    conversation: str = Field(default="", max_length=64)
 
 
 class Profil(BaseModel):
@@ -400,6 +403,37 @@ def note_profil(nom: str, p: dict) -> str:
 class NouveauCompte(BaseModel):
     nom: str = Field(min_length=1, max_length=40)
     admin: bool = False
+    groupes: list[str] | None = None
+
+
+class DroitsCompte(BaseModel):
+    """Page d'administration : rôle, groupes, ajouts et retraits propres à une personne."""
+    admin: bool | None = None
+    groupes: list[str] | None = None
+    permissions: list[str] | None = None
+    retraits: list[str] | None = None
+
+
+class Groupe(BaseModel):
+    nom: str = Field(min_length=1, max_length=40)
+    parent: str = Field(default="", max_length=32)
+    permissions: list[str] = []
+    retraits: list[str] = []
+
+
+PERMISSION_DOCKER = {"redemarrer": "serveur.redemarrer", "demarrer": "serveur.demarrer_arreter",
+                     "arreter": "serveur.demarrer_arreter", "mettre_a_jour": "serveur.mettre_a_jour"}
+# Phrases de refus : une demande comprise mais pas permise est dite comme telle (jamais « pas compris »).
+REFUS = {
+    "serveur": "Tu n'as pas accès au serveur : demande à un administrateur.",
+    "telegram": "Tu n'as pas accès à Telegram : demande à un administrateur.",
+    "agenda": "Tu n'as pas accès à l'agenda familial : demande à un administrateur.",
+    "regles": "Tu n'as pas le droit de créer des règles : demande à un administrateur.",
+    "routines": "Tu n'as pas le droit de créer des routines : demande à un administrateur.",
+    "rappels": "Tu n'as pas le droit de créer des rappels : demande à un administrateur.",
+    "maison": "Tu n'as pas accès à la maison : demande à un administrateur.",
+    "web": "Tu n'as pas accès aux questions générales : demande à un administrateur.",
+}
 
 
 PAGE_DIAGNOSTIC = """<!doctype html><html lang="fr"><head><meta charset="utf-8">
@@ -548,10 +582,13 @@ def creer_app(config: Config | None = None, registre: Registre | None = None,
         while True:
             try:
                 for r in rappels.echus():
-                    pour = (securite.comptes.get(r.get("compte") or "", {}).get("nom", "")
-                            if len(securite.comptes) > 1 else "")
+                    qui = r.get("compte") or ""
+                    pour = (securite.comptes.get(qui, {}).get("nom", "") if len(securite.comptes) > 1 else "")
+                    # seulement chez la personne, et sur Telegram (celui de la maison) si elle y a droit
                     await signaler(f"Rappel{' pour ' + pour if pour else ''} : {r['texte']}", "urgent", "rappel",
-                                   f"rappel:{r['id']}", cfg.telegram.agenda)
+                                   f"rappel:{r['id']}",
+                                   cfg.telegram.agenda and (not qui or securite.peut(qui, "telegram.recevoir")),
+                                   compte=qui)
             except Exception:  # noqa: BLE001
                 journal.exception("rappels : erreur")
             await aio.sleep(5)
@@ -585,9 +622,10 @@ def creer_app(config: Config | None = None, registre: Registre | None = None,
         return ""
 
     async def signaler(texte: str, priorite: str, source: str, cle: str, vers_telegram: bool = True,
-                       actions: list[dict] | None = None, cible: dict | None = None) -> None:
-        """Une alerte : gardée dans les annonces (sans doublon) et envoyée sur Telegram la première fois."""
-        a = annonces.ajouter(texte, priorite, source, cle, actions, cible)
+                       actions: list[dict] | None = None, cible: dict | None = None, compte: str = "") -> None:
+        """Une alerte : gardée dans les annonces (sans doublon) et envoyée sur Telegram la première fois.
+        `compte` : annonce personnelle (rappel, règle), montrée à cette personne seulement."""
+        a = annonces.ajouter(texte, priorite, source, cle, actions, cible, compte=compte)
         if a and vers_telegram and telegram.configure:
             try:
                 await telegram.envoyer(f"{cfg.identite.nom_effectif} : {texte}")
@@ -628,8 +666,10 @@ def creer_app(config: Config | None = None, registre: Registre | None = None,
 
     async def faire_rapport(dem: Demande, compte: str | None, ctx_revel: frozenset) -> tuple[str, list[dict]]:
         """(phrase, cartes) ; mêmes droits que les écrans : Docker pour les administrateurs, agenda masquable."""
-        if dem.type == "docker" and not securite.est_admin(compte):
-            return "Le rapport Docker est réservé aux administrateurs.", []
+        if dem.type == "docker" and not securite.peut(compte, "serveur.etat"):
+            return REFUS["serveur"], []
+        if dem.type != "docker" and compte and not securite.peut(compte, "assistant.web"):
+            return REFUS["web"], []
         if dem.type == "agenda" and "historique" in ctx_revel:
             return "L'agenda est masqué en ce moment.", []
         try:
@@ -795,11 +835,21 @@ def creer_app(config: Config | None = None, registre: Registre | None = None,
     async def executer_regle(r: dict) -> str:
         """Une règle vient de se déclencher : ses actions (mêmes garde-fous que les routines), puis son annonce."""
         faits = []
-        for e in r.get("actions", []):
-            res = await maison.agir_ids(e["entity_ids"], e["action"], e.get("valeur"), e.get("couleur"), f"regle:{r['id']}")
-            faits.append(res.texte or "Rien n'a été fait.")
+        auteur = r.get("compte") or ""
+        # mêmes limites que son auteur : ce qu'il ne pilote plus, la règle ne le pilote plus non plus
+        jeton = interdits.set(domaines_interdits(securite.profil(auteur)["interdits"]) if auteur in securite.comptes
+                              else frozenset())
+        try:
+            for e in r.get("actions", []):
+                res = await maison.agir_ids(e["entity_ids"], e["action"], e.get("valeur"), e.get("couleur"),
+                                            f"regle:{r['id']}")
+                faits.append(res.texte or "Rien n'a été fait.")
+        finally:
+            interdits.reset(jeton)
         if r.get("annonce"):
-            await signaler(r["annonce"], "important", "regle", f"regle:{r['id']}")
+            await signaler(r["annonce"], "important", "regle", f"regle:{r['id']}",
+                           not auteur or securite.peut(auteur, "telegram.recevoir"),
+                           compte=auteur if auteur in securite.comptes else "")
             faits.append("Annonce faite.")
         resultat = " ".join(faits)
         regles.noter(r["id"], resultat)
@@ -859,17 +909,28 @@ def creer_app(config: Config | None = None, registre: Registre | None = None,
     jeton_interne = secrets.token_urlsafe(24)   # pour le serveur MCP « maison », change à chaque démarrage
 
     def outils_maison(conversation: str) -> dict:
+        """Outils de Claude pour cette conversation : seulement ceux que la personne a le droit d'utiliser
+        (mcp_maison filtre avec ASSISTANT_PERMISSIONS ; l'API interne revérifie à chaque appel)."""
+        d = droits_conv(conversation)
+        serveur = docker.configure and "serveur.etat" in d
+        avec_agenda = agenda.configure and "agenda.lire" in d
+        avec_telegram = telegram.configure and "telegram.envoyer" in d
         env = {"ASSISTANT_INTERNE_URL": f"http://127.0.0.1:{cfg.serveur.port}",
                "ASSISTANT_INTERNE_JETON": jeton_interne, "ASSISTANT_CONVERSATION": conversation,
-               "ASSISTANT_DOCKER": "1" if docker.configure else "0",
-               "ASSISTANT_AGENDA": "1" if agenda.configure else "0",
-               "ASSISTANT_TELEGRAM": "1" if telegram.configure else "0"}
+               "ASSISTANT_DOCKER": "1" if serveur else "0",
+               "ASSISTANT_AGENDA": "1" if avec_agenda else "0",
+               "ASSISTANT_TELEGRAM": "1" if avec_telegram else "0",
+               "ASSISTANT_PERMISSIONS": ",".join(sorted(d))}
+        date = f"{JOURS[time.localtime().tm_wday]} {time.strftime('%d/%m/%Y %H:%M')}"
         return {
             "mcp": {"mcpServers": {"maison": {"command": sys.executable, "args": ["-m", "assistant.mcp_maison"], "env": env}}},
             "autoriser": ["mcp__maison"],
-            "note": NOTE_OUTILS_MAISON + "\n\n" + NOTE_RAPPELS.format(
-                date=f"{JOURS[time.localtime().tm_wday]} {time.strftime('%d/%m/%Y %H:%M')}") + ("\n\n" + NOTE_OUTILS_DOCKER if docker.configure else "") + ("\n\n" + NOTE_TELEGRAM if telegram.configure else "")
-                    + ("\n\n" + NOTE_OUTILS_AGENDA.format(date=f"{JOURS[time.localtime().tm_wday]} {time.strftime('%d/%m/%Y %H:%M')}") if agenda.configure else ""),
+            "note": NOTE_OUTILS_MAISON + "\n\n" + NOTE_RAPPELS.format(date=date)
+                    + ("\n\n" + NOTE_OUTILS_DOCKER if serveur else "") + ("\n\n" + NOTE_TELEGRAM if avec_telegram else "")
+                    + ("\n\n" + NOTE_OUTILS_AGENDA.format(date=date) if avec_agenda else "")
+                    + ("\n\nCertains outils ne sont pas permis à cette personne et n'apparaissent pas : si elle demande "
+                       "ce qu'ils feraient, dis-lui simplement que ce n'est pas permis pour elle."
+                       if len(d) < len(D.PERMISSIONS) else ""),
         }
 
     def verifier_jeton(x_jeton_interne: str | None) -> None:
@@ -938,6 +999,7 @@ def creer_app(config: Config | None = None, registre: Registre | None = None,
     masques_conversation: dict[str, frozenset] = {}          # conversation -> ce qu'on ne révèle pas (outils de Claude)
     interdits_conversation: dict[str, frozenset] = {}        # conversation -> domaines que la personne ne pilote pas
     personne_conversation: dict[str, str] = {}               # conversation -> qui parle (compte, ou voix reconnue)
+    droits_conversation: dict[str, frozenset] = {}          # conversation -> permissions effectives (outils de Claude)
 
     def interdits_de(compte: str | None, conversation: str = "") -> frozenset:
         """Droits effectifs : ceux du compte connecté, réduits par ceux de la voix reconnue dans la
@@ -1005,6 +1067,49 @@ def creer_app(config: Config | None = None, registre: Registre | None = None,
             raise HTTPException(403, "réservé aux administrateurs")
         return compte
 
+    def exiger(requete: Request, *permissions: str) -> str:
+        """Une des permissions suffit ; sinon 403 avec ce qui manque, en clair."""
+        compte = compte_de(requete)
+        if not any(securite.peut(compte, p) for p in permissions):
+            raise HTTPException(403, "pas permis pour ce compte : " + D.PERMISSIONS[permissions[0]])
+        return compte
+
+    def droits_de(compte: str | None, conversation: str = "", voix: str | None = None) -> frozenset:
+        """Droits effectifs d'une demande : ceux du compte connecté, réduits par ceux de la voix reconnue
+        (la voix ne donne jamais plus que le compte)."""
+        d = set(securite.permissions(compte))
+        if voix and voix in securite.comptes:
+            d &= securite.permissions(voix)
+        return frozenset(d)
+
+    def droits_conv(conversation: str) -> frozenset:
+        """Pour l'API interne (outils de Claude) : les droits posés par le chat pour cette conversation.
+        Conversation inconnue (tests, outil lancé à la main sur la machine) : ceux de la machine."""
+        if conversation in droits_conversation:
+            return droits_conversation[conversation]
+        compte = compte_conversation.get(conversation, ("", ""))[0]
+        return frozenset(securite.permissions(compte or COMPTE_MACHINE))
+
+    def exiger_conv(conversation: str, *permissions: str) -> None:
+        if not set(permissions) & droits_conv(conversation):
+            raise HTTPException(403, "pas permis pour cette personne : " + D.PERMISSIONS[permissions[0]])
+
+    def a_moi(objet: dict, compte: str | None) -> bool:
+        """Règle, routine, rappel : à son auteur ; les anciens (sans auteur) et l'administrateur voient tout."""
+        auteur = objet.get("compte") or ""
+        return auteur in ("", "claude") or auteur == compte or securite.est_admin(compte)
+
+    def visible_annonce(a: dict, compte: str | None) -> bool:
+        if compte == COMPTE_MACHINE:
+            return True
+        if a.get("compte"):
+            return a["compte"] == compte
+        if a.get("source") in ("docker", "disques", "mises à jour"):
+            return securite.peut(compte, "serveur.alertes")
+        if a.get("source") == "agenda":
+            return securite.peut(compte, "agenda.lire")
+        return True
+
     @app.middleware("http")
     async def tracer_voix_et_chat(requete: Request, suite):
         """Pour le diagnostic : chaque appel de la voix et du chat, sa durée, et l'erreur complète s'il plante."""
@@ -1056,6 +1161,13 @@ def creer_app(config: Config | None = None, registre: Registre | None = None,
     def page_connexion() -> FileResponse:
         return FileResponse(STATIC / "connexion.html")
 
+    @app.get("/admin", include_in_schema=False)
+    def page_admin(requete: Request) -> Response:
+        """Gestion des personnes, groupes et droits (administrateurs)."""
+        if not securite.est_admin(compte_de(requete)):
+            return RedirectResponse("/", 303)
+        return FileResponse(STATIC / "admin.html")
+
     @app.get("/api/securite")
     def etat_securite(requete: Request) -> dict:
         directe, ip = ip_de(requete)
@@ -1065,6 +1177,7 @@ def creer_app(config: Config | None = None, registre: Registre | None = None,
                 "locale": est_locale(ip), "ip": ip, "session_jours": cfg.securite.session_jours,
                 "connecte": compte is not None, "compte": compte, "compte_nom": info.get("nom", compte),
                 "admin": securite.est_admin(compte), "totp": bool(info.get("totp")),
+                "permissions": sorted(securite.permissions(compte)) if compte else [],
                 "totp_obligatoire": cfg.securite.totp_obligatoire}
 
     def poser_session(rep: Response, requete: Request, directe: str, compte: str) -> None:
@@ -1195,8 +1308,13 @@ def creer_app(config: Config | None = None, registre: Registre | None = None,
         admin = exiger_admin(requete)
         try:
             ident, jeton = securite.creer_compte(n.nom, n.admin)
+            if n.groupes is not None:
+                securite.definir_droits(ident, groupes=n.groupes)
         except AccesRefuse as e:
             raise HTTPException(409, str(e)) from e
+        except D.DroitInvalide as e:
+            securite.supprimer(ident)
+            raise HTTPException(422, str(e)) from e
         audit.noter("compte_créé", admin, ip_de(requete)[1], cible=ident, admin=n.admin)
         return {"id": ident, "lien": lien_invitation(requete, jeton), "expire_jours": 7}
 
@@ -1323,9 +1441,78 @@ def creer_app(config: Config | None = None, registre: Registre | None = None,
         return {"profil": securite.definir_profil(ident, maj)}
 
     @app.get("/api/audit")
-    def lire_audit(requete: Request, n: int = 200, type: str = "") -> dict:
+    def lire_audit(requete: Request, n: int = 200, type: str = "", compte: str = "") -> dict:
         exiger_admin(requete)
-        return {"evenements": audit.derniers(max(1, min(n, 1000)), type)}
+        n = max(1, min(n, 1000))
+        if compte:
+            return {"evenements": [e for e in audit.derniers(5000, type) if e.get("compte") == compte][:n]}
+        return {"evenements": audit.derniers(n, type)}
+
+    # --- droits : groupes, sous-groupes, permissions par personne (page /admin) -------------------------
+    @app.get("/api/droits")
+    def lire_droits(requete: Request) -> dict:
+        exiger_admin(requete)
+        return {"catalogue": D.catalogue(), "groupes": securite.liste_groupes(), "comptes": securite.liste(),
+                "moi": compte_de(requete)}
+
+    def droit_ou_422(appel):
+        try:
+            return appel()
+        except (D.DroitInvalide, AccesRefuse) as e:
+            raise HTTPException(422, str(e)) from e
+
+    @app.post("/api/groupes")
+    def creer_groupe(g: Groupe, requete: Request) -> dict:
+        admin = exiger_admin(requete)
+        gid = D.ident_groupe(g.nom)
+        if gid in securite.groupes:
+            raise HTTPException(409, f"le groupe « {g.nom} » existe déjà")
+        gid = droit_ou_422(lambda: securite.enregistrer_groupe("", g.nom, g.parent, g.permissions, g.retraits))
+        audit.noter("groupe_créé", admin, ip_de(requete)[1], cible=gid)
+        return {"id": gid, "groupes": securite.liste_groupes()}
+
+    @app.put("/api/groupes/{gid}")
+    def modifier_groupe(gid: str, g: Groupe, requete: Request) -> dict:
+        admin = exiger_admin(requete)
+        if gid not in securite.groupes:
+            raise HTTPException(404, "groupe inconnu")
+        droit_ou_422(lambda: securite.enregistrer_groupe(gid, g.nom, g.parent, g.permissions, g.retraits))
+        audit.noter("groupe_modifié", admin, ip_de(requete)[1], cible=gid)
+        return {"id": gid, "groupes": securite.liste_groupes()}
+
+    @app.delete("/api/groupes/{gid}")
+    def supprimer_groupe(gid: str, requete: Request) -> dict:
+        admin = exiger_admin(requete)
+        droit_ou_422(lambda: securite.supprimer_groupe(gid))
+        audit.noter("groupe_supprimé", admin, ip_de(requete)[1], cible=gid)
+        return {"ok": True}
+
+    @app.post("/api/comptes/{ident}/droits")
+    def droits_d_un_compte(ident: str, dc: DroitsCompte, requete: Request) -> dict:
+        admin = exiger_admin(requete)
+        if ident not in securite.comptes:
+            raise HTTPException(404, "compte inconnu")
+        if dc.admin is not None:
+            if ident == admin and not dc.admin:
+                raise HTTPException(409, "impossible de retirer ton propre rôle d'administrateur")
+            droit_ou_422(lambda: securite.definir_admin(ident, dc.admin))
+        droit_ou_422(lambda: securite.definir_droits(ident, dc.groupes, dc.permissions, dc.retraits))
+        audit.noter("droits_modifiés", admin, ip_de(requete)[1], cible=ident,
+                    champs=sorted(dc.model_dump(exclude_none=True)))
+        return next(c for c in securite.liste() if c["id"] == ident)
+
+    @app.get("/api/comptes/{ident}/detail")
+    def detail_d_un_compte(ident: str, requete: Request) -> dict:
+        """Ce qui appartient à cette personne : rappels, règles, routines, et son journal."""
+        exiger_admin(requete)
+        if ident not in securite.comptes:
+            raise HTTPException(404, "compte inconnu")
+        return {"rappels": [{k: r[k] for k in ("id", "quand", "texte")} for r in rappels.a_venir()
+                            if r.get("compte") == ident],
+                "regles": [{k: r.get(k) for k in ("id", "texte", "active")} for r in regles.liste
+                           if r.get("compte") == ident],
+                "routines": [r["nom"] for r in routines.liste.values() if r.get("compte") == ident],
+                "journal": [e for e in audit.derniers(5000) if e.get("compte") == ident][:40]}
 
     @app.get("/health")
     def health() -> dict:
@@ -1348,17 +1535,20 @@ def creer_app(config: Config | None = None, registre: Registre | None = None,
         return {"roles": reg.roles, "fournisseurs": await reg.etat()}
 
     @app.get("/api/home-assistant")
-    async def etat_ha() -> dict:
+    async def etat_ha(requete: Request) -> dict:
+        exiger_admin(requete)          # adresse, version : une intégration, réservée aux administrateurs
         return await ha.etat()
 
     @app.get("/api/maison")
-    async def etat_maison() -> dict:
+    async def etat_maison(requete: Request) -> dict:
+        exiger_admin(requete)
         if ha.configure and not maison.inventaire.entites:
             await maison.inventaire.obtenir()
         return {"inventaire": maison.inventaire.resume(), "alias": maison.alias.liste()}
 
     @app.post("/api/maison/rafraichir")
-    async def rafraichir_maison() -> dict:
+    async def rafraichir_maison(requete: Request) -> dict:
+        exiger_admin(requete)
         await maison.inventaire.obtenir(forcer=True)
         return maison.inventaire.resume()
 
@@ -1377,6 +1567,7 @@ def creer_app(config: Config | None = None, registre: Registre | None = None,
         """Interrupteur, curseur ou couleur d'une carte : agit sans passer par un modèle."""
         if not ha.configure:
             raise HTTPException(503, "Home Assistant n'est pas configuré")
+        exiger(requete, "maison.voir")
         masques.set(frozenset(contexte_de(requete)["masques"]))
         interdits.set(interdits_de(compte_de(requete), g.conversation))
         demande_en_cours.set(("carte", texte_conversation.get(g.conversation, "")))
@@ -1397,7 +1588,9 @@ def creer_app(config: Config | None = None, registre: Registre | None = None,
         """Carte « groupe » : la même couleur (ou intensité, blanc…) pour les appareils choisis, en une action."""
         if not ha.configure:
             raise HTTPException(503, "Home Assistant n'est pas configuré")
+        exiger(requete, "maison.voir")
         masques.set(frozenset(contexte_de(requete)["masques"]))
+        interdits.set(interdits_de(compte_de(requete), g.conversation))
         demande_en_cours.set(("carte", texte_conversation.get(g.conversation, "")))
         champs = g.model_dump(exclude={"entity_id", "entity_ids", "conversation"}, exclude_none=True)
         try:
@@ -1424,6 +1617,7 @@ def creer_app(config: Config | None = None, registre: Registre | None = None,
 
     @app.delete("/api/maison/alias/{phrase}")
     def oublier_alias(phrase: str, requete: Request) -> dict:
+        exiger_admin(requete)
         if not maison.alias.oublier(phrase):
             raise HTTPException(404, "alias inconnu")
         auditer(requete, "alias_oublié", phrase=phrase)
@@ -1434,12 +1628,14 @@ def creer_app(config: Config | None = None, registre: Registre | None = None,
     async def interne_appareils(filtre: str = "", conversation: str = "",
                                 x_jeton_interne: str | None = Header(None)) -> list[dict]:
         verifier_jeton(x_jeton_interne)
+        exiger_conv(conversation, "maison.voir")
         masques.set(masques_conversation.get(conversation, frozenset()))
         return await maison.appareils(filtre)
 
     @app.get("/interne/maison/etat/{entity_id}", include_in_schema=False)
     async def interne_etat(entity_id: str, conversation: str = "", x_jeton_interne: str | None = Header(None)) -> dict:
         verifier_jeton(x_jeton_interne)
+        exiger_conv(conversation, "maison.voir")
         masques.set(masques_conversation.get(conversation, frozenset()))
         e = await maison.etat_detaille(entity_id)
         if e is None:
@@ -1450,12 +1646,14 @@ def creer_app(config: Config | None = None, registre: Registre | None = None,
     @app.get("/api/actions")
     def historique_actions(requete: Request, limite: int = 50) -> dict:
         exiger_revelation(requete, "historique")
+        exiger(requete, "maison.historique")
         h = maison.historique
         return {"actions": h.liste(max(1, min(limite, 500))) if h else []}
 
     @app.post("/api/actions/{ident}/annuler")
     async def annuler_action(ident: str, requete: Request) -> dict:
         exiger_revelation(requete, "historique")
+        exiger(requete, "maison.historique")
         interdits.set(interdits_de(compte_de(requete)))
         ok, message = await maison.annuler_action(ident)
         if not ok:
@@ -1466,11 +1664,13 @@ def creer_app(config: Config | None = None, registre: Registre | None = None,
     @app.get("/api/appareils/etat")
     async def etat_des_appareils(requete: Request) -> dict:
         exiger_revelation(requete, "historique")
+        exiger(requete, "maison.historique")
         return {"appareils": await maison.etats_appareils()}
 
     @app.get("/interne/unraid", include_in_schema=False)
-    async def interne_unraid(x_jeton_interne: str | None = Header(None)) -> dict:
+    async def interne_unraid(conversation: str = "", x_jeton_interne: str | None = Header(None)) -> dict:
         verifier_jeton(x_jeton_interne)
+        exiger_conv(conversation, "serveur.etat")
         if not isinstance(docker, UnraidDocker):
             raise HTTPException(503, "l'état du serveur demande l'API Unraid (docker.unraid_url)")
         return {**(await docker_ou_erreur(serveur_unraid())), **(await mises_a_jour_sures())}
@@ -1479,8 +1679,7 @@ def creer_app(config: Config | None = None, registre: Registre | None = None,
     async def interne_redemarrer(r: DemandeRedemarrage, x_jeton_interne: str | None = Header(None)) -> dict:
         verifier_jeton(x_jeton_interne)
         compte, _ = compte_conversation.get(r.conversation, ("", ""))
-        if not securite.est_admin(compte):
-            raise HTTPException(403, "réservé aux administrateurs")
+        exiger_conv(r.conversation, PERMISSION_DOCKER[r.action])
         if not isinstance(docker, UnraidDocker) or not cfg.docker.cle_unraid_actions():
             raise HTTPException(503, "redémarrage non configuré (2e clé Unraid « actions Docker »)")
         c = await docker_ou_erreur(docker.trouver(r.nom))
@@ -1495,9 +1694,7 @@ def creer_app(config: Config | None = None, registre: Registre | None = None,
     @app.post("/interne/telegram", include_in_schema=False)
     async def interne_telegram(m: MessageTelegram, x_jeton_interne: str | None = Header(None)) -> dict:
         verifier_jeton(x_jeton_interne)
-        compte, _ = compte_conversation.get(m.conversation, ("", ""))
-        if not securite.est_admin(compte):
-            raise HTTPException(403, "réservé aux administrateurs")
+        exiger_conv(m.conversation, "telegram.envoyer")
         if not telegram.configure:
             raise HTTPException(503, "Telegram non configuré (jeton du bot et chat dans Réglages)")
         try:
@@ -1508,7 +1705,7 @@ def creer_app(config: Config | None = None, registre: Registre | None = None,
 
     @app.get("/api/unraid")
     async def etat_unraid(requete: Request) -> dict:
-        exiger_admin(requete)
+        exiger(requete, "serveur.etat")
         if not isinstance(docker, UnraidDocker):
             return {"configure": False}
         return {"configure": True, **(await docker_ou_erreur(serveur_unraid())), **(await mises_a_jour_sures())}
@@ -1546,13 +1743,15 @@ def creer_app(config: Config | None = None, registre: Registre | None = None,
             R.appliquer({"telegram": {"chat_id": chat_id}}, defauts_bruts())
 
     @app.get("/interne/docker/conteneurs", include_in_schema=False)
-    async def interne_conteneurs(x_jeton_interne: str | None = Header(None)) -> list[dict]:
+    async def interne_conteneurs(conversation: str = "", x_jeton_interne: str | None = Header(None)) -> list[dict]:
         verifier_jeton(x_jeton_interne)
+        exiger_conv(conversation, "serveur.etat")
         return [pour_modele(c) for c in await docker_ou_erreur(docker.conteneurs())]
 
     @app.get("/interne/docker/diagnostic", include_in_schema=False)
-    async def interne_diagnostic(nom: str, x_jeton_interne: str | None = Header(None)) -> dict:
+    async def interne_diagnostic(nom: str, conversation: str = "", x_jeton_interne: str | None = Header(None)) -> dict:
         verifier_jeton(x_jeton_interne)
+        exiger_conv(conversation, "serveur.diagnostic")
         d = await docker_ou_erreur(docker.diagnostic(nom))
         d["causes_probables"] = causes_probables(d)
         d["redemarrage_possible"] = isinstance(docker, UnraidDocker) and bool(cfg.docker.cle_unraid_actions())
@@ -1666,13 +1865,15 @@ def creer_app(config: Config | None = None, registre: Registre | None = None,
         return await agenda.evenements(debut, maintenant + timedelta(days=jours))
 
     @app.get("/interne/agenda", include_in_schema=False)
-    async def interne_agenda(jours: int = 7, x_jeton_interne: str | None = Header(None)) -> list[dict]:
+    async def interne_agenda(jours: int = 7, conversation: str = "", x_jeton_interne: str | None = Header(None)) -> list[dict]:
         verifier_jeton(x_jeton_interne)
+        exiger_conv(conversation, "agenda.lire")
         return evenements_json(await agenda_ou_erreur(prochains(max(1, min(jours, 60)))))
 
     @app.post("/interne/agenda", include_in_schema=False)
     async def interne_ajouter(e: NouvelEvenement, x_jeton_interne: str | None = Header(None)) -> dict:
         verifier_jeton(x_jeton_interne)
+        exiger_conv(e.conversation, "agenda.ecrire")
         from datetime import datetime as dt
         try:
             debut = dt.fromisoformat(e.debut).astimezone()
@@ -1687,6 +1888,7 @@ def creer_app(config: Config | None = None, registre: Registre | None = None,
     @app.post("/interne/agenda/supprimer", include_in_schema=False)
     async def interne_supprimer(s_: SuppressionEvenement, x_jeton_interne: str | None = Header(None)) -> dict:
         verifier_jeton(x_jeton_interne)
+        exiger_conv(s_.conversation, "agenda.ecrire")
         evts = await agenda_ou_erreur(prochains(366))
         e = next((x for x in evts if x.get("href") == s_.ref), None)
         if not e:
@@ -1701,6 +1903,7 @@ def creer_app(config: Config | None = None, registre: Registre | None = None,
     @app.get("/api/agenda")
     async def lire_agenda(requete: Request, jours: int = 7) -> dict:
         exiger_revelation(requete, "historique")
+        exiger(requete, "agenda.lire")
         if not agenda.configure:
             return {"configure": False, "evenements": []}
         return {"configure": True, "evenements": evenements_json(await agenda_ou_erreur(prochains(max(1, min(jours, 60)))))}
@@ -1712,6 +1915,15 @@ def creer_app(config: Config | None = None, registre: Registre | None = None,
         if not compte:
             raise HTTPException(401, "connexion requise")
         return compte
+
+    def compte_souvenirs(requete: Request) -> str:
+        compte = compte_memoire(requete)
+        exiger(requete, "memoire.utiliser")
+        return compte
+
+    def portee_permise(requete: Request, portee: str | None) -> None:
+        if portee == "foyer":
+            exiger(requete, "memoire.foyer")
 
     def souvenir_a_moi(ident: int, compte: str, corbeille: bool = False) -> dict:
         try:
@@ -1737,7 +1949,7 @@ def creer_app(config: Config | None = None, registre: Registre | None = None,
     @app.get("/api/memoire")
     def lister_memoire(requete: Request, corbeille: bool = False) -> dict:
         """Souvenirs validés et à valider ; avec ?corbeille=1, les oubliés et refusés (restaurables)."""
-        compte = compte_memoire(requete)
+        compte = compte_souvenirs(requete)
         if corbeille:
             return {"souvenirs": [souvenir_json(x) for x in memoire.liste(compte, ("supprime", "refuse"))[:200]]}
         liste = memoire.liste(compte)
@@ -1746,7 +1958,7 @@ def creer_app(config: Config | None = None, registre: Registre | None = None,
 
     @app.post("/api/memoire/valider-tout")
     def valider_tous_les_souvenirs(requete: Request) -> dict:
-        compte = compte_memoire(requete)
+        compte = compte_souvenirs(requete)
         n = 0
         for sv in memoire.liste(compte, ("propose",)):
             memoire.changer_statut(sv["id"], "valide", compte)
@@ -1756,7 +1968,8 @@ def creer_app(config: Config | None = None, registre: Registre | None = None,
 
     @app.post("/api/memoire")
     def ajouter_souvenir(n: NouveauSouvenir, requete: Request) -> dict:
-        compte = compte_memoire(requete)
+        compte = compte_souvenirs(requete)
+        portee_permise(requete, n.portee)
         try:
             sv = memoire.ajouter(n.texte, n.portee, compte, "valide", "écran", par=compte)
         except ValueError as e:
@@ -1766,7 +1979,7 @@ def creer_app(config: Config | None = None, registre: Registre | None = None,
 
     @app.post("/api/memoire/{ident}/{decision}")
     def decider_souvenir(ident: int, decision: Literal["valider", "refuser", "restaurer"], requete: Request) -> dict:
-        compte = compte_memoire(requete)
+        compte = compte_souvenirs(requete)
         if decision == "restaurer":
             souvenir_a_moi(ident, compte, corbeille=True)
             try:
@@ -1782,7 +1995,8 @@ def creer_app(config: Config | None = None, registre: Registre | None = None,
 
     @app.patch("/api/memoire/{ident}")
     def modifier_souvenir(ident: int, m: ModifSouvenir, requete: Request) -> dict:
-        compte = compte_memoire(requete)
+        compte = compte_souvenirs(requete)
+        portee_permise(requete, m.portee)
         souvenir_a_moi(ident, compte)
         try:
             sv = memoire.modifier(ident, m.texte, m.portee, compte)
@@ -1793,7 +2007,7 @@ def creer_app(config: Config | None = None, registre: Registre | None = None,
 
     @app.delete("/api/memoire/{ident}")
     def supprimer_souvenir(ident: int, requete: Request) -> dict:
-        compte = compte_memoire(requete)
+        compte = compte_souvenirs(requete)
         souvenir_a_moi(ident, compte)
         memoire.changer_statut(ident, "supprime", compte)
         auditer(requete, "souvenir_supprimé", cible=str(ident))
@@ -1801,7 +2015,7 @@ def creer_app(config: Config | None = None, registre: Registre | None = None,
 
     @app.get("/api/memoire/{ident}/historique")
     def historique_souvenir(ident: int, requete: Request) -> dict:
-        compte = compte_memoire(requete)
+        compte = compte_souvenirs(requete)
         souvenir_a_moi(ident, compte)
         noms = {c: v.get("nom", c) for c, v in securite.comptes.items()} | {COMPTE_MACHINE: cfg.identite.nom_effectif}
         return {"historique": [{**h, "compte": noms.get(h["compte"], h["compte"])} for h in memoire.historique(ident)]}
@@ -1816,6 +2030,9 @@ def creer_app(config: Config | None = None, registre: Registre | None = None,
             compte = voix_de[0]
         if not compte:
             raise HTTPException(409, "personne d'identifié pour ce souvenir")
+        exiger_conv(s_.conversation, "memoire.utiliser")
+        if s_.portee == "foyer" and "memoire.foyer" not in droits_conv(s_.conversation):
+            s_ = s_.model_copy(update={"portee": "prive"})     # pas le droit au foyer : gardé pour elle
         if s_.remplace is not None:
             try:
                 ancien = memoire.lire(s_.remplace)
@@ -1837,6 +2054,7 @@ def creer_app(config: Config | None = None, registre: Registre | None = None,
     @app.post("/interne/rappels", include_in_schema=False)
     def interne_creer_rappel(n: NouveauRappel, x_jeton_interne: str | None = Header(None)) -> dict:
         verifier_jeton(x_jeton_interne)
+        exiger_conv(n.conversation, "rappels.utiliser")
         from datetime import datetime as dt
         try:
             quand = dt.fromisoformat(n.quand)
@@ -1866,29 +2084,51 @@ def creer_app(config: Config | None = None, registre: Registre | None = None,
         return {"rappels": [{k: r[k] for k in ("id", "quand", "texte")}
                             for r in rappels.a_venir(None if compte == COMPTE_MACHINE else compte)]}
 
+    def proprietaire_conv(conversation: str) -> str:
+        """À qui appartient ce que Claude crée dans cette conversation : la voix reconnue, sinon le compte."""
+        return personne_de(conversation) or compte_conversation.get(conversation, ("", ""))[0]
+
+    async def categories_permises(entity_ids: list[str], conversation: str) -> None:
+        """Une règle ou une routine n'agit que sur ce que son auteur pilote lui-même."""
+        refus = domaines_interdits(D.interdits(set(droits_conv(conversation))))
+        bloques = [i for i in entity_ids if i.split(".", 1)[0] in refus]
+        if bloques:
+            raise HTTPException(403, f"pas permis pour cette personne : piloter {', '.join(bloques)}")
+
     @app.get("/interne/routines", include_in_schema=False)
-    def interne_routines(x_jeton_interne: str | None = Header(None)) -> list[dict]:
+    def interne_routines(conversation: str = "", x_jeton_interne: str | None = Header(None)) -> list[dict]:
         verifier_jeton(x_jeton_interne)
-        return list(routines.liste.values())
+        qui = proprietaire_conv(conversation) or COMPTE_MACHINE
+        return [r for r in routines.liste.values() if a_moi(r, qui)]
 
     @app.post("/interne/routines", include_in_schema=False)
-    def interne_creer_routine(r: NouvelleRoutine, x_jeton_interne: str | None = Header(None)) -> dict:
+    async def interne_creer_routine(r: NouvelleRoutine, x_jeton_interne: str | None = Header(None)) -> dict:
         verifier_jeton(x_jeton_interne)
+        exiger_conv(r.conversation, "automatismes.routines")
+        await categories_permises([i for e in r.etapes for i in e.entity_ids], r.conversation)
+        qui = proprietaire_conv(r.conversation)
         try:
-            rt = routines.enregistrer(r.nom, [e.model_dump(exclude_none=True) for e in r.etapes], "claude")
+            rt = routines.enregistrer(r.nom, [e.model_dump(exclude_none=True) for e in r.etapes], qui)
         except ValueError as e:
             raise HTTPException(422, str(e)) from e
-        audit.noter("routine_créée", "", "", par="claude", nom=rt["nom"])
+        audit.noter("routine_créée", qui, "", par="claude", nom=rt["nom"])
         return {"ok": True, "routine": rt, "pour_lancer": f"dire « {rt['nom']} »"}
+
+    def nom_compte(ident: str) -> str:
+        return (securite.comptes.get(ident) or {}).get("nom", ident) if ident not in ("", "claude") else ""
 
     @app.get("/api/routines")
     def lister_routines(requete: Request) -> dict:
-        compte_memoire(requete)
-        return {"routines": list(routines.liste.values())}
+        compte = compte_memoire(requete)
+        return {"routines": [{**r, "auteur": nom_compte(r.get("compte", ""))}
+                             for r in routines.liste.values() if a_moi(r, compte)]}
 
     @app.delete("/api/routines/{nom}")
     def supprimer_routine(nom: str, requete: Request) -> dict:
-        compte_memoire(requete)
+        compte = compte_memoire(requete)
+        r = routines.liste.get(routines.cle(nom))
+        if not r or not a_moi(r, compte):
+            raise HTTPException(404, "routine inconnue")
         if not routines.supprimer(nom):
             raise HTTPException(404, "routine inconnue")
         auditer(requete, "routine_supprimée", nom=nom)
@@ -1896,9 +2136,10 @@ def creer_app(config: Config | None = None, registre: Registre | None = None,
 
     # --- règles « si… alors… » ---------------------------------------------------------------------
     @app.get("/interne/capteurs", include_in_schema=False)
-    async def interne_capteurs(filtre: str = "", x_jeton_interne: str | None = Header(None)) -> list[dict]:
+    async def interne_capteurs(filtre: str = "", conversation: str = "", x_jeton_interne: str | None = Header(None)) -> list[dict]:
         """Capteurs et personnes utilisables dans une condition (température, humidité, porte, présence…)."""
         verifier_jeton(x_jeton_interne)
+        exiger_conv(conversation, "maison.voir")
         from .maison.texte import normaliser
         try:
             etats = await etats_ha()
@@ -1925,6 +2166,7 @@ def creer_app(config: Config | None = None, registre: Registre | None = None,
     async def interne_proposer_regle(p: PropositionRegle, x_jeton_interne: str | None = Header(None)) -> dict:
         """Prépare une règle : rien n'est enregistré avant le « oui » de la personne."""
         verifier_jeton(x_jeton_interne)
+        exiger_conv(p.conversation, "automatismes.regles")
         try:
             c, actions, annonce, plage = normaliser_regle(p.condition, [e.model_dump(exclude_none=True) for e in p.actions],
                                                           p.annonce, p.plage)
@@ -1940,22 +2182,28 @@ def creer_app(config: Config | None = None, registre: Registre | None = None,
             sensibles = [connus[i].libelle for i in e["entity_ids"] if maison.sensible(connus[i])]
             if sensibles:
                 raise HTTPException(422, f"action sensible, refusée même dans une règle : {', '.join(sensibles)}")
+            await categories_permises(e["entity_ids"], p.conversation)
         r = {"condition": c, "actions": actions, "annonce": annonce, "plage": plage}
         r["texte"] = decrire_regle(r, *(await noms_regle(r)))
-        compte = compte_conversation.get(p.conversation, ("", ""))[0]
+        compte = proprietaire_conv(p.conversation)
         regle_attente[p.conversation] = (r, compte, time.monotonic())
         return {"en_attente": "rien n'est enregistré avant le oui de la personne",
                 "a_dire": f"Je crée cette règle : {r['texte']} D'accord ?"}
 
     @app.get("/interne/regles", include_in_schema=False)
-    def interne_regles(x_jeton_interne: str | None = Header(None)) -> list[dict]:
+    def interne_regles(conversation: str = "", x_jeton_interne: str | None = Header(None)) -> list[dict]:
         verifier_jeton(x_jeton_interne)
-        return [{"id": r["id"], "texte": r["texte"], "active": r.get("active", True)} for r in regles.liste]
+        qui = proprietaire_conv(conversation) or COMPTE_MACHINE
+        return [{"id": r["id"], "texte": r["texte"], "active": r.get("active", True)} for r in regles.liste
+                if a_moi(r, qui)]
 
     @app.post("/interne/regles/{ident}", include_in_schema=False)
     def interne_changer_regle(ident: str, c: ChangementRegle, conversation: str = "",
                               x_jeton_interne: str | None = Header(None)) -> dict:
         verifier_jeton(x_jeton_interne)
+        qui = proprietaire_conv(conversation) or COMPTE_MACHINE
+        if not any(x["id"] == ident and a_moi(x, qui) for x in regles.liste):
+            raise HTTPException(404, "règle inconnue")
         r = regles.activer(ident, c.active)
         if not r:
             raise HTTPException(404, "règle inconnue")
@@ -1965,13 +2213,19 @@ def creer_app(config: Config | None = None, registre: Registre | None = None,
 
     @app.get("/api/regles")
     def lister_regles(requete: Request) -> dict:
-        compte_memoire(requete)
-        return {"regles": [{k: r.get(k) for k in ("id", "texte", "active", "creee", "derniere", "resultat")}
-                           for r in regles.liste]}
+        compte = compte_memoire(requete)
+        return {"regles": [{**{k: r.get(k) for k in ("id", "texte", "active", "creee", "derniere", "resultat")},
+                            "auteur": nom_compte(r.get("compte", ""))}
+                           for r in regles.liste if a_moi(r, compte)]}
+
+    def regle_a_moi(ident: str, requete: Request) -> None:
+        compte = compte_memoire(requete)
+        if not any(x["id"] == ident and a_moi(x, compte) for x in regles.liste):
+            raise HTTPException(404, "règle inconnue")
 
     @app.post("/api/regles/{ident}")
     def changer_regle(ident: str, c: ChangementRegle, requete: Request) -> dict:
-        compte_memoire(requete)
+        regle_a_moi(ident, requete)
         r = regles.activer(ident, c.active)
         if not r:
             raise HTTPException(404, "règle inconnue")
@@ -1980,7 +2234,7 @@ def creer_app(config: Config | None = None, registre: Registre | None = None,
 
     @app.delete("/api/regles/{ident}")
     def supprimer_regle(ident: str, requete: Request) -> dict:
-        compte_memoire(requete)
+        regle_a_moi(ident, requete)
         r = regles.supprimer(ident)
         if not r:
             raise HTTPException(404, "règle inconnue")
@@ -1990,6 +2244,7 @@ def creer_app(config: Config | None = None, registre: Registre | None = None,
     @app.get("/api/habitudes")
     def lister_habitudes(requete: Request) -> dict:
         compte_memoire(requete)
+        exiger(requete, "maison.historique")          # tirées de l'historique de toute la maison
         ignorees = habitudes_ignorees()
         h = [x for x in detecter(maison.historique.actions if maison.historique else []) if x["id"] not in ignorees]
         return {"habitudes": h}
@@ -1999,9 +2254,10 @@ def creer_app(config: Config | None = None, registre: Registre | None = None,
         """Accepter = créer l'automatisation dans Home Assistant (administrateurs, après un « oui » explicite)."""
         if decision == "ignorer":
             compte_memoire(requete)
+            exiger(requete, "maison.historique")
             fichier_ignorees.write_text(json.dumps(sorted(habitudes_ignorees() | {c.id})), encoding="utf-8")
             return {"ok": True}
-        exiger_admin(requete)
+        exiger(requete, "automatismes.habitudes")
         h = next((x for x in detecter(maison.historique.actions if maison.historique else []) if x["id"] == c.id), None)
         if not h:
             raise HTTPException(404, "habitude inconnue ou plus d'actualité")
@@ -2019,23 +2275,25 @@ def creer_app(config: Config | None = None, registre: Registre | None = None,
     def lire_annonces(requete: Request, depuis: str = "") -> dict:
         """Ce que l'assistant a à dire de lui-même ; « parler » : à dire à voix haute maintenant."""
         caches = contexte_de(requete)["masques"]
-        liste = annonces.depuis(depuis)
+        compte = compte_de(requete)
+        liste = [a for a in annonces.depuis(depuis) if visible_annonce(a, compte)]   # rappels, alertes : à qui de droit
         if "historique" in caches:         # appareil partagé / enfant : seulement les urgences
             liste = [a for a in liste if a["priorite"] == "urgent"]
-        if not securite.est_admin(compte_de(requete)):     # les boutons (mise à jour…) : administrateurs seulement
+        if not securite.peut(compte, "serveur.mettre_a_jour"):     # les boutons « Mettre à jour / Ignorer »
             liste = [{k: v for k, v in a.items() if k not in ("actions", "cible")} for a in liste]
         return {"annonces": liste, "heures_calmes": cfg.proactif.heures_calmes, "presents": annonces.presents}
 
     @app.post("/api/annonces/{ident}/lue")
-    def annonce_lue(ident: str) -> dict:
-        if not annonces.marquer_lue(ident):
+    def annonce_lue(ident: str, requete: Request) -> dict:
+        a = annonces.trouver(ident)
+        if not a or not visible_annonce(a, compte_de(requete)) or not annonces.marquer_lue(ident):
             raise HTTPException(404, "annonce inconnue")
         return {"ok": True}
 
     @app.post("/api/annonces/{ident}/action")
     async def action_annonce(ident: str, c: ChoixAnnonce, requete: Request) -> dict:
         """Bouton d'une annonce : « Mettre à jour » ou « Ignorer » une mise à jour d'image Docker."""
-        exiger_admin(requete)
+        exiger(requete, "serveur.mettre_a_jour")
         a = annonces.trouver(ident)
         if not a or not a.get("actions"):
             raise HTTPException(404, "annonce inconnue ou sans action")
@@ -2083,14 +2341,15 @@ def creer_app(config: Config | None = None, registre: Registre | None = None,
             raise HTTPException(400, f"type de rapport inconnu : {dem.type}")
         if dem.type == "libre" and not dem.sujet.strip():
             raise HTTPException(400, "un rapport libre demande un sujet")
+        exiger(requete, "serveur.etat" if dem.type == "docker" else "assistant.web")
         texte, cartes = await faire_rapport(Demande(dem.type, dem.sujet.strip()), compte_de(requete),
                                             frozenset(contexte_de(requete)["masques"]))
         return {"texte": texte, "cartes": cartes}
 
     @app.get("/api/docker")
     async def etat_docker(requete: Request) -> dict:
-        """Conteneurs et ceux qui posent problème (administrateurs)."""
-        exiger_admin(requete)
+        """Conteneurs et ceux qui posent problème."""
+        exiger(requete, "serveur.etat")
         if not docker.configure:
             return {"configure": False, "conteneurs": [], "problemes": []}
         liste = await docker_ou_erreur(docker.conteneurs())
@@ -2184,9 +2443,10 @@ def creer_app(config: Config | None = None, registre: Registre | None = None,
                 "toujours": reveil.toujours, "locuteur": qui, **r}
 
     @app.post("/api/voix/reglages")
-    def regler_voix(r: ReglagesVoix) -> dict:
+    def regler_voix(r: ReglagesVoix, requete: Request) -> dict:
         """Change la fenêtre d'écoute après le wake word et le mode « toujours à l'écoute »,
-        tout de suite et dans config.yaml (gardé au redémarrage)."""
+        tout de suite et dans config.yaml (gardé au redémarrage). Réglage de toute la maison : administrateurs."""
+        exiger_admin(requete)
         valeurs = {k: v for k, v in r.model_dump().items() if v is not None}
         if not valeurs:
             raise HTTPException(400, "aucun réglage fourni")
@@ -2205,9 +2465,10 @@ def creer_app(config: Config | None = None, registre: Registre | None = None,
                 "voix": cfg.voix.voix_actuelle()}
 
     @app.post("/api/theme")
-    def regler_theme(t: Theme) -> dict:
+    def regler_theme(t: Theme, requete: Request) -> dict:
         """Thème de la page (⚙ Réglages) : « orbe » ou « hal ». Change aussi le mot de réveil,
-        tout de suite et dans config.yaml."""
+        tout de suite et dans config.yaml. Réglage de toute la maison : administrateurs."""
+        exiger_admin(requete)
         cfg.identite.theme = t.theme
         if persister:
             enregistrer_reglages("identite", {"theme": t.theme})
@@ -2248,8 +2509,9 @@ def creer_app(config: Config | None = None, registre: Registre | None = None,
                     "telechargement": etat_appli["telechargement"]}
 
     @app.get("/api/reglages")
-    async def lire_reglages() -> dict:
+    async def lire_reglages(requete: Request) -> dict:
         import asyncio as aio
+        exiger_admin(requete)          # réseau, intégrations, modèles : administrateurs seulement
         claude, ollama, ha_etat = await aio.gather(etat_claude(), etat_ollama(), ha.etat())
         return {
             "reglages": R.vue(cfg),
@@ -2402,9 +2664,10 @@ def creer_app(config: Config | None = None, registre: Registre | None = None,
             return None
         return compte
 
-    def note_actions_recentes() -> str:
-        """Dernières actions sur la maison (toutes pages et voix confondues), pour que le modèle s'en souvienne."""
-        if not maison.historique:
+    def note_actions_recentes(compte: str | None = None) -> str:
+        """Dernières actions sur la maison (toutes pages et voix confondues), pour que le modèle s'en souvienne.
+        Seulement pour qui a le droit de voir l'historique de toute la maison."""
+        if not maison.historique or (compte is not None and not securite.peut(compte, "maison.historique")):
             return ""
         from datetime import datetime, timedelta
         limite = (datetime.now().astimezone() - timedelta(hours=3)).isoformat(timespec="seconds")
@@ -2429,7 +2692,7 @@ def creer_app(config: Config | None = None, registre: Registre | None = None,
         nom_app = nom_appareil(requete.headers.get("user-agent", ""))
         q = fil.ajouter(compte, "user", d.message, d.appareil, d.source, extra={"appareil_nom": nom_app})
         try:
-            rep_ = await chat_interne(d, requete, note_fil=note_actions_recentes())
+            rep_ = await chat_interne(d, requete, note_fil=note_actions_recentes(compte))
         except HTTPException as e:
             fil.ajouter(compte, "assistant", "", d.appareil, question=q["id"], extra={"erreur": str(e.detail)})
             raise
@@ -2549,6 +2812,15 @@ def creer_app(config: Config | None = None, registre: Registre | None = None,
             profil = {k: v for k, v in profil.items() if k in ("type", "ton", "interdits")}   # ni pièce ni préférences
         piece_preferee.set(profil.get("piece", ""))
         consigne_profil = note_profil(nom_profil, profil) if profil else ""
+        # droits de cette demande (compte connecté, réduits par la voix reconnue) : pour le chat et les outils
+        droits = droits_de(compte, d.conversation, voix_de[0] if route_locuteur else None)
+        droits_conversation[d.conversation] = droits
+        compte_conversation[d.conversation] = (compte_de(requete) or "", ip_de(requete)[1])
+
+        def refuser(cle: str):
+            route_x = {"role": "droits", "raison": f"pas permis ({cle})"}
+            _tracer(route_x, d.message)
+            return _reponse_ha(d.flux, REFUS[cle], route_x, "droits", "refus", 0)
 
         # --- redémarrage de conteneur en attente de « oui » ------------------------------------------------
         attente_r = redemarrage_attente.get(d.conversation)
@@ -2603,6 +2875,8 @@ def creer_app(config: Config | None = None, registre: Registre | None = None,
         # --- mémoire : réponse à une proposition, « retiens que… », souvenirs utiles à la réponse ---------
         qui = ((voix_de[0] if route_locuteur else compte) or "")
         personne_conversation[d.conversation] = qui
+        if "memoire.utiliser" not in droits:
+            qui = ""          # pas de mémoire pour cette personne : rien proposé, rien relu
         attente = memoire.proposition_en_attente(d.conversation, qui) if d.conversation else None
         if attente and RE_OUI.match(d.message):
             memoire.changer_statut(attente["id"], "valide", qui)
@@ -2622,7 +2896,8 @@ def creer_app(config: Config | None = None, registre: Registre | None = None,
         m_ret = RE_RETIENS.match(d.message)
         if m_ret and qui:
             fait = m_ret.group("fait").strip().rstrip(".")
-            portee = "prive" if RE_PRIVE.search(d.message) or RE_PERSO.search(fait) else "foyer"
+            portee = ("prive" if RE_PRIVE.search(d.message) or RE_PERSO.search(fait) or "memoire.foyer" not in droits
+                      else "foyer")
             fait = RE_PRIVE.sub("", fait).strip(" ,")
             texte_souvenir = f"{nom_profil or qui} : {fait}" if RE_PERSO.search(fait) else fait
             sv = memoire.ajouter(texte_souvenir[:1].upper() + texte_souvenir[1:], portee, qui, "propose", "demande",
@@ -2649,6 +2924,8 @@ def creer_app(config: Config | None = None, registre: Registre | None = None,
             _tracer(route_h, d.message)
             return _reponse_ha(d.flux, horloge, route_h, "horloge", "serveur", 0)
         routine = routines.trouver(d.message) if ha.configure and routines.liste and len(d.message) < 80 else None
+        if routine and not a_moi(routine, personne_conversation.get(d.conversation) or compte):
+            routine = None            # la routine d'un autre : ni lancée ni dévoilée
         if routine:
             texte_r = await lancer_routine(routine, d.conversation)
             return _reponse_ha(d.flux, texte_r, {"role": "maison", "raison": f"routine « {routine['nom']} »"},
@@ -2668,7 +2945,7 @@ def creer_app(config: Config | None = None, registre: Registre | None = None,
                     and not (ha.configure and await maison.evoque(d.message))):
                 # « montre-moi un point sur la Fed » : pas de carte toute faite, la carte libre (Claude et le web)
                 choix.demande = Demande("libre", sujet_rapport("point " + choix.reste) or choix.reste)
-        if choix.voir and choix.demande is None and choix.reste and ha.configure:
+        if choix.voir and choix.demande is None and choix.reste and ha.configure and "maison.voir" in droits:
             # « montre-moi la lampe du bureau » : la carte de l'appareil, lue dans Home Assistant, sans modèle
             debut_r = time.perf_counter()
             try:
@@ -2716,9 +2993,26 @@ def creer_app(config: Config | None = None, registre: Registre | None = None,
             pour_agenda = False
         if creer_routine:
             d = d.model_copy(update={"role": cfg.routeur.role_complexe})
+        # --- ce que la personne n'a pas le droit de faire : refusé clairement, sans rien tenter ---------------
+        if pour_agenda and "rappels.utiliser" not in droits:
+            return refuser("rappels")
+        if creer_regle and "automatismes.regles" not in droits:
+            return refuser("regles")
+        if creer_routine and not creer_regle and "automatismes.routines" not in droits:
+            return refuser("routines")
+        if RE_TELEGRAM.search(d.message) and "telegram.envoyer" not in droits:
+            return refuser("telegram")
+        if (docker.configure and "serveur.etat" not in droits and not creer_routine and not pour_agenda
+                and await evoque_docker(d.message)):
+            return refuser("serveur")
+        if (agenda.configure and not pour_agenda and "agenda.lire" not in droits and RE_AGENDA.search(d.message)):
+            return refuser("agenda")
+        if (ha.configure and "maison.voir" not in droits and not creer_routine and not pour_agenda
+                and (maison.en_attente(d.conversation) or maison.reconnait(d.message, d.conversation))):
+            return refuser("maison")
         # serveur, conteneurs : avant la maison (sinon « allume le docker X » finit en « introuvable »)
         pour_docker = bool(not creer_routine and not pour_agenda and docker.configure
-                           and securite.est_admin(compte) and await evoque_docker(d.message))
+                           and "serveur.etat" in droits and await evoque_docker(d.message))
         if pour_docker and d.role == ROLE_AUTO:
             decision = Decision(COMPLEXE, cfg.routeur.role_complexe, "demande Docker", 0.0)
             role = decision.role
@@ -2756,7 +3050,10 @@ def creer_app(config: Config | None = None, registre: Registre | None = None,
                 return _reponse_ha(d.flux, rm.texte, route, "maison", "inventaire", rm.detail.get("duree_ms", 0),
                                    await cartes_sures(rm.detail.get("entites"),
                                                       (rm.detail.get("commande") or {}).get("action")))
-            if ("commande" in rm.detail and docker.configure and securite.est_admin(compte)
+            if ("commande" in rm.detail and docker.configure and "serveur.etat" not in droits
+                    and conteneur_approchant(d.message)):
+                return refuser("serveur")      # « arrête Plex » : un conteneur, pas un appareil introuvable
+            if ("commande" in rm.detail and docker.configure and "serveur.etat" in droits
                     and conteneur_approchant(d.message)):
                 # rien dans la maison, mais un conteneur au nom proche : Claude avec les outils Docker
                 route["maison"]["vers_docker"] = conteneur_approchant(d.message)
@@ -2802,7 +3099,7 @@ def creer_app(config: Config | None = None, registre: Registre | None = None,
             route["outils"] = "Claude avec rappels et agenda"
             agenda_recent[d.conversation] = time.monotonic()
             outils = outils_maison(d.conversation)
-        elif claude_outille and telegram.configure and RE_TELEGRAM.search(d.message) and securite.est_admin(compte):
+        elif claude_outille and telegram.configure and RE_TELEGRAM.search(d.message) and "telegram.envoyer" in droits:
             role = cfg.routeur.role_complexe
             route["outils"] = "Claude avec Telegram"
             outils = outils_maison(d.conversation)
@@ -2818,20 +3115,20 @@ def creer_app(config: Config | None = None, registre: Registre | None = None,
             role = cfg.routeur.role_complexe
             route["outils"] = "Claude avec la mémoire"
             outils = outils_maison(d.conversation)
-        elif (agenda.configure and claude_outille and "historique" not in ctx_revel
+        elif (agenda.configure and claude_outille and "historique" not in ctx_revel and "agenda.lire" in droits
                 and (RE_AGENDA.search(d.message) or (time.monotonic() - agenda_recent.get(d.conversation, -1e9) < 180
                                                   and RE_SUITE_AGENDA.search(d.message)))):
             agenda_recent[d.conversation] = time.monotonic()
             role = cfg.routeur.role_complexe
             route["outils"] = "Claude avec l'agenda"
             outils = outils_maison(d.conversation)
-        elif docker.configure and claude_outille and (pour_docker or RE_DOCKER.search(d.message)) and securite.est_admin(compte):
+        elif docker.configure and claude_outille and (pour_docker or RE_DOCKER.search(d.message)) and "serveur.etat" in droits:
             # serveur, conteneurs : Claude avec les outils de diagnostic (administrateurs seulement)
             role = cfg.routeur.role_complexe
             route["outils"] = "Claude avec diagnostic Docker"
             outils = outils_maison(d.conversation)
         elif (ha.configure and cfg.maison.outils_pour_claude and (decision is not None or role == cfg.routeur.role_complexe)
-                and claude_outille
+                and claude_outille and "maison.voir" in droits
                 and await maison.evoque(d.message)):
             if role == cfg.routeur.role_simple:
                 role = cfg.routeur.role_complexe
@@ -2842,6 +3139,8 @@ def creer_app(config: Config | None = None, registre: Registre | None = None,
                 outils = outils_maison(d.conversation)
                 echec_ha = ""
         _tracer(route, d.message)
+        if role == cfg.routeur.role_complexe and not outils and "assistant.web" not in droits:
+            return refuser("web")       # question générale (Claude, web) : pas pour cette personne
 
         if note_fil:
             consigne_profil = (consigne_profil + "\n\n" + note_fil).strip()
