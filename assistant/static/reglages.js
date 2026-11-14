@@ -83,6 +83,23 @@
         <button type="button" class="bouton" id="cDeconnexion">Se déconnecter</button><span class="aide" data-msg="compte"></span></div>
       <div class="codes" id="cCodes" hidden></div>
     </details>
+    <details id="cfgMesOutils" hidden><summary>Mon agenda et mon Telegram <span class="etat" id="eMesOutils"></span></summary>
+      <div id="cMonAgendaBloc">
+        <p class="aide">Ton agenda à toi (CalDAV : Radicale, Nextcloud, iCloud…). L'assistant y lit et y ajoute tes rendez-vous, et te les rappelle, à toi seulement.</p>
+        <label class="champ">Adresse du calendrier<input id="cMonAgendaUrl" placeholder="https://…/moi/agenda/"></label>
+        <label class="champ">Identifiant<input id="cMonAgendaUser" autocomplete="off"></label>
+        <label class="champ">Mot de passe<input id="cMonAgendaMdp" type="password" autocomplete="off" placeholder="laisser vide pour garder l'actuel"></label>
+        <div class="rangee"><button type="button" class="bouton principal" id="cMonAgendaBtn">Enregistrer</button>
+          <button type="button" class="bouton" id="cMonAgendaOff">Débrancher</button><span class="aide" data-msg="monagenda"></span></div>
+      </div>
+      <div id="cMonTgBloc" style="margin-top:14px">
+        <p class="aide">Mon Telegram : <span id="cMonTgEtat">…</span></p>
+        <div class="rangee"><button type="button" class="bouton" id="cMonTgCode">Relier mon Telegram</button>
+          <button type="button" class="bouton" id="cMonTgVerif" hidden>J'ai envoyé le code</button>
+          <button type="button" class="bouton" id="cMonTgOff" hidden>Délier</button></div>
+        <p class="aide" data-msg="montg"></p>
+      </div>
+    </details>
     <details id="cfgMemoire"><summary>Mémoire <span class="etat" id="eMemoire"></span></summary>
       <p class="aide">Ce que l'assistant sait de la maison et de toi : souvenirs à valider, recherche, modification, corbeille. Aussi dans le menu ⋯ &gt; Mémoire.</p>
       <div class="rangee"><button type="button" class="bouton principal" id="cMemoireOuvrir">Ouvrir la mémoire</button></div>
@@ -207,7 +224,7 @@
 
   // --- rubriques (onglets) : « Moi » pour tout le monde, le reste pour les administrateurs -------------------
   const RUBRIQUES = {
-    moi: ['Moi', ['cfgMonCompte', 'cfgMemoire', 'cfgHabitudes', 'cfgRegles']],
+    moi: ['Moi', ['cfgMonCompte', 'cfgMesOutils', 'cfgMemoire', 'cfgHabitudes', 'cfgRegles']],
     maison: ['Maison', ['cfgHA']],
     assistant: ['Assistant', ['cfgAssistant', 'cfgModeles', 'cfgClaude']],
     services: ['Services', ['cfgServices', 'cfgAgenda', 'cfgTelegram']],
@@ -479,6 +496,7 @@
       } catch (e) {}
       afficherContexte();
       afficherVoix();
+      afficherMesOutils();
     }
     $('cfgComptes').hidden = $('cfgJournal').hidden = !s.admin;
     if (!s.admin) return;
@@ -514,6 +532,58 @@
     p.replaceChildren(`Lien d'invitation pour ${nom} (à lui envoyer, usage unique) : `, Object.assign(texte('span', lien), {className: 'lienInv'}));
     if (navigator.clipboard) navigator.clipboard.writeText(lien).then(() => p.append(' · copié'), () => {});
   }
+
+  // --- son agenda et son Telegram (selon ses droits) --------------------------------------------------
+  async function afficherMesOutils() {
+    let o;
+    try { o = await api('/api/compte/outils'); } catch (e) { $('cfgMesOutils').hidden = true; return; }
+    $('cfgMesOutils').hidden = !(o.agenda.permis || o.telegram.permis);
+    $('cMonAgendaBloc').hidden = !o.agenda.permis;
+    $('cMonTgBloc').hidden = !o.telegram.permis;
+    if (document.activeElement !== $('cMonAgendaUrl')) $('cMonAgendaUrl').value = o.agenda.url;
+    if (document.activeElement !== $('cMonAgendaUser')) $('cMonAgendaUser').value = o.agenda.utilisateur;
+    $('cMonAgendaMdp').placeholder = o.agenda.mdp_defini ? 'enregistré — laisser vide pour le garder' : 'mot de passe';
+    $('cMonTgEtat').textContent = !o.telegram.bot ? "pas de bot Telegram (un administrateur doit le brancher)"
+      : o.telegram.relie ? 'relié (' + o.telegram.relie + ')' : 'pas relié';
+    $('cMonTgCode').hidden = !o.telegram.bot || !!o.telegram.relie;
+    $('cMonTgOff').hidden = !o.telegram.relie;
+    etat('eMesOutils', [o.agenda.permis ? (o.agenda.url ? 'agenda branché' : "pas d'agenda") : '',
+      o.telegram.permis ? (o.telegram.relie ? 'Telegram relié' : 'Telegram pas relié') : ''].filter(Boolean).join(' · '));
+  }
+  $('cMonAgendaBtn').onclick = async () => {
+    try {
+      const o = await api('/api/compte/agenda', {url: $('cMonAgendaUrl').value.trim(), utilisateur: $('cMonAgendaUser').value.trim(),
+                                                  mot_de_passe: $('cMonAgendaMdp').value});
+      $('cMonAgendaMdp').value = '';
+      msg('monagenda', o.branche ? `Branché : ${o.evenements_7_jours} rendez-vous dans les 7 jours.` : 'Débranché.', true);
+    } catch (e) { msg('monagenda', e.message, false); }
+    afficherMesOutils();
+  };
+  $('cMonAgendaOff').onclick = async () => {
+    if (!confirm('Débrancher ton agenda ? Les rendez-vous restent dans ton calendrier.')) return;
+    $('cMonAgendaUrl').value = '';
+    $('cMonAgendaBtn').click();
+  };
+  $('cMonTgCode').onclick = async () => {
+    try {
+      const o = await api('/api/compte/telegram/code', {});
+      msg('montg', `Dans Telegram, envoie « ${o.code} » à ${o.bot ? '@' + o.bot : 'ton bot'} (valable ${o.expire_min} min), puis clique « J'ai envoyé le code ».`, true);
+      $('cMonTgVerif').hidden = false;
+    } catch (e) { msg('montg', e.message, false); }
+  };
+  $('cMonTgVerif').onclick = async () => {
+    try {
+      const o = await api('/api/compte/telegram/relier', {});
+      msg('montg', `Relié à ${o.nom || 'ton Telegram'} : un message vient de t'y être envoyé.`, true);
+      $('cMonTgVerif').hidden = true;
+    } catch (e) { msg('montg', e.message, false); }
+    afficherMesOutils();
+  };
+  $('cMonTgOff').onclick = async () => {
+    try { const r = await fetch('/api/compte/telegram', {method: 'DELETE'}); if (!r.ok) throw new Error('erreur ' + r.status); msg('montg', 'Délié.', true); }
+    catch (e) { msg('montg', e.message, false); }
+    afficherMesOutils();
+  };
 
   const NOMS_MASQUES = {etat_sensible: 'état du chauffage, du portail…', historique: 'historique des actions', personnel: 'tes préférences'};
   async function afficherContexte() {

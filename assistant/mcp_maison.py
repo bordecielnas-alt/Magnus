@@ -69,8 +69,8 @@ OUTILS_DOCKER = [
 OUTILS_AGENDA = [
     {
         "name": "lire_agenda",
-        "description": "Événements de l'agenda familial de aujourd'hui à dans N jours (par défaut 7), avec leur "
-                       "« ref » (pour supprimer_evenement).",
+        "description": "Événements des agendas de la personne (familial et/ou le sien, champ « agenda ») de "
+                       "aujourd'hui à dans N jours (par défaut 7), avec leur « ref » (pour supprimer_evenement).",
         "inputSchema": {"type": "object", "properties": {"jours": {"type": "integer"}}},
     },
     {
@@ -80,7 +80,10 @@ OUTILS_AGENDA = [
                        "(debut = la date). Confirme ensuite en une phrase ce qui a été ajouté.",
         "inputSchema": {"type": "object", "properties": {
             "titre": {"type": "string"}, "debut": {"type": "string"}, "fin": {"type": "string"},
-            "lieu": {"type": "string"}, "journee": {"type": "boolean"}}, "required": ["titre", "debut"]},
+            "lieu": {"type": "string"}, "journee": {"type": "boolean"},
+            "agenda": {"type": "string", "enum": ["perso", "famille"],
+                       "description": "perso (son agenda, par défaut s'il existe) ou famille (agenda partagé)"}},
+            "required": ["titre", "debut"]},
     },
 ]
 
@@ -240,7 +243,8 @@ PERMISSION_OUTIL: dict[str, tuple[str, ...]] = {
     "lister_conteneurs": ("serveur.etat",), "etat_serveur": ("serveur.etat",),
     "diagnostiquer_conteneur": ("serveur.diagnostic",),
     "demander_redemarrage": ("serveur.demarrer_arreter", "serveur.redemarrer", "serveur.mettre_a_jour"),
-    "lire_agenda": ("agenda.lire",), "ajouter_evenement": ("agenda.ecrire",), "supprimer_evenement": ("agenda.ecrire",),
+    "lire_agenda": ("agenda.lire", "agenda.personnel"), "ajouter_evenement": ("agenda.ecrire", "agenda.personnel"),
+    "supprimer_evenement": ("agenda.ecrire", "agenda.personnel"),
     "creer_routine": ("automatismes.routines",), "proposer_regle": ("automatismes.regles",),
     "proposer_souvenir": ("memoire.utiliser",), "envoyer_telegram": ("telegram.envoyer",),
     "creer_rappel": ("rappels.utiliser",), "lister_rappels": ("rappels.utiliser",), "supprimer_rappel": ("rappels.utiliser",),

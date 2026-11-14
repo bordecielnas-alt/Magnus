@@ -212,7 +212,9 @@ RE_AGENDA = re.compile(r"\b(agenda|calendrier|rendez.vous|rdv|r[ée]union|rappel
                        r"qu.est-ce que j.ai|ai-je quelque chose|programme de (la journ[ée]e|demain|la semaine)|"
                        r"note (dans|sur) l.agenda|anniversaire)\b", re.I)
 NOTE_OUTILS_AGENDA = (
-    "Tu as aussi lire_agenda et ajouter_evenement (agenda familial). Nous sommes le {date}. Pour « rappelle-moi "
+    "Tu as aussi lire_agenda et ajouter_evenement (agenda familial et/ou agenda personnel de la personne ; un "
+    "nouvel événement va dans son agenda personnel s'il existe, sauf si elle parle de l'agenda de la famille). "
+    "Nous sommes le {date}. Pour « rappelle-moi "
     "de … demain à 9 h », ajoute un événement à cette heure. Résume l'agenda en phrases courtes, sans liste."
 )
 RE_RAPPEL = re.compile(r"\b(rappel|rappelle[sz]?(-| )moi|me rappelle[rs]?|m.e?rappelle|pr[ée]viens[- ]moi)\b", re.I)
@@ -360,6 +362,7 @@ class NouvelEvenement(BaseModel):
     lieu: str = Field(default="", max_length=200)
     journee: bool = False
     conversation: str = Field(default="", max_length=64)
+    agenda: Literal["", "perso", "famille"] = ""
 
 
 class Profil(BaseModel):
@@ -404,6 +407,13 @@ class NouveauCompte(BaseModel):
     nom: str = Field(min_length=1, max_length=40)
     admin: bool = False
     groupes: list[str] | None = None
+
+
+class MonAgenda(BaseModel):
+    """⚙ Mon compte : son agenda CalDAV (url vide = débrancher ; mot de passe vide = garder l'actuel)."""
+    url: str = Field(default="", max_length=500)
+    utilisateur: str = Field(default="", max_length=100)
+    mot_de_passe: str = Field(default="", max_length=200)
 
 
 class DroitsCompte(BaseModel):
@@ -586,9 +596,7 @@ def creer_app(config: Config | None = None, registre: Registre | None = None,
                     pour = (securite.comptes.get(qui, {}).get("nom", "") if len(securite.comptes) > 1 else "")
                     # seulement chez la personne, et sur Telegram (celui de la maison) si elle y a droit
                     await signaler(f"Rappel{' pour ' + pour if pour else ''} : {r['texte']}", "urgent", "rappel",
-                                   f"rappel:{r['id']}",
-                                   cfg.telegram.agenda and (not qui or securite.peut(qui, "telegram.recevoir")),
-                                   compte=qui)
+                                   f"rappel:{r['id']}", cfg.telegram.agenda, compte=qui)
             except Exception:  # noqa: BLE001
                 journal.exception("rappels : erreur")
             await aio.sleep(5)
@@ -624,13 +632,30 @@ def creer_app(config: Config | None = None, registre: Registre | None = None,
     async def signaler(texte: str, priorite: str, source: str, cle: str, vers_telegram: bool = True,
                        actions: list[dict] | None = None, cible: dict | None = None, compte: str = "") -> None:
         """Une alerte : gardée dans les annonces (sans doublon) et envoyée sur Telegram la première fois.
-        `compte` : annonce personnelle (rappel, règle), montrée à cette personne seulement."""
+        `compte` : annonce personnelle (rappel, règle), montrée à cette personne seulement, et envoyée sur son
+        Telegram à elle (si elle a le droit de le recevoir)."""
         a = annonces.ajouter(texte, priorite, source, cle, actions, cible, compte=compte)
-        if a and vers_telegram and telegram.configure:
+        if not (a and vers_telegram and telegram.jeton):
+            return
+        if compte:
+            chats = {chat_telegram(compte)} if securite.peut(compte, "telegram.recevoir") else set()
+        else:
+            chats = {telegram.chat_id}
+            if source in ("docker", "disques", "mises à jour"):    # aussi aux Telegram reliés autorisés
+                chats |= {chat_telegram(i) for i in securite.comptes if (securite.comptes[i].get("telegram")
+                          and securite.peut(i, "serveur.alertes") and securite.peut(i, "telegram.recevoir"))}
+        for chat in filter(None, chats):
             try:
-                await telegram.envoyer(f"{cfg.identite.nom_effectif} : {texte}")
+                await telegram.envoyer(f"{cfg.identite.nom_effectif} : {texte}", chat)
             except Exception as e:  # noqa: BLE001
                 journal.info("Telegram : envoi impossible (%s)", e)
+
+    def chat_telegram(compte: str | None) -> str:
+        """Le Telegram d'une personne : le sien s'il est relié ; sinon celui de la maison pour un administrateur."""
+        c = securite.comptes.get(compte or "") or {}
+        if (c.get("telegram") or {}).get("id"):
+            return str(c["telegram"]["id"])
+        return telegram.chat_id if (not compte or securite.est_admin(compte)) else ""
     memoire = Memoire(securite.fichier.parent)
     fil = Fil(securite.fichier.parent)
     routines = Routines(securite.fichier.parent)
@@ -777,6 +802,27 @@ def creer_app(config: Config | None = None, registre: Registre | None = None,
                 await signaler(f"{quand} : {e.get('titre', 'un événement')}"
                                + (f" ({e['lieu']})" if e.get("lieu") else "") + ".", "important", "agenda",
                                f"agenda:{e.get('uid', e.get('titre'))}:{e['debut']:%Y%m%d%H%M}", cfg.telegram.agenda)
+        # agendas personnels : chacun est prévenu de ses rendez-vous, chez lui seulement
+        if cfg.agenda.annonce_avant_min:
+            from datetime import datetime as dt, timedelta
+            maintenant = dt.now().astimezone()
+            for ident in list(securite.comptes):
+                perso = agenda_perso(ident) if securite.peut(ident, "agenda.personnel") else None
+                if not perso:
+                    continue
+                try:
+                    bientot = await perso.evenements(maintenant, maintenant + timedelta(minutes=cfg.agenda.annonce_avant_min))
+                except Exception:  # noqa: BLE001
+                    continue
+                for e in bientot:
+                    if e.get("journee"):
+                        continue
+                    minutes = max(0, round((e["debut"] - maintenant).total_seconds() / 60))
+                    quand = "C'est l'heure" if minutes <= 1 else f"Dans {minutes} minutes"
+                    await signaler(f"{quand} : {e.get('titre', 'un événement')}"
+                                   + (f" ({e['lieu']})" if e.get("lieu") else "") + ".", "important", "agenda-perso",
+                                   f"agenda:{ident}:{e.get('uid', e.get('titre'))}:{e['debut']:%Y%m%d%H%M}",
+                                   cfg.telegram.agenda, compte=ident)
         h = cfg.proactif.briefing_heure
         jour = time.strftime("%Y-%m-%d")
         if h and time.strftime("%H:%M") >= h and etat_veille.get("briefing") != jour and annonces.presents is not False:
@@ -855,7 +901,6 @@ def creer_app(config: Config | None = None, registre: Registre | None = None,
             interdits.reset(jeton)
         if r.get("annonce"):
             await signaler(r["annonce"], "important", "regle", f"regle:{r['id']}",
-                           not auteur or securite.peut(auteur, "telegram.recevoir"),
                            compte=auteur if auteur in securite.comptes else "")
             faits.append("Annonce faite.")
         resultat = " ".join(faits)
@@ -920,8 +965,8 @@ def creer_app(config: Config | None = None, registre: Registre | None = None,
         (mcp_maison filtre avec ASSISTANT_PERMISSIONS ; l'API interne revérifie à chaque appel)."""
         d = droits_conv(conversation)
         serveur = docker.configure and "serveur.etat" in d
-        avec_agenda = agenda.configure and "agenda.lire" in d
-        avec_telegram = telegram.configure and "telegram.envoyer" in d
+        avec_agenda = bool(agendas_de(proprietaire_conv(conversation), d))
+        avec_telegram = bool(telegram.jeton) and "telegram.envoyer" in d
         env = {"ASSISTANT_INTERNE_URL": f"http://127.0.0.1:{cfg.serveur.port}",
                "ASSISTANT_INTERNE_JETON": jeton_interne, "ASSISTANT_CONVERSATION": conversation,
                "ASSISTANT_DOCKER": "1" if serveur else "0",
@@ -1702,10 +1747,14 @@ def creer_app(config: Config | None = None, registre: Registre | None = None,
     async def interne_telegram(m: MessageTelegram, x_jeton_interne: str | None = Header(None)) -> dict:
         verifier_jeton(x_jeton_interne)
         exiger_conv(m.conversation, "telegram.envoyer")
-        if not telegram.configure:
-            raise HTTPException(503, "Telegram non configuré (jeton du bot et chat dans Réglages)")
+        qui = proprietaire_conv(m.conversation)
+        chat = chat_telegram(qui)
+        if not telegram.jeton or not chat:
+            if not telegram.jeton or securite.est_admin(qui or COMPTE_MACHINE):
+                raise HTTPException(503, "Telegram non configuré (jeton du bot et chat dans Réglages)")
+            raise HTTPException(409, "son Telegram n'est pas relié : à faire dans ⚙ Mon compte")
         try:
-            await telegram.envoyer(m.texte)
+            await telegram.envoyer(m.texte, chat)
         except RuntimeError as e:
             raise HTTPException(502, str(e)) from e
         return {"ok": True, "envoye": m.texte}
@@ -1852,8 +1901,6 @@ def creer_app(config: Config | None = None, registre: Registre | None = None,
     app.state.taches_fond = taches_fond
 
     async def agenda_ou_erreur(appel):
-        if not agenda.configure:
-            raise HTTPException(503, "agenda non configuré (agenda.url)")
         try:
             return await appel
         except PermissionError as e:
@@ -1861,46 +1908,92 @@ def creer_app(config: Config | None = None, registre: Registre | None = None,
         except Exception as e:  # noqa: BLE001
             raise HTTPException(502, f"agenda injoignable : {e.__class__.__name__}") from e
 
-    def evenements_json(evts: list[dict]) -> list[dict]:
-        return [{"titre": e.get("titre", ""), "debut": e["debut"].isoformat(), "journee": e.get("journee", False),
-                 "lieu": e.get("lieu", ""), "texte": decrire(e), "ref": e.get("href", "")} for e in evts]
+    # --- agendas : celui de la famille (Réglages) et celui de chaque personne (⚙ Mon compte) ---------------
+    def agenda_perso(compte: str | None) -> Agenda | None:
+        a = ((securite.comptes.get(compte or "") or {}).get("agenda")) or {}
+        return Agenda(a["url"], a.get("utilisateur", ""), a.get("mdp", "")) if a.get("url") else None
 
-    async def prochains(jours: float) -> list[dict]:
+    def agendas_de(compte: str | None, perms) -> list[tuple[str, Agenda]]:
+        """Les agendas que cette personne lit : [("famille", …), ("perso", …)] selon ses droits."""
+        sortie = []
+        if agenda.configure and "agenda.lire" in perms:
+            sortie.append(("famille", agenda))
+        perso = agenda_perso(compte) if "agenda.personnel" in perms else None
+        if perso:
+            sortie.append(("perso", perso))
+        return sortie
+
+    def evenements_json(evts: list[dict], nom: str = "") -> list[dict]:
+        return [{"titre": e.get("titre", ""), "debut": e["debut"].isoformat(), "journee": e.get("journee", False),
+                 "lieu": e.get("lieu", ""), "texte": decrire(e), "ref": e.get("href", ""),
+                 **({"agenda": nom} if nom else {})} for e in evts]
+
+    async def prochains(jours: float, ag: Agenda | None = None) -> list[dict]:
         from datetime import datetime as dt, timedelta
         maintenant = dt.now().astimezone()
         debut = maintenant.replace(hour=0, minute=0, second=0, microsecond=0)
-        return await agenda.evenements(debut, maintenant + timedelta(days=jours))
+        return await (ag or agenda).evenements(debut, maintenant + timedelta(days=jours))
+
+    async def lire_agendas(ags: list[tuple[str, Agenda]], jours: float) -> list[dict]:
+        tous = []
+        for nom, ag in ags:
+            tous += evenements_json(await agenda_ou_erreur(prochains(jours, ag)), nom if len(ags) > 1 else "")
+        return sorted(tous, key=lambda e: e["debut"])
 
     @app.get("/interne/agenda", include_in_schema=False)
     async def interne_agenda(jours: int = 7, conversation: str = "", x_jeton_interne: str | None = Header(None)) -> list[dict]:
         verifier_jeton(x_jeton_interne)
-        exiger_conv(conversation, "agenda.lire")
-        return evenements_json(await agenda_ou_erreur(prochains(max(1, min(jours, 60)))))
+        exiger_conv(conversation, "agenda.lire", "agenda.personnel")
+        ags = agendas_de(proprietaire_conv(conversation), droits_conv(conversation))
+        if not ags:
+            raise HTTPException(503, "aucun agenda : ni familial (Réglages) ni personnel (⚙ Mon compte)")
+        return await lire_agendas(ags, max(1, min(jours, 60)))
+
+    def agenda_pour_ecrire(conversation: str, choix: str) -> tuple[str, Agenda]:
+        """« perso » (par défaut s'il existe) ou « famille » (droit d'écrire dans l'agenda familial)."""
+        d = droits_conv(conversation)
+        perso = agenda_perso(proprietaire_conv(conversation)) if "agenda.personnel" in d else None
+        if choix != "famille" and perso:
+            return "perso", perso
+        if choix == "perso":
+            raise HTTPException(409, "pas d'agenda personnel : à brancher dans ⚙ Mon compte")
+        if "agenda.ecrire" not in d:
+            raise HTTPException(403, "pas permis pour cette personne : " + D.PERMISSIONS["agenda.ecrire"])
+        if not agenda.configure:
+            raise HTTPException(503, "agenda familial non configuré (Réglages › Services › Agenda)")
+        return "famille", agenda
 
     @app.post("/interne/agenda", include_in_schema=False)
     async def interne_ajouter(e: NouvelEvenement, x_jeton_interne: str | None = Header(None)) -> dict:
         verifier_jeton(x_jeton_interne)
-        exiger_conv(e.conversation, "agenda.ecrire")
+        exiger_conv(e.conversation, "agenda.ecrire", "agenda.personnel")
+        nom, ag = agenda_pour_ecrire(e.conversation, e.agenda)
         from datetime import datetime as dt
         try:
             debut = dt.fromisoformat(e.debut).astimezone()
             fin = dt.fromisoformat(e.fin).astimezone() if e.fin else None
         except ValueError as x:
             raise HTTPException(422, "date invalide (format 2026-11-12T14:30)") from x
-        uid = await agenda_ou_erreur(agenda.ajouter(e.titre, debut, fin, e.lieu, cfg.agenda.rappel_min, e.journee))
-        audit.noter("agenda_ajout", "", "", par="claude", titre=e.titre, debut=e.debut)
-        return {"ok": True, "uid": uid, "resume": decrire({"debut": debut, "titre": e.titre, "lieu": e.lieu,
-                                                           "journee": e.journee})}
+        uid = await agenda_ou_erreur(ag.ajouter(e.titre, debut, fin, e.lieu, cfg.agenda.rappel_min, e.journee))
+        audit.noter("agenda_ajout", proprietaire_conv(e.conversation), "", par="claude", titre=e.titre, debut=e.debut,
+                    agenda=nom)
+        return {"ok": True, "uid": uid, "agenda": nom,
+                "resume": decrire({"debut": debut, "titre": e.titre, "lieu": e.lieu, "journee": e.journee})}
 
     @app.post("/interne/agenda/supprimer", include_in_schema=False)
     async def interne_supprimer(s_: SuppressionEvenement, x_jeton_interne: str | None = Header(None)) -> dict:
         verifier_jeton(x_jeton_interne)
-        exiger_conv(s_.conversation, "agenda.ecrire")
-        evts = await agenda_ou_erreur(prochains(366))
-        e = next((x for x in evts if x.get("href") == s_.ref), None)
-        if not e:
+        d = droits_conv(s_.conversation)
+        exiger_conv(s_.conversation, "agenda.ecrire", "agenda.personnel")
+        qui = proprietaire_conv(s_.conversation)
+        ecrivables = [(n, a) for n, a in agendas_de(qui, d) if n == "perso" or "agenda.ecrire" in d]
+        for _nom, ag in ecrivables:
+            e = next((x for x in await agenda_ou_erreur(prochains(366, ag)) if x.get("href") == s_.ref), None)
+            if e:
+                break
+        else:
             raise HTTPException(404, "événement introuvable dans l'agenda (ref inconnue)")
-        await agenda_ou_erreur(agenda.supprimer(s_.ref))
+        await agenda_ou_erreur(ag.supprimer(s_.ref))
         compte, ip = compte_conversation.get(s_.conversation, ("", ""))
         # le journal garde de quoi le recréer si c'était une erreur
         audit.noter("agenda_suppression", compte, ip, par="claude", titre=e.get("titre", ""),
@@ -1910,10 +2003,95 @@ def creer_app(config: Config | None = None, registre: Registre | None = None,
     @app.get("/api/agenda")
     async def lire_agenda(requete: Request, jours: int = 7) -> dict:
         exiger_revelation(requete, "historique")
-        exiger(requete, "agenda.lire")
-        if not agenda.configure:
+        compte = exiger(requete, "agenda.lire", "agenda.personnel")
+        ags = agendas_de(compte, securite.permissions(compte))
+        if not ags:
             return {"configure": False, "evenements": []}
-        return {"configure": True, "evenements": evenements_json(await agenda_ou_erreur(prochains(max(1, min(jours, 60)))))}
+        return {"configure": True, "evenements": await lire_agendas(ags, max(1, min(jours, 60)))}
+
+    # --- ⚙ Mon compte : son agenda et son Telegram ---------------------------------------------------------
+    @app.get("/api/compte/outils")
+    def mes_outils(requete: Request) -> dict:
+        compte = compte_personnel(requete)
+        c = securite.comptes[compte]
+        a = c.get("agenda") or {}
+        return {"agenda": {"permis": securite.peut(compte, "agenda.personnel"), "url": a.get("url", ""),
+                           "utilisateur": a.get("utilisateur", ""), "mdp_defini": bool(a.get("mdp"))},
+                "telegram": {"permis": securite.peut(compte, "telegram.recevoir"), "bot": bool(telegram.jeton),
+                             "relie": (c.get("telegram") or {}).get("nom") or ("oui" if c.get("telegram") else "")}}
+
+    @app.post("/api/compte/agenda")
+    async def mon_agenda(a: MonAgenda, requete: Request) -> dict:
+        compte = compte_personnel(requete)
+        exiger(requete, "agenda.personnel")
+        c = securite.comptes[compte]
+        if not a.url.strip():
+            c.pop("agenda", None)
+            securite._ecrire()
+            auditer(requete, "agenda_personnel", action="débranché")
+            return {"ok": True, "branche": False}
+        ancien = c.get("agenda") or {}
+        nouveau = {"url": a.url.strip(), "utilisateur": a.utilisateur.strip(),
+                   "mdp": a.mot_de_passe if a.mot_de_passe else ancien.get("mdp", "")}
+        essai = Agenda(nouveau["url"], nouveau["utilisateur"], nouveau["mdp"])
+        try:
+            n = len(await prochains(7, essai))
+        except PermissionError as e:
+            raise HTTPException(422, str(e)) from e
+        except Exception as e:  # noqa: BLE001
+            raise HTTPException(422, f"agenda injoignable : {e.__class__.__name__}") from e
+        c["agenda"] = nouveau
+        securite._ecrire()
+        auditer(requete, "agenda_personnel", action="branché")
+        return {"ok": True, "branche": True, "evenements_7_jours": n}
+
+    codes_telegram: dict[str, tuple[str, float]] = {}       # compte -> (code à envoyer au bot, expiration)
+
+    @app.post("/api/compte/telegram/code")
+    async def code_telegram(requete: Request) -> dict:
+        compte = compte_personnel(requete)
+        exiger(requete, "telegram.recevoir")
+        if not telegram.jeton:
+            raise HTTPException(409, "pas de bot Telegram : un administrateur doit le brancher (Réglages › Services)")
+        code = f"{secrets.randbelow(10 ** 6):06d}"
+        codes_telegram[compte] = (code, time.monotonic() + 600)
+        try:
+            bot = await telegram.nom_du_bot()
+        except Exception:  # noqa: BLE001 - le nom du bot n'est qu'une aide
+            bot = ""
+        return {"code": code, "bot": bot, "expire_min": 10}
+
+    @app.post("/api/compte/telegram/relier")
+    async def relier_telegram(requete: Request) -> dict:
+        compte = compte_personnel(requete)
+        exiger(requete, "telegram.recevoir")
+        code, fin = codes_telegram.get(compte, ("", 0))
+        if not code or time.monotonic() > fin:
+            raise HTTPException(409, "demande d'abord un code (valable 10 minutes)")
+        try:
+            chat = await telegram.trouver_chat(code)
+        except RuntimeError as e:
+            raise HTTPException(502, str(e)) from e
+        if not chat:
+            raise HTTPException(404, f"code pas encore reçu : envoie « {code} » à ton bot dans Telegram, puis réessaie")
+        codes_telegram.pop(compte, None)
+        securite.comptes[compte]["telegram"] = chat
+        securite._ecrire()
+        try:
+            await telegram.envoyer(f"{cfg.identite.nom_effectif} : ton Telegram est relié. Tes rappels arriveront ici.",
+                                   chat["id"])
+        except RuntimeError:
+            pass
+        auditer(requete, "telegram_relié")
+        return {"ok": True, "nom": chat["nom"]}
+
+    @app.delete("/api/compte/telegram")
+    def delier_telegram(requete: Request) -> dict:
+        compte = compte_personnel(requete)
+        securite.comptes[compte].pop("telegram", None)
+        securite._ecrire()
+        auditer(requete, "telegram_délié")
+        return {"ok": True}
 
     # --- mémoire (écran ⚙ Mémoire) ---------------------------------------------------------------------
     def compte_memoire(requete: Request) -> str:
@@ -3040,7 +3218,9 @@ def creer_app(config: Config | None = None, registre: Registre | None = None,
         if (docker.configure and "serveur.etat" not in droits and not creer_routine and not pour_agenda
                 and await evoque_docker(d.message)):
             return refuser("serveur")
-        if (agenda.configure and not pour_agenda and "agenda.lire" not in droits and RE_AGENDA.search(d.message)):
+        mes_agendas = agendas_de(personne_conversation.get(d.conversation) or compte, droits)
+        if (not pour_agenda and not mes_agendas and RE_AGENDA.search(d.message)
+                and (agenda.configure or "agenda.personnel" in droits)):
             return refuser("agenda")
         if (ha.configure and "maison.voir" not in droits and not creer_routine and not pour_agenda
                 and (maison.en_attente(d.conversation) or maison.reconnait(d.message, d.conversation))):
@@ -3150,7 +3330,7 @@ def creer_app(config: Config | None = None, registre: Registre | None = None,
             role = cfg.routeur.role_complexe
             route["outils"] = "Claude avec la mémoire"
             outils = outils_maison(d.conversation)
-        elif (agenda.configure and claude_outille and "historique" not in ctx_revel and "agenda.lire" in droits
+        elif (mes_agendas and claude_outille and "historique" not in ctx_revel
                 and (RE_AGENDA.search(d.message) or (time.monotonic() - agenda_recent.get(d.conversation, -1e9) < 180
                                                   and RE_SUITE_AGENDA.search(d.message)))):
             agenda_recent[d.conversation] = time.monotonic()

@@ -35,7 +35,8 @@ RUBRIQUES: list[tuple[str, list[tuple[str, str]]]] = [
     ]),
     ("Agenda et rappels", [
         ("agenda.lire", "lire l'agenda familial"),
-        ("agenda.ecrire", "ajouter ou supprimer un rendez-vous"),
+        ("agenda.ecrire", "ajouter ou supprimer un rendez-vous dans l'agenda familial"),
+        ("agenda.personnel", "brancher et utiliser son propre agenda"),
         ("rappels.utiliser", "créer ses rappels"),
     ]),
     ("Mémoire et questions", [
@@ -52,8 +53,8 @@ RUBRIQUES: list[tuple[str, list[tuple[str, str]]]] = [
         ("serveur.mettre_a_jour", "mettre à jour un conteneur"),
     ]),
     ("Telegram", [
-        ("telegram.envoyer", "envoyer un message sur le Telegram de la maison"),
-        ("telegram.recevoir", "recevoir ses rappels et alertes sur Telegram"),
+        ("telegram.envoyer", "envoyer un message sur Telegram (le sien, relié dans Mon compte)"),
+        ("telegram.recevoir", "relier son Telegram et y recevoir ses rappels et alertes"),
     ]),
 ]
 PERMISSIONS: dict[str, str] = {p: lib for _, liste in RUBRIQUES for p, lib in liste}

@@ -242,11 +242,11 @@ def test_telegram(maison_de_test):
 
 def test_agenda_lire_et_ecrire(maison_de_test):
     _, sec, machine, lea, _, _ = maison_de_test
-    sec.definir_droits("lea", retraits=["agenda.lire", "agenda.ecrire"])
+    sec.definir_droits("lea", retraits=["agenda.lire", "agenda.ecrire", "agenda.personnel"])
     assert lea.get("/api/agenda").status_code == 403
     assert chat(lea, "qu'est-ce que j'ai à l'agenda demain ?")["reponse"] == main.REFUS["agenda"]
     assert machine.get("/interne/agenda", headers=H, params={"conversation": "lea-1"}).status_code == 403
-    sec.definir_droits("lea", retraits=["agenda.ecrire"])                 # lire oui, écrire non
+    sec.definir_droits("lea", retraits=["agenda.ecrire", "agenda.personnel"])   # lire oui, écrire non
     chat(lea, "bonjour")
     nouvel = {"titre": "Dentiste", "debut": "2030-01-02T10:00", "conversation": "lea-1"}
     assert machine.post("/interne/agenda", headers=H, json=nouvel).status_code == 403
@@ -364,7 +364,7 @@ def test_administration_des_droits_par_api(maison_de_test):
     assert admin.post("/api/groupes", json={"nom": "Y", "permissions": ["n.importe.quoi"]}).status_code == 422
     assert admin.put("/api/groupes/adultes", json={"nom": "Adultes", "parent": "ados"}).status_code == 422   # boucle
     c = admin.post("/api/comptes/lea/droits", json={"groupes": ["ados"], "permissions": ["serveur.etat"],
-                                                     "retraits": ["agenda.lire"]}).json()
+                                                     "retraits": ["agenda.lire", "agenda.personnel"]}).json()
     assert c["groupes"] == ["ados"] and "serveur.etat" in c["effectives"] and "agenda.lire" not in c["effectives"]
     assert lea.get("/api/docker").status_code == 200 and lea.get("/api/agenda").status_code == 403
     assert admin.post("/api/comptes/principal/droits", json={"admin": False}).status_code == 409
@@ -420,3 +420,98 @@ def test_l_administrateur_voit_et_modifie_tout(maison_de_test, monkeypatch):
     monkeypatch.setattr(main.HomeAssistant, "supprimer_automatisation", supprimee)
     assert admin.delete("/api/automatisations/assistant_x").status_code == 200
     assert admin.get("/api/automatisations").json()["automatisations"] == []
+
+
+class FauxAgenda:
+    """Agenda CalDAV simulé : les événements de chaque adresse, gardés en mémoire."""
+    contenus: dict = {}
+
+    def __init__(self, url, utilisateur="", mot_de_passe=""):
+        self.url, self.mdp = url, mot_de_passe
+        self.configure = bool(url)
+
+    async def evenements(self, debut, fin):
+        if self.mdp == "faux":
+            raise PermissionError("agenda : identifiant ou mot de passe refusé")
+        return [e for e in self.contenus.get(self.url, []) if debut <= e["debut"] <= fin]
+
+    async def ajouter(self, titre, debut, fin=None, lieu="", rappel_min=15, journee=False):
+        self.contenus.setdefault(self.url, []).append({"titre": titre, "debut": debut, "href": f"{self.url}{titre}.ics"})
+        return titre
+
+    async def supprimer(self, href):
+        self.contenus[self.url] = [e for e in self.contenus.get(self.url, []) if e["href"] != href]
+
+
+def test_agenda_personnel(maison_de_test, monkeypatch):
+    app, sec, machine, lea, admin, _ = maison_de_test
+    FauxAgenda.contenus = {}
+    monkeypatch.setattr(main, "Agenda", FauxAgenda)
+    sec.definir_droits("lea", retraits=["agenda.lire", "agenda.ecrire"])        # pas l'agenda familial
+    assert lea.get("/api/compte/outils").json()["agenda"]["permis"]
+    assert lea.post("/api/compte/agenda", json={"url": "http://cal/lea/", "utilisateur": "lea",
+                                                 "mot_de_passe": "faux"}).status_code == 422     # essayé avant d'enregistrer
+    r = lea.post("/api/compte/agenda", json={"url": "http://cal/lea/", "utilisateur": "lea", "mot_de_passe": "bon"})
+    assert r.status_code == 200 and r.json()["branche"]
+    assert "bon" not in str(lea.get("/api/compte/outils").json())                 # le mot de passe ne revient jamais
+    chat(lea, "bonjour")
+    debut = (datetime.now().astimezone() + timedelta(days=1)).replace(microsecond=0).isoformat()
+    ok = machine.post("/interne/agenda", headers=H, json={"titre": "Dentiste", "debut": debut, "conversation": "lea-1"})
+    assert ok.status_code == 200 and ok.json()["agenda"] == "perso"
+    famille = machine.post("/interne/agenda", headers=H, json={"titre": "X", "debut": debut, "agenda": "famille",
+                                                              "conversation": "lea-1"})
+    assert famille.status_code == 403                                             # pas le droit d'écrire au familial
+    lus = machine.get("/interne/agenda", headers=H, params={"conversation": "lea-1"}).json()
+    assert [e["titre"] for e in lus] == ["Dentiste"]
+    assert [e["titre"] for e in lea.get("/api/agenda").json()["evenements"]] == ["Dentiste"]
+    # personne d'autre ne le voit : l'administrateur n'a pas d'agenda personnel branché
+    assert admin.get("/api/compte/outils").json()["agenda"]["url"] == ""
+    ref = lus[0]["ref"]
+    assert machine.post("/interne/agenda/supprimer", headers=H, json={"ref": ref, "conversation": "lea-1"}).status_code == 200
+    # sans le droit « agenda personnel » : ni écran ni outil
+    sec.definir_droits("lea", retraits=["agenda.lire", "agenda.ecrire", "agenda.personnel"])
+    assert lea.post("/api/compte/agenda", json={"url": "http://cal/lea/"}).status_code == 403
+    assert lea.get("/api/agenda").status_code == 403
+
+
+def test_telegram_personnel(maison_de_test, monkeypatch):
+    app, sec, machine, lea, admin, _ = maison_de_test
+    envois, recus = [], {"texte": ""}
+
+    async def envoyer(self, texte, chat_id=""):
+        envois.append((str(chat_id or self.chat_id), texte))
+
+    async def trouver(self, code=""):
+        return {"id": "77", "nom": "Léa"} if code and code in recus["texte"] else None
+
+    async def nom(self):
+        return "magnus_bot"
+    monkeypatch.setattr(main.Telegram, "envoyer", envoyer)
+    monkeypatch.setattr(main.Telegram, "trouver_chat", trouver)
+    monkeypatch.setattr(main.Telegram, "nom_du_bot", nom)
+    assert lea.post("/api/compte/telegram/code").status_code == 403             # pas « telegram.recevoir »
+    sec.definir_droits("lea", permissions=["telegram.recevoir"])
+    assert lea.post("/api/compte/telegram/relier").status_code == 409           # pas encore de code
+    code = lea.post("/api/compte/telegram/code").json()
+    assert code["bot"] == "magnus_bot" and len(code["code"]) == 6
+    assert lea.post("/api/compte/telegram/relier").status_code == 404           # le bot n'a rien reçu
+    recus["texte"] = "/start " + code["code"]
+    assert lea.post("/api/compte/telegram/relier").json()["nom"] == "Léa"
+    assert envois[-1][0] == "77"
+    # son rappel part sur SON Telegram, pas sur celui de la maison (42)
+    chat(lea, "bonjour")
+    quand = (datetime.now().astimezone() + timedelta(seconds=1)).isoformat(timespec="seconds")
+    with machine:
+        machine.post("/interne/rappels", headers=H, json={"quand": quand, "texte": "arroser", "conversation": "lea-1"})
+        from tests.test_unraid_surveillance import attendre
+        attendre(lambda: any("arroser" in t for _, t in envois), 12)
+    assert [c for c, t in envois if "arroser" in t] == ["77"]
+    # envoyer un message : vers son Telegram à elle, seulement avec « telegram.envoyer »
+    assert machine.post("/interne/telegram", headers=H, json={"texte": "coucou", "conversation": "lea-1"}).status_code == 403
+    sec.definir_droits("lea", permissions=["telegram.recevoir", "telegram.envoyer"])
+    chat(lea, "bonjour")
+    assert machine.post("/interne/telegram", headers=H, json={"texte": "coucou", "conversation": "lea-1"}).status_code == 200
+    assert envois[-1] == ("77", "coucou")
+    # délié : plus rien pour elle (jamais le Telegram de la maison à la place)
+    assert lea.delete("/api/compte/telegram").status_code == 200
+    assert machine.post("/interne/telegram", headers=H, json={"texte": "x", "conversation": "lea-1"}).status_code == 409
