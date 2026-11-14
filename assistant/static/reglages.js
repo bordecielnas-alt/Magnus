@@ -88,11 +88,13 @@
       <div class="rangee"><button type="button" class="bouton principal" id="cMemoireOuvrir">Ouvrir la mémoire</button></div>
       <p class="aide" data-msg="memoire"></p>
     </details>
-    <details id="cfgHabitudes"><summary>Routines et habitudes <span class="etat" id="eHabitudes"></span></summary>
+    <details id="cfgHabitudes"><summary>Routines, habitudes et automatisations <span class="etat" id="eHabitudes"></span></summary>
       <p class="aide">Habitudes repérées dans l'historique des actions : « Automatiser » crée l'automatisation dans Home Assistant (administrateur).</p>
       <div id="cHabitudesListe"></div>
       <p class="aide" style="margin-top:12px">Routines : dis par exemple « crée une routine mode cinéma qui ferme les volets du salon et met la lumière à 20 % », puis « mode cinéma ».</p>
       <div id="cRoutinesListe"></div>
+      <p class="aide" style="margin-top:12px" id="cAutosTitre" hidden>Automatisations créées dans Home Assistant à partir d'une habitude :</p>
+      <div id="cAutosListe"></div>
       <p class="aide" data-msg="habitudes"></p>
     </details>
     <details id="cfgRegles" hidden><summary>Règles « si… alors… » <span class="etat" id="eRegles"></span></summary>
@@ -376,6 +378,23 @@
     try { r = await api('/api/routines'); }
     catch (e) { $('cfgHabitudes').hidden = true; return; }
     try { h = await api('/api/habitudes'); } catch (e) {}     // tirées de l'historique : selon les droits
+    let au = {automatisations: []};
+    try { au = await api('/api/automatisations'); } catch (e) {}
+    $('cAutosTitre').hidden = !au.automatisations.length;
+    $('cAutosListe').replaceChildren(...au.automatisations.map(a => {
+      const ligne = document.createElement('div'); ligne.className = 'compte';
+      const t = texte('div', a.alias);
+      t.appendChild(texte('small', 'créée le ' + quand(a.cree) + (a.auteur ? ' par ' + a.auteur : '')));
+      const bt = texte('button', 'Supprimer'); bt.type = 'button'; bt.className = 'bouton';
+      bt.onclick = async () => {
+        if (!confirm(`Supprimer de Home Assistant : ${a.alias} ?`)) return;
+        const rep = await fetch(`/api/automatisations/${encodeURIComponent(a.id)}`, {method: 'DELETE'});
+        msg('habitudes', rep.ok ? 'Automatisation supprimée.' : 'Suppression impossible.', rep.ok);
+        chargerHabitudes();
+      };
+      ligne.append(t, bt);
+      return ligne;
+    }));
     $('cfgHabitudes').hidden = false;
     etat('eHabitudes', `${h.habitudes.length} habitude(s) · ${r.routines.length} routine(s)`);
     const lh = $('cHabitudesListe'); lh.replaceChildren();
@@ -399,7 +418,7 @@
     for (const rt of r.routines) {
       const ligne = document.createElement('div'); ligne.className = 'compte';
       const t = texte('div', rt.nom);
-      t.appendChild(texte('small', rt.etapes.map(e => `${VERBES_R[e.action] || e.action} ${e.entity_ids.join(', ')}${e.valeur != null ? ' ' + e.valeur : ''}${e.couleur ? ' ' + e.couleur : ''}`).join(' · ')));
+      t.appendChild(texte('small', (rt.auteur ? 'de ' + rt.auteur + ' · ' : '') + rt.etapes.map(e => `${VERBES_R[e.action] || e.action} ${e.entity_ids.join(', ')}${e.valeur != null ? ' ' + e.valeur : ''}${e.couleur ? ' ' + e.couleur : ''}`).join(' · ')));
       const bt = texte('button', 'Supprimer'); bt.type = 'button'; bt.className = 'bouton';
       bt.onclick = async () => {
         if (!confirm(`Supprimer la routine « ${rt.nom} » ?`)) return;
@@ -424,7 +443,7 @@
       const ligne = document.createElement('div'); ligne.className = 'compte';
       const t = texte('div', x.texte);
       if (!x.active) t.style.opacity = '.55';
-      t.appendChild(texte('small', (x.active ? '' : 'En pause · ') + 'Dernier déclenchement : ' + quand(x.derniere)
+      t.appendChild(texte('small', (x.auteur ? 'de ' + x.auteur + ' · ' : '') + (x.active ? '' : 'En pause · ') + 'Dernier déclenchement : ' + quand(x.derniere)
         + (x.resultat ? ' (' + x.resultat + ')' : '')));
       const b = document.createElement('div'); b.className = 'rangee'; b.style.marginTop = '0';
       const pause = texte('button', x.active ? 'Mettre en pause' : 'Reprendre'); pause.type = 'button';

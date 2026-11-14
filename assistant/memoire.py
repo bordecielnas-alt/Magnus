@@ -145,12 +145,14 @@ class Memoire:
         return dict(s)
 
     def visible(self, s: dict, compte: str, admin: bool = False) -> bool:
-        return s["portee"] == "foyer" or s["compte"] == compte
+        """Foyer : tout le monde ; privé : son compte, et l'administrateur (écran Mémoire)."""
+        return admin or s["portee"] == "foyer" or s["compte"] == compte
 
-    def liste(self, compte: str, statuts: tuple[str, ...] = ("propose", "valide")) -> list[dict]:
-        q = ("SELECT * FROM souvenirs WHERE statut IN (%s) AND (portee='foyer' OR compte=?) ORDER BY maj DESC"
+    def liste(self, compte: str, statuts: tuple[str, ...] = ("propose", "valide"), tous: bool = False) -> list[dict]:
+        """Foyer + privés du compte ; `tous` (administrateur, écran Mémoire) : aussi les privés des autres."""
+        q = ("SELECT * FROM souvenirs WHERE statut IN (%s) AND (? OR portee='foyer' OR compte=?) ORDER BY maj DESC"
              % ",".join("?" * len(statuts)))
-        return [dict(r) for r in self._db.execute(q, (*statuts, compte))]
+        return [dict(r) for r in self._db.execute(q, (*statuts, 1 if tous else 0, compte))]
 
     def historique(self, ident: int) -> list[dict]:
         return [dict(r) for r in self._db.execute("SELECT * FROM historique WHERE souvenir=? ORDER BY id DESC", (ident,))]

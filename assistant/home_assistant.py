@@ -140,6 +140,15 @@ class HomeAssistant:
         except httpx.HTTPError:
             return False
 
+    async def supprimer_automatisation(self, ident: str) -> bool:
+        if not self.configure:
+            return False
+        try:
+            r = await self._client.delete(f"/api/config/automation/config/{ident}")
+            return r.status_code < 300 or r.status_code == 404      # déjà supprimée dans Home Assistant
+        except httpx.HTTPError:
+            return False
+
     async def etat_entite(self, entity_id: str) -> dict | None:
         if not self.configure:
             return None

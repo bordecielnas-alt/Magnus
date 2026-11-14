@@ -637,6 +637,13 @@ def creer_app(config: Config | None = None, registre: Registre | None = None,
     regles = Regles(securite.fichier.parent)
     regle_attente: dict[str, tuple[dict, str, float]] = {}   # conversation -> (règle proposée, compte, instant)
     fichier_ignorees = securite.fichier.parent / "habitudes_ignorees.json"
+    fichier_autos = securite.fichier.parent / "automatisations.json"   # créées depuis une habitude (pour les retrouver)
+
+    def automatisations_creees() -> dict[str, dict]:
+        try:
+            return json.loads(fichier_autos.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return {}
 
     def habitudes_ignorees() -> set[str]:
         try:
@@ -1930,15 +1937,17 @@ def creer_app(config: Config | None = None, registre: Registre | None = None,
             sv = memoire.lire(ident)
         except KeyError as e:
             raise HTTPException(404, "souvenir inconnu") from e
-        if not memoire.visible(sv, compte) or (sv["statut"] == "supprime" and not corbeille):
+        if not memoire.visible(sv, compte, securite.est_admin(compte)) or (sv["statut"] == "supprime" and not corbeille):
             raise HTTPException(404, "souvenir inconnu")
         return sv
 
-    def souvenir_json(sv: dict) -> dict:
-        """Un souvenir pour l'écran : qui l'a ajouté (nom du compte), d'où il vient, ce qu'il remplace."""
+    def souvenir_json(sv: dict, moi: str | None = None) -> dict:
+        """Un souvenir pour l'écran : qui l'a ajouté (nom du compte), d'où il vient, ce qu'il remplace ;
+        avec `moi`, s'il est à cette personne (l'administrateur voit aussi les souvenirs privés des autres)."""
         c = securite.comptes.get(sv["compte"]) or {}
         o = {**sv, "auteur": c.get("nom", sv["compte"]) if sv["compte"] != COMPTE_MACHINE else cfg.identite.nom_effectif,
-             "origine": "écran" if sv["source"] == "écran" else "conversation"}
+             "origine": "écran" if sv["source"] == "écran" else "conversation",
+             **({"a_moi": sv["compte"] == moi} if moi else {})}
         if sv.get("remplace"):
             try:
                 o["remplace_texte"] = memoire.lire(sv["remplace"])["texte"]
@@ -1951,16 +1960,17 @@ def creer_app(config: Config | None = None, registre: Registre | None = None,
         """Souvenirs validés et à valider ; avec ?corbeille=1, les oubliés et refusés (restaurables)."""
         compte = compte_souvenirs(requete)
         if corbeille:
-            return {"souvenirs": [souvenir_json(x) for x in memoire.liste(compte, ("supprime", "refuse"))[:200]]}
-        liste = memoire.liste(compte)
-        return {"souvenirs": [souvenir_json(x) for x in liste],
+            return {"souvenirs": [souvenir_json(x, compte) for x in memoire.liste(compte, ("supprime", "refuse"),
+                                                                          securite.est_admin(compte))[:200]]}
+        liste = memoire.liste(compte, tous=securite.est_admin(compte))      # l'administrateur voit tout
+        return {"souvenirs": [souvenir_json(x, compte) for x in liste],
                 "a_valider": sum(1 for x in liste if x["statut"] == "propose")}
 
     @app.post("/api/memoire/valider-tout")
     def valider_tous_les_souvenirs(requete: Request) -> dict:
         compte = compte_souvenirs(requete)
         n = 0
-        for sv in memoire.liste(compte, ("propose",)):
+        for sv in memoire.liste(compte, ("propose",), securite.est_admin(compte)):
             memoire.changer_statut(sv["id"], "valide", compte)
             auditer(requete, "souvenir_validé", cible=str(sv["id"]))
             n += 1
@@ -2268,8 +2278,33 @@ def creer_app(config: Config | None = None, registre: Registre | None = None,
         if not await ha.creer_automatisation(ident, conf):
             raise HTTPException(502, "Home Assistant a refusé (le jeton doit être celui d'un administrateur HA)")
         fichier_ignorees.write_text(json.dumps(sorted(habitudes_ignorees() | {c.id})), encoding="utf-8")
+        autos = automatisations_creees()
+        autos[ident] = {"id": ident, "alias": conf["alias"], "compte": compte_de(requete) or "",
+                        "cree": time.strftime("%Y-%m-%dT%H:%M:%S")}
+        fichier_autos.write_text(json.dumps(autos, ensure_ascii=False, indent=1), encoding="utf-8")
         auditer(requete, "automatisation_créée", nom=conf["alias"])
         return {"ok": True, "automatisation": conf["alias"]}
+
+    # --- automatisations créées dans Home Assistant à partir d'une habitude -----------------------------
+    @app.get("/api/automatisations")
+    def lister_automatisations(requete: Request) -> dict:
+        compte = compte_memoire(requete)
+        return {"automatisations": [{**a, "auteur": nom_compte(a.get("compte", ""))}
+                                    for a in automatisations_creees().values() if a_moi(a, compte)]}
+
+    @app.delete("/api/automatisations/{ident}")
+    async def supprimer_automatisation(ident: str, requete: Request) -> dict:
+        compte = compte_memoire(requete)
+        autos = automatisations_creees()
+        a = autos.get(ident)
+        if not a or not a_moi(a, compte):
+            raise HTTPException(404, "automatisation inconnue")
+        if not await ha.supprimer_automatisation(ident):
+            raise HTTPException(502, "Home Assistant a refusé (le jeton doit être celui d'un administrateur HA)")
+        autos.pop(ident)
+        fichier_autos.write_text(json.dumps(autos, ensure_ascii=False, indent=1), encoding="utf-8")
+        auditer(requete, "automatisation_supprimée", nom=a["alias"])
+        return {"ok": True}
 
     @app.get("/api/annonces")
     def lire_annonces(requete: Request, depuis: str = "") -> dict:

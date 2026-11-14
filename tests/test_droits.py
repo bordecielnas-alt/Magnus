@@ -383,3 +383,40 @@ def test_question_generale_sans_permission_web(maison_de_test):
     assert chat(lea, "Explique-moi la photosynthèse")["reponse"] == main.REFUS["web"]
     assert lea.post("/api/rapport", json={"type": "meteo"}).status_code == 403
     assert chat(lea, "quelle heure est-il ?")["reponse"] != main.REFUS["web"]       # l'heure reste permise
+
+
+def test_l_administrateur_voit_et_modifie_tout(maison_de_test, monkeypatch):
+    app, sec, machine, lea, admin, _ = maison_de_test
+    # souvenir privé de Léa : invisible pour un autre compte, visible et modifiable par l'administrateur
+    sv = lea.post("/api/memoire", json={"texte": "J'aime le thé vert", "portee": "prive"}).json()
+    vus = admin.get("/api/memoire").json()["souvenirs"]
+    mien = next(x for x in vus if x["id"] == sv["id"])
+    assert mien["auteur"] == "Léa" and mien["a_moi"] is False
+    assert admin.patch(f"/api/memoire/{sv['id']}", json={"texte": "Léa aime le thé vert"}).status_code == 200
+    assert admin.delete(f"/api/memoire/{sv['id']}").status_code == 200
+    sec.creer_compte("Tom")
+    sec.definir_mot_de_passe("tom", "mot de passe de tom")
+    tom = TestClient(app, client=(LAN, 50001), follow_redirects=False)
+    tom.post("/api/connexion", json={"identifiant": "tom", "mot_de_passe": "mot de passe de tom"})
+    sv2 = lea.post("/api/memoire", json={"texte": "Mon code de casier est secret", "portee": "prive"}).json()
+    assert all(x["id"] != sv2["id"] for x in tom.get("/api/memoire").json()["souvenirs"])
+    assert tom.delete(f"/api/memoire/{sv2['id']}").status_code == 404
+    # règles et routines de Léa : l'administrateur les voit (avec l'auteur) et peut les changer
+    chat(lea, "bonjour")
+    corps = {"nom": "cinéma", "conversation": "lea-1", "etapes": [{"entity_ids": ["cover.salon"], "action": "fermer"}]}
+    assert machine.post("/interne/routines", headers=H, json=corps).status_code == 200
+    assert admin.delete("/api/routines/cinéma").status_code == 200
+    # automatisations créées depuis une habitude : listées pour l'administrateur, supprimables
+    import json as js
+    (sec.fichier.parent / "automatisations.json").write_text(js.dumps({"assistant_x": {
+        "id": "assistant_x", "alias": "Salon : allumer à 07:00", "compte": "lea", "cree": "2026-11-14T10:00:00"}}),
+        encoding="utf-8")
+    assert admin.get("/api/automatisations").json()["automatisations"][0]["auteur"] == "Léa"
+    assert tom.get("/api/automatisations").json()["automatisations"] == []
+    assert tom.delete("/api/automatisations/assistant_x").status_code == 404
+
+    async def supprimee(self, ident):
+        return True
+    monkeypatch.setattr(main.HomeAssistant, "supprimer_automatisation", supprimee)
+    assert admin.delete("/api/automatisations/assistant_x").status_code == 200
+    assert admin.get("/api/automatisations").json()["automatisations"] == []
