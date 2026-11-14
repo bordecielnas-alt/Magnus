@@ -684,6 +684,41 @@ def creer_app(config: Config | None = None, registre: Registre | None = None,
         return f"{r['nom'][:1].upper()}{r['nom'][1:]} : c'est lancé." + (" " + " ".join(echecs) if echecs else "")
     agenda = Agenda(cfg.agenda.url, cfg.agenda.utilisateur, cfg.agenda.mot_de_passe())
 
+    def migrer_moi_principal() -> None:
+        """Une seule fois (demande de Benjamin, 0.29) : le chat Telegram et l'agenda de la maison (Réglages ›
+        Services) passent dans ⚙ Moi du compte « principal », puis sont vidés dans Services. Les alertes du
+        serveur partent alors vers les Telegram reliés des comptes qui y ont droit (dont Principal). Le bot
+        Telegram (son jeton) reste dans Services. Rien n'est écrasé si Principal a déjà les siens."""
+        faites = securite._etat.setdefault("migrations", [])
+        c = securite.comptes.get("principal")
+        if "moi-principal" in faites or not c:
+            return
+        if cfg.telegram.chat_id and not (c.get("telegram") or {}).get("id"):
+            c["telegram"] = {"id": str(cfg.telegram.chat_id), "nom": "repris du Telegram de la maison"}
+        if cfg.agenda.url and not (c.get("agenda") or {}).get("url"):
+            c["agenda"] = {"url": cfg.agenda.url, "utilisateur": cfg.agenda.utilisateur,
+                           "mdp": cfg.agenda.mot_de_passe()}
+        faites.append("moi-principal")
+        securite._ecrire()
+        # Services vidé : chat de la maison et agenda familial
+        vider = (cfg.telegram.chat_id or cfg.agenda.url)
+        cfg.telegram.chat_id = telegram.chat_id = ""
+        cfg.agenda.url, cfg.agenda.utilisateur = "", ""
+        agenda.url, agenda.auth = "", None
+        if vider and persister:
+            try:
+                from .config import DEFAUTS, _lire_yaml
+                R.appliquer({"telegram": {"chat_id": ""}, "agenda": {"url": "", "utilisateur": ""}}, _lire_yaml(DEFAUTS))
+                R.ecrire_secret("AGENDA_MOT_DE_PASSE", "")
+            except Exception as e:  # noqa: BLE001 - la copie est faite ; le reste se vide à la main dans Services
+                journal.info("migration : Services pas vidé (%s)", e)
+        journal.info("migration : Telegram et agenda de la maison passés dans le compte principal, Services vidé")
+    migrer_moi_principal()
+
+    def meme_agenda(a: Agenda | None) -> bool:
+        """Son agenda personnel est l'agenda familial (même adresse) : on ne le lit et ne l'annonce qu'une fois."""
+        return bool(a and agenda.configure and a.url == agenda.url)
+
     async def demander_json(consigne: str) -> str:
         """Claude avec le web, pour une carte de rapport ; le secours (sans web) inventerait : refusé."""
         msgs = [Message("system", cfg.consigne_effective + "\n\n" + CONSIGNE_JSON), Message("user", consigne)]
@@ -807,7 +842,7 @@ def creer_app(config: Config | None = None, registre: Registre | None = None,
             maintenant = dt.now().astimezone()
             for ident in list(securite.comptes):
                 perso = agenda_perso(ident) if securite.peut(ident, "agenda.personnel") else None
-                if not perso:
+                if not perso or meme_agenda(perso):     # l'agenda familial est déjà annoncé
                     continue
                 try:
                     bientot = await perso.evenements(maintenant, maintenant + timedelta(minutes=cfg.agenda.annonce_avant_min))
@@ -995,7 +1030,8 @@ def creer_app(config: Config | None = None, registre: Registre | None = None,
             app.state.prechauffage = asyncio.create_task(voix.prechauffer())
         app.state.rappels = asyncio.create_task(boucle_rappels())
         app.state.boucle_regles = asyncio.create_task(boucle_regles()) if ha.configure else None
-        if (cfg.proactif.active and (ha.configure or docker.configure or cfg.proactif.briefing_heure)) or telegram.configure                 or agenda.configure:
+        if ((cfg.proactif.active and (ha.configure or docker.configure or cfg.proactif.briefing_heure)) or telegram.jeton
+                or agenda.configure or any(c.get("agenda") for c in securite.comptes.values())):
             app.state.surveillance = asyncio.create_task(boucle_surveillance())
         yield
         if getattr(app.state, "surveillance", None):
@@ -1016,6 +1052,8 @@ def creer_app(config: Config | None = None, registre: Registre | None = None,
     app.state.securite = securite
     app.state.audit = audit
     app.state.annonces = annonces
+    app.state.telegram = telegram
+    app.state.signaler = signaler
     app.state.fil = fil
     app.state.surveiller_une_fois = surveiller_une_fois     # pour les tests
     app.state.conteneurs_en_travaux = conteneurs_en_travaux
@@ -1822,7 +1860,8 @@ def creer_app(config: Config | None = None, registre: Registre | None = None,
                 await ecrire_reglages_telegram(chat["id"])
                 await telegram.envoyer(f"{cfg.identite.nom_effectif} est relié à ce chat. Les alertes arriveront ici.")
                 return {"ok": True, "chat_id": chat["id"], "nom": chat["nom"]}
-            await telegram.envoyer(f"{cfg.identite.nom_effectif} : message de test.")
+            # le sien (relié dans Moi), sinon le chat de la maison
+            await telegram.envoyer(f"{cfg.identite.nom_effectif} : message de test.", chat_telegram(compte_de(requete)))
             return {"ok": True}
         except RuntimeError as e:
             raise HTTPException(502, str(e)) from e
@@ -1953,6 +1992,8 @@ def creer_app(config: Config | None = None, registre: Registre | None = None,
         if agenda.configure and "agenda.lire" in perms:
             sortie.append(("famille", agenda))
         perso = agenda_perso(compte) if "agenda.personnel" in perms else None
+        if perso and meme_agenda(perso) and sortie:
+            return [("perso", perso)]          # le même calendrier : une seule fois, écrit dans « le sien »
         if perso:
             sortie.append(("perso", perso))
         return sortie

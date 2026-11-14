@@ -175,6 +175,7 @@ def maison_de_test(tmp_path, monkeypatch):
     monkeypatch.setenv("TELEGRAM_JETON", "123:abc")
     cfg.agenda.url = "http://agenda.test/cal/"
     sec = sec_avec_lea(tmp_path)
+    sec._etat["migrations"] = ["moi-principal"]       # Services gardé ici (la reprise a son propre test)
     app = main.creer_app(cfg, r.registre, securite=sec)
     machine = TestClient(app, client=("127.0.0.1", 1), follow_redirects=False)
 
@@ -564,3 +565,52 @@ def test_consigne_au_nom_du_theme():
     d = DemandeChat(message="bonjour")
     assert "Hal" in _messages(cfg, d, nom="Hal")[0].content
     assert cfg.identite.nom in _messages(cfg, d)[0].content
+
+
+def test_telegram_et_agenda_de_la_maison_passent_a_principal_une_fois(tmp_path, monkeypatch):
+    monkeypatch.setenv("TELEGRAM_JETON", "123:abc")
+    sec = sec_avec_lea(tmp_path)
+
+    def demarrer(chat="42", url="http://agenda.test/cal/"):
+        r, _ = routeur()
+        cfg = charger(env={}, fichier=Path("inexistant.yaml"))
+        cfg.telegram.chat_id, cfg.agenda.url, cfg.agenda.utilisateur = chat, url, "moi"
+        return cfg, main.creer_app(cfg, r.registre, securite=sec)
+    cfg, app = demarrer()
+    c = sec.comptes["principal"]
+    assert c["telegram"]["id"] == "42" and c["agenda"] == {"url": "http://agenda.test/cal/", "utilisateur": "moi", "mdp": ""}
+    assert "telegram" not in sec.comptes["lea"] and "agenda" not in sec.comptes["lea"]
+    # Services est vidé : plus de chat de la maison ni d'agenda familial (le bot reste)
+    assert cfg.telegram.chat_id == "" and cfg.agenda.url == "" and cfg.telegram.jeton()
+    admin = TestClient(app, client=(LAN, 50000), follow_redirects=False)
+    admin.post("/api/connexion", json={"identifiant": "principal", "mot_de_passe": MDP})
+    o = admin.get("/api/compte/outils").json()
+    assert o["telegram"]["relie"] and not o["telegram"]["maison"] and not o["agenda"]["famille"]
+    # une seule fois : délié puis redémarré, rien n'est repris (ni Services revidé)
+    assert admin.delete("/api/compte/telegram").status_code == 200
+    cfg2, _ = demarrer(chat="99")
+    assert "telegram" not in sec.comptes["principal"] and cfg2.telegram.chat_id == "99"
+
+
+def test_alertes_serveur_vers_les_telegram_relies(maison_de_test, monkeypatch):
+    app, sec, machine, lea, admin, _ = maison_de_test
+    envois = []
+
+    async def envoyer(self, texte, chat_id=""):
+        envois.append(str(chat_id or self.chat_id))
+    monkeypatch.setattr(main.Telegram, "envoyer", envoyer)
+    sec.comptes["principal"]["telegram"] = {"id": "77", "nom": "Principal"}
+    app.state.telegram.chat_id = ""                                    # Services vidé
+    import asyncio
+    asyncio.run(app.state.signaler("Le conteneur plex est arrêté.", "important", "docker", "docker:plex"))
+    assert envois == ["77"]                                             # Léa (sans droit serveur) : rien
+
+
+def test_meme_calendrier_lu_une_seule_fois(maison_de_test, monkeypatch):
+    app, sec, machine, lea, admin, _ = maison_de_test
+    sec.comptes["principal"]["agenda"] = {"url": "http://agenda.test/cal/", "utilisateur": "", "mdp": ""}
+    FauxAgenda.contenus = {"http://agenda.test/cal/": [{"titre": "Dentiste", "href": "x.ics",
+                                                         "debut": datetime.now().astimezone() + timedelta(hours=2)}]}
+    monkeypatch.setattr(main, "Agenda", FauxAgenda)
+    titres = [e["titre"] for e in admin.get("/api/agenda").json()["evenements"]]
+    assert titres == ["Dentiste"]
