@@ -20,50 +20,28 @@ LAN = "192.168.1.30"
 
 # --- calcul des droits (fonctions pures) ------------------------------------------------------------
 GROUPES = {
-    "famille": {"nom": "Famille", "parent": "", "permissions": ["maison.voir", "agenda.lire", "agenda.ecrire"],
-                "retraits": []},
-    "ados": {"nom": "Ados", "parent": "famille", "permissions": ["assistant.web"], "retraits": ["agenda.ecrire"]},
-    "petits": {"nom": "Petits", "parent": "ados", "permissions": [], "retraits": ["assistant.web"]},
-    "serveur": {"nom": "Serveur", "parent": "", "permissions": ["serveur.etat", "serveur.diagnostic"], "retraits": []},
+    "admin": {"nom": "Admin", "permissions": []},
+    "foyer": {"nom": "Foyer", "permissions": ["maison.voir", "agenda.lire", "agenda.ecrire"]},
+    "exterieur": {"nom": "Extérieur", "permissions": ["maison.voir"]},
 }
 
 
-def test_un_sous_groupe_herite_puis_ajoute_et_retire():
-    assert D.effectif_groupe(GROUPES, "famille") == {"maison.voir", "agenda.lire", "agenda.ecrire"}
-    assert D.effectif_groupe(GROUPES, "ados") == {"maison.voir", "agenda.lire", "assistant.web"}
-    assert D.effectif_groupe(GROUPES, "petits") == {"maison.voir", "agenda.lire"}       # deux niveaux
+def test_un_groupe_puis_les_exceptions_de_la_personne():
+    assert D.effectif(GROUPES, "foyer") == {"maison.voir", "agenda.lire", "agenda.ecrire"}
+    assert D.effectif(GROUPES, "exterieur", ["assistant.web"]) == {"maison.voir", "assistant.web"}
+    # un retrait propre a le dernier mot, même sur ce que le groupe donne
+    assert D.effectif(GROUPES, "foyer", ["agenda.ecrire"], ["agenda.ecrire"]) == {"maison.voir", "agenda.lire"}
+    assert D.effectif(GROUPES, "admin", retraits=["serveur.etat"]) == set(D.PERMISSIONS)     # Admin : tout
+    assert D.effectif(GROUPES, "inconnu") == set()
 
 
-def test_plusieurs_groupes_et_reglages_propres():
-    assert D.effectif(GROUPES, ["petits", "serveur"]) == {"maison.voir", "agenda.lire", "serveur.etat",
-                                                          "serveur.diagnostic"}
-    # un ajout propre, puis un retrait propre qui a le dernier mot (même sur ce qu'un groupe donne)
-    assert "telegram.envoyer" in D.effectif(GROUPES, ["petits"], ["telegram.envoyer"])
-    assert "serveur.etat" not in D.effectif(GROUPES, ["serveur"], ["serveur.etat"], ["serveur.etat"])
-    assert D.effectif(GROUPES, []) == set()
-    assert D.effectif(GROUPES, ["inconnu"]) == set()
+def test_groupes_par_defaut():
+    g = D.GROUPES_DEFAUT
+    assert list(g) == ["admin", "foyer", "exterieur"] and D.GROUPE_PAR_DEFAUT == "foyer"
+    assert set(g["exterieur"]["permissions"]) < set(g["foyer"]["permissions"])
+    assert not {p for p in g["foyer"]["permissions"] if p.startswith(("serveur.", "telegram."))}
 
 
-def test_boucle_coupee_et_detectee():
-    g = {"a": {"parent": "b", "permissions": ["maison.voir"]}, "b": {"parent": "a", "permissions": ["agenda.lire"]}}
-    assert D.effectif_groupe(g, "a") == {"maison.voir", "agenda.lire"}                   # pas de boucle infinie
-    assert D.cree_une_boucle(GROUPES, "famille", "petits") and not D.cree_une_boucle(GROUPES, "petits", "serveur")
-
-
-def test_permission_inconnue_refusee():
-    with pytest.raises(D.DroitInvalide):
-        D.valider(["serveur.tout"])
-    assert D.valider(["agenda.lire", "agenda.lire"]) == ["agenda.lire"]
-
-
-def test_catalogue_complet_et_categories():
-    ids = [p["id"] for r in D.catalogue() for p in r["permissions"]]
-    assert len(ids) == len(set(ids)) == len(D.PERMISSIONS)
-    assert all(f"maison.piloter.{c}" in ids for c in D.CATEGORIES)
-    assert D.interdits({"maison.piloter.lumieres"}) == ["chauffage", "medias", "prises", "ventilateurs", "volets"]
-
-
-# --- comptes : groupes par défaut, migration, administration -----------------------------------------
 def sec_avec_lea(tmp_path) -> Securite:
     sec = Securite(SecuriteConfig(totp_obligatoire=False), tmp_path)
     sec.creer_premier(MDP)
@@ -72,19 +50,43 @@ def sec_avec_lea(tmp_path) -> Securite:
     return sec
 
 
-def test_groupes_par_defaut_selon_le_type(tmp_path):
+def test_un_groupe_par_personne(tmp_path):
     sec = sec_avec_lea(tmp_path)
-    assert sec.groupes_de("lea") == ["adultes"]
-    adulte = sec.permissions("lea")
-    assert {"agenda.ecrire", "automatismes.regles", "maison.piloter.chauffage", "assistant.web"} <= adulte
-    assert not adulte & {"serveur.etat", "telegram.envoyer", "maison.historique", "automatismes.habitudes"}
-    sec.definir_profil("lea", {"type": "enfant"})
-    enfant = sec.permissions("lea")
-    assert sec.groupes_de("lea") == ["enfants"] and enfant < adulte
-    assert not enfant & {"maison.piloter.chauffage", "agenda.ecrire", "automatismes.regles", "memoire.foyer"}
+    assert sec.groupe_de("principal") == "admin" and sec.groupe_de("lea") == "foyer"
+    foyer = sec.permissions("lea")
+    assert {"agenda.ecrire", "automatismes.regles", "maison.piloter.chauffage", "assistant.web"} <= foyer
+    assert not foyer & {"serveur.etat", "telegram.envoyer", "maison.historique", "automatismes.habitudes"}
+    sec.definir_droits("lea", groupe="exterieur")
+    assert sec.permissions("lea") < foyer and not sec.peut("lea", "agenda.lire")
     assert sec.permissions("principal") == set(D.PERMISSIONS) and sec.peut("machine", "serveur.redemarrer")
+    assert sec.profil("lea")["type"] == "adulte"
+    sec.enregistrer_groupe("", "Enfants", ["maison.voir", "maison.piloter.lumieres"], enfant=True)
+    sec.definir_droits("lea", groupe="enfants")
+    assert sec.profil("lea")["type"] == "enfant" and sec.profil("lea")["interdits"] == [
+        "chauffage", "medias", "prises", "ventilateurs", "volets"]
     with pytest.raises(D.DroitInvalide):
         sec.peut("lea", "faute.de.frappe")
+
+
+def test_migration_depuis_les_groupes_et_sous_groupes(tmp_path):
+    import json
+    (tmp_path / "securite.json").write_text(json.dumps({
+        "groupes": {"adultes": {"nom": "Adultes", "parent": "", "permissions": ["maison.voir", "agenda.lire"], "retraits": []},
+                    "enfants": {"nom": "Enfants", "parent": "adultes", "permissions": [], "retraits": ["agenda.lire"]},
+                    "ados": {"nom": "Ados", "parent": "enfants", "permissions": ["assistant.web"], "retraits": []}},
+        "comptes": {"principal": {"nom": "Principal", "mdp": "x", "admin": True},
+                    "lea": {"nom": "Léa", "mdp": "x", "groupes": ["adultes"], "retraits": ["maison.voir"]},
+                    "tom": {"nom": "Tom", "mdp": "x", "groupes": ["ados"]},
+                    "zoe": {"nom": "Zoé", "mdp": "x", "profil": {"type": "enfant"}}}}), encoding="utf-8")
+    sec = Securite(SecuriteConfig(), tmp_path)
+    assert sec.groupe_de("principal") == "admin" and sec.groupe_de("lea") == "foyer"
+    assert "maison.voir" not in sec.permissions("lea")                       # ses exceptions sont gardées
+    assert sec.groupe_de("tom") == "ados" and sec.groupes["ados"]["permissions"] == ["assistant.web", "maison.voir"]
+    assert sec.groupe_de("zoe") == "enfants" and sec.profil("zoe")["type"] == "enfant"
+    assert {"admin", "foyer", "exterieur", "ados", "enfants"} == set(sec.groupes)
+    assert all("parent" not in g and "retraits" not in g for g in sec.groupes.values())
+    sec2 = Securite(SecuriteConfig(), tmp_path)                              # migré une seule fois
+    assert sec2.groupe_de("tom") == "ados"
 
 
 def test_migration_des_anciens_droits(tmp_path):
@@ -101,27 +103,34 @@ def test_migration_des_anciens_droits(tmp_path):
 
 def test_groupes_crud_et_garde_fous(tmp_path):
     sec = sec_avec_lea(tmp_path)
-    gid = sec.enregistrer_groupe("", "Ados", "enfants", ["assistant.web"], [])
-    assert gid == "ados" and sec.groupes["ados"]["parent"] == "enfants"
+    gid = sec.enregistrer_groupe("", "Amis", ["assistant.web"])
+    assert gid == "amis" and sec.groupes["amis"]["permissions"] == ["assistant.web"]
     with pytest.raises(D.DroitInvalide):
-        sec.enregistrer_groupe("adultes", "Adultes", "ados")             # boucle adultes > enfants > ados
+        sec.enregistrer_groupe("admin", "Admin", [])                     # Admin ne se modifie pas
     with pytest.raises(D.DroitInvalide):
-        sec.enregistrer_groupe("", "X", "inconnu")
+        sec.enregistrer_groupe("", "X", ["pas.une.permission"])
+    for fixe in ("admin", "foyer"):
+        with pytest.raises(D.DroitInvalide):
+            sec.supprimer_groupe(fixe)
+    sec.definir_droits("lea", groupe="amis")
     with pytest.raises(D.DroitInvalide):
-        sec.supprimer_groupe("enfants")                                   # a un sous-groupe
-    sec.definir_droits("lea", groupes=["ados"])
+        sec.supprimer_groupe("amis")                                      # a une membre
     with pytest.raises(D.DroitInvalide):
-        sec.supprimer_groupe("ados")                                      # a une membre
-    with pytest.raises(D.DroitInvalide):
-        sec.definir_droits("lea", groupes=["inconnu"])
+        sec.definir_droits("lea", groupe="inconnu")
     with pytest.raises(D.DroitInvalide):
         sec.definir_droits("lea", permissions=["pas.une.permission"])
-    assert sec.groupes_de("lea") == ["ados"]                              # rien changé après une erreur
+    assert sec.groupe_de("lea") == "amis"                                 # rien changé après une erreur
     with pytest.raises(AccesRefuse):
-        sec.definir_admin("principal", False)                             # dernier administrateur
-    sec.definir_admin("lea", True)
-    sec.definir_admin("principal", False)
+        sec.definir_droits("principal", groupe="foyer")                   # dernier administrateur
+    with pytest.raises(AccesRefuse):
+        sec.supprimer("principal")
+    sec.definir_droits("lea", groupe="admin")
+    sec.definir_droits("principal", groupe="foyer")
     assert sec.est_admin("lea") and not sec.est_admin("principal")
+    sec.definir_droits("principal", groupe="admin")
+    sec.definir_droits("lea", groupe="exterieur")
+    sec.supprimer_groupe("amis")
+    assert "amis" not in sec.groupes
 
 
 # --- outils de Claude ----------------------------------------------------------------------------------
@@ -356,24 +365,28 @@ def test_rappel_sonne_seulement_chez_son_auteur(maison_de_test, monkeypatch):
 def test_administration_des_droits_par_api(maison_de_test):
     _, sec, _, lea, admin, _ = maison_de_test
     d = admin.get("/api/droits").json()
-    assert {g["id"] for g in d["groupes"]} == {"adultes", "enfants"} and d["catalogue"]
-    r = admin.post("/api/groupes", json={"nom": "Ados", "parent": "enfants", "permissions": ["assistant.web"]})
+    assert [g["id"] for g in d["groupes"]] == ["admin", "foyer", "exterieur"] and d["catalogue"]
+    assert next(g for g in d["groupes"] if g["id"] == "admin")["fige"]
+    r = admin.post("/api/groupes", json={"nom": "Ados", "permissions": ["assistant.web"], "enfant": True})
     assert r.status_code == 200 and r.json()["id"] == "ados"
     assert admin.post("/api/groupes", json={"nom": "Ados"}).status_code == 409
+    assert admin.post("/api/groupes", json={"nom": "Admin"}).status_code == 409
     assert admin.post("/api/groupes", json={"nom": "Y", "permissions": ["n.importe.quoi"]}).status_code == 422
-    assert admin.put("/api/groupes/adultes", json={"nom": "Adultes", "parent": "ados"}).status_code == 422   # boucle
-    c = admin.post("/api/comptes/lea/droits", json={"groupes": ["ados"], "permissions": ["serveur.etat"],
-                                                     "retraits": ["agenda.lire", "agenda.personnel"]}).json()
-    assert c["groupes"] == ["ados"] and "serveur.etat" in c["effectives"] and "agenda.lire" not in c["effectives"]
+    assert admin.put("/api/groupes/admin", json={"nom": "Admin", "permissions": []}).status_code == 422
+    c = admin.post("/api/comptes/lea/droits", json={"groupe": "ados", "permissions": ["serveur.etat"],
+                                                     "retraits": []}).json()
+    assert c["groupe"] == "ados" and c["type"] == "enfant" and "serveur.etat" in c["effectives"]
     assert lea.get("/api/docker").status_code == 200 and lea.get("/api/agenda").status_code == 403
-    assert admin.post("/api/comptes/principal/droits", json={"admin": False}).status_code == 409
+    assert admin.post("/api/comptes/principal/droits", json={"groupe": "foyer"}).status_code == 409
     assert admin.delete("/api/groupes/ados").status_code == 422                       # Léa en est membre
     det = admin.get("/api/comptes/lea/detail").json()
     assert set(det) == {"rappels", "regles", "routines", "journal"}
-    inv = admin.post("/api/comptes", json={"nom": "Tom", "groupes": ["enfants"]}).json()
-    assert inv["id"] == "tom" and sec.groupes_de("tom") == ["enfants"]
-    assert admin.post("/api/comptes", json={"nom": "Zoé", "groupes": ["inconnu"]}).status_code == 422
+    inv = admin.post("/api/comptes", json={"nom": "Tom", "groupe": "exterieur"}).json()
+    assert inv["id"] == "tom" and sec.groupe_de("tom") == "exterieur"
+    assert admin.post("/api/comptes", json={"nom": "Zoé", "groupe": "inconnu"}).status_code == 422
     assert "zoe" not in sec.comptes
+    admin.post("/api/comptes/lea/droits", json={"groupe": "admin"})
+    assert lea.get("/api/droits").status_code == 200                                  # Admin = gère les comptes
 
 
 def test_question_generale_sans_permission_web(maison_de_test):

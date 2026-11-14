@@ -38,6 +38,7 @@
   summary { cursor:pointer; font-size:.88rem; color:var(--accent); }
   .rubrique { margin-top:10px; }
   .rubrique h3 { margin:0 0 4px; font-size:.78rem; text-transform:uppercase; letter-spacing:.06em; color:var(--muted); font-weight:600; }
+  label.perm { cursor:pointer; }
   .perm { display:grid; grid-template-columns:1fr auto; gap:8px; align-items:center; padding:4px 0; font-size:.86rem;
           border-bottom:1px solid color-mix(in srgb, var(--bord) 50%, transparent); }
   .perm .nom small { display:block; color:var(--muted); font-size:.72rem; font-family:ui-monospace,monospace; }
@@ -70,8 +71,7 @@
       <h2>Inviter quelqu'un</h2>
       <div class="rangee">
         <input type="text" id="nvNom" maxlength="40" placeholder="Prénom" style="flex:1;min-width:140px">
-        <select id="nvGroupe" title="Groupe de départ"></select>
-        <label class="aide"><input type="checkbox" id="nvAdmin"> administrateur</label>
+        <select id="nvGroupe" title="Son groupe"></select>
         <button type="button" class="b principal" id="nvInviter">Inviter</button>
       </div>
       <p class="msg" id="nvMsg"></p>
@@ -82,10 +82,10 @@
   <section id="groupes" hidden>
     <div class="carte">
       <h2>Comment ça marche</h2>
-      <p class="aide" style="margin-top:6px">Un groupe <b>donne</b> des droits et peut en <b>retirer</b>. Un sous-groupe reprend ceux de son parent, puis ajoute ou retire les siens. Une personne cumule ses groupes, puis ses propres réglages ont le dernier mot. Un administrateur a toujours tout.</p>
+      <p class="aide" style="margin-top:6px">Chaque personne est dans <b>un</b> groupe, qui lui donne ses droits. <b>Admin</b> a tout (y compris gérer les comptes et les réglages de la maison) et ne se modifie pas. <b>Foyer</b> accueille les nouveaux comptes. Une personne peut avoir quelques exceptions, sur sa fiche.</p>
       <div class="rangee">
         <input type="text" id="ngNom" maxlength="40" placeholder="Nom du nouveau groupe" style="flex:1;min-width:140px">
-        <select id="ngParent" title="Sous-groupe de"></select>
+        <select id="ngModele" title="Partir des droits de"></select>
         <button type="button" class="b principal" id="ngCreer">Créer</button>
       </div>
       <p class="msg" id="ngMsg"></p>
@@ -110,13 +110,15 @@ async function api(url, methode, corps) {
   const r = await fetch(url, methode ? {method: methode, headers: {'Content-Type': 'application/json'},
     body: corps === undefined ? undefined : JSON.stringify(corps)} : {cache: 'no-store'});
   let o = {}; try { o = await r.json(); } catch (e) {}
-  if (r.status === 401 || r.status === 403 && !methode) { location.href = '/'; throw new Error('accès refusé'); }
+  if (r.status === 401 || (r.status === 403 && !methode)) { location.href = '/'; throw new Error('accès refusé'); }
   if (!r.ok) throw new Error(typeof o.detail === 'string' ? o.detail : 'erreur ' + r.status);
   return o;
 }
 const msg = (zone, texte, ok) => { zone.textContent = texte; zone.className = 'msg ' + (ok ? 'ok' : 'ko'); };
 const quand = d => d ? new Date(d).toLocaleString('fr-FR', {dateStyle: 'short', timeStyle: 'short'}) : 'jamais';
-const nomGroupe = id => (D.groupes.find(g => g.id === id) || {}).nom || id;
+const groupe = id => D.groupes.find(g => g.id === id) || {nom: id, permissions: []};
+const total = () => D.catalogue.flatMap(r => r.permissions).length;
+const garder = (d, cle) => { d.open = ouverts.has(cle); d.ontoggle = () => d.open ? ouverts.add(cle) : ouverts.delete(cle); return d; };
 
 for (const b of document.querySelectorAll('[data-onglet]')) b.onclick = () => {
   for (const x of document.querySelectorAll('[data-onglet]')) x.setAttribute('aria-pressed', String(x === b));
@@ -124,8 +126,23 @@ for (const b of document.querySelectorAll('[data-onglet]')) b.onclick = () => {
   $('groupes').hidden = b.dataset.onglet !== 'groupes';
 };
 
-// Grille des permissions : pour chaque droit, « selon les groupes » (avec ce que ça donne), « toujours » ou « jamais ».
-function grille(herite, donnes, retires, libelleHerite, enregistrer) {
+// Droits d'un groupe : une case par droit, rangées par rubrique.
+function cases(coches, desactive, changer) {
+  const bloc = el('div');
+  for (const r of D.catalogue) {
+    const rub = el('div', {class: 'rubrique'}, el('h3', {}, r.rubrique));
+    for (const p of r.permissions) {
+      const cb = el('input', {type: 'checkbox', checked: coches.includes(p.id), disabled: desactive});
+      cb.onchange = () => changer(p.id, cb.checked, cb);
+      rub.append(el('label', {class: 'perm'}, el('div', {class: 'nom'}, p.libelle, el('small', {}, p.id)), cb));
+    }
+    bloc.append(rub);
+  }
+  return bloc;
+}
+
+// Exceptions d'une personne : « comme son groupe » (oui / non), « toujours » ou « jamais ».
+function exceptions(herite, donnes, retires, enregistrer) {
   const bloc = el('div');
   for (const r of D.catalogue) {
     const rub = el('div', {class: 'rubrique'}, el('h3', {}, r.rubrique));
@@ -133,7 +150,7 @@ function grille(herite, donnes, retires, libelleHerite, enregistrer) {
       const etat = donnes.includes(p.id) ? 'donne' : retires.includes(p.id) ? 'retire' : '';
       const s = el('select', {class: etat, 'aria-label': p.libelle});
       const h = herite.has(p.id);
-      s.append(el('option', {value: ''}, `${libelleHerite} (${h ? 'oui' : 'non'})`),
+      s.append(el('option', {value: ''}, `Comme son groupe (${h ? 'oui' : 'non'})`),
                el('option', {value: 'donne'}, 'Toujours'), el('option', {value: 'retire'}, 'Jamais'));
       s.value = etat;
       s.onchange = () => { s.className = s.value; enregistrer(p.id, s.value, s); };
@@ -147,34 +164,23 @@ function grille(herite, donnes, retires, libelleHerite, enregistrer) {
   return bloc;
 }
 
-function heriteDesGroupes(ids) {
-  const s = new Set();
-  for (const id of ids) for (const p of (D.groupes.find(g => g.id === id) || {}).effectives || []) s.add(p);
-  return s;
-}
-
 function cartePersonne(c) {
   const z = el('p', {class: 'msg'});
   const carte = el('div', {class: 'carte'});
-  const titre = el('h2', {}, c.nom, c.admin ? el('span', {class: 'pastille admin'}, 'administrateur') : null,
-    el('span', {class: 'pastille'}, c.type), ...(c.admin ? [] : c.groupes.map(g => el('span', {class: 'pastille'}, nomGroupe(g)))));
-  const etat = !c.actif ? 'invitation en attente' : (c.totp ? 'code téléphone actif' : 'code téléphone à configurer')
-    + ' · dernière connexion : ' + quand(c.derniere_connexion);
-  carte.append(titre, el('p', {class: 'sous'}, `identifiant ${c.id} · ${etat} · ${c.effectives.length} droit(s) sur ${D.catalogue.flatMap(r => r.permissions).length}`));
+  const g = groupe(c.groupe);
+  const nbExc = c.permissions_propres.length + c.retraits.length;
+  carte.append(el('h2', {}, c.nom, el('span', {class: 'pastille' + (c.groupe === 'admin' ? ' admin' : '')}, g.nom),
+                  nbExc && c.groupe !== 'admin' ? el('span', {class: 'pastille'}, nbExc + ' exception(s)') : null),
+    el('p', {class: 'sous'}, `identifiant ${c.id} · ${!c.actif ? 'invitation en attente' : (c.totp ? 'code téléphone actif' : 'code téléphone à configurer')
+      + ' · dernière connexion : ' + quand(c.derniere_connexion)} · ${c.effectives.length} droit(s) sur ${total()}`));
 
-  const role = el('select', {title: 'Rôle'}, el('option', {value: 'non'}, 'Personne'), el('option', {value: 'oui'}, 'Administrateur'));
-  role.value = c.admin ? 'oui' : 'non';
-  role.disabled = c.id === D.moi;
-  role.onchange = async () => {
-    if (role.value === 'oui' && !confirm(`${c.nom} pourra tout faire, y compris gérer les comptes. Continuer ?`)) { role.value = 'non'; return; }
-    try { await api(`/api/comptes/${encodeURIComponent(c.id)}/droits`, 'POST', {admin: role.value === 'oui'}); await charger(); }
-    catch (e) { msg(z, e.message, false); role.value = c.admin ? 'oui' : 'non'; }
-  };
-  const type = el('select', {title: 'Type (ton des réponses ; groupe par défaut)'}, el('option', {value: 'adulte'}, 'Adulte'), el('option', {value: 'enfant'}, 'Enfant'));
-  type.value = c.type;
-  type.onchange = async () => {
-    try { await api(`/api/comptes/${encodeURIComponent(c.id)}/profil`, 'POST', {type: type.value}); await charger(); }
-    catch (e) { msg(z, e.message, false); }
+  const choix = el('select', {title: 'Son groupe'}, ...D.groupes.map(x => el('option', {value: x.id}, x.nom)));
+  choix.value = c.groupe;
+  choix.disabled = c.id === D.moi;          // on ne se retire pas soi-même du groupe Admin
+  choix.onchange = async () => {
+    if (choix.value === 'admin' && !confirm(`${c.nom} pourra tout faire, y compris gérer les comptes. Continuer ?`)) { choix.value = c.groupe; return; }
+    try { await api(`/api/comptes/${encodeURIComponent(c.id)}/droits`, 'POST', {groupe: choix.value}); await charger(); }
+    catch (e) { msg(z, e.message, false); choix.value = c.groupe; }
   };
   const reinv = el('button', {type: 'button', class: 'b'}, c.actif ? 'Réinitialiser' : 'Nouveau lien');
   reinv.onclick = async () => {
@@ -182,7 +188,7 @@ function cartePersonne(c) {
     try { montrerLien(z, c.nom, (await api(`/api/comptes/${encodeURIComponent(c.id)}/invitation`, 'POST', {})).lien); }
     catch (e) { msg(z, e.message, false); }
   };
-  const rangee = el('div', {class: 'rangee'}, el('span', {class: 'aide'}, 'Rôle'), role, el('span', {class: 'aide'}, 'Type'), type, reinv);
+  const rangee = el('div', {class: 'rangee'}, el('span', {class: 'aide'}, 'Groupe'), choix, reinv);
   if (c.id !== D.moi) {
     const suppr = el('button', {type: 'button', class: 'b danger'}, 'Supprimer');
     suppr.onclick = async () => {
@@ -194,37 +200,18 @@ function cartePersonne(c) {
   }
   carte.append(rangee, z);
 
-  if (c.admin) {
-    carte.append(el('p', {class: 'aide', style: 'margin-top:8px'}, 'Un administrateur a tous les droits et gère les comptes et les réglages.'));
-  } else {
-    const enregistrerDroits = async (corps, select) => {
-      try { await api(`/api/comptes/${encodeURIComponent(c.id)}/droits`, 'POST', corps); msg(z, 'Enregistré.', true); await charger(); }
+  if (c.groupe !== 'admin') {
+    const enregistrer = async (perm, valeur, select) => {
+      const donnes = new Set(c.permissions_propres), retires = new Set(c.retraits);
+      donnes.delete(perm); retires.delete(perm);
+      if (valeur === 'donne') donnes.add(perm);
+      if (valeur === 'retire') retires.add(perm);
+      try { await api(`/api/comptes/${encodeURIComponent(c.id)}/droits`, 'POST', {permissions: [...donnes], retraits: [...retires]}); await charger(); }
       catch (e) { msg(z, e.message, false); if (select) select.value = ''; }
     };
-    // groupes
-    const choix = el('div', {class: 'groupes-choix'});
-    for (const g of D.groupes) {
-      const cb = el('input', {type: 'checkbox', checked: c.groupes.includes(g.id)});
-      cb.onchange = () => enregistrerDroits({groupes: [...choix.querySelectorAll('input')].filter(x => x.checked).map(x => x.dataset.id)});
-      cb.dataset.id = g.id;
-      choix.append(el('label', {}, cb, g.nom + (g.parent ? ` (sous-groupe de ${nomGroupe(g.parent)})` : '')));
-    }
-    const dGroupes = el('details', {}, el('summary', {}, 'Groupes'), choix);
-    // droits un par un
-    const dDroits = el('details', {}, el('summary', {}, 'Droits un par un'),
-      el('p', {class: 'aide', style: 'margin-top:6px'}, '« Selon ses groupes » suit les groupes cochés ; « Toujours » et « Jamais » ont le dernier mot pour cette personne.'),
-      grille(heriteDesGroupes(c.groupes), c.permissions_propres, c.retraits, 'Selon ses groupes', (perm, valeur, select) => {
-        const donnes = new Set(c.permissions_propres), retires = new Set(c.retraits);
-        donnes.delete(perm); retires.delete(perm);
-        if (valeur === 'donne') donnes.add(perm);
-        if (valeur === 'retire') retires.add(perm);
-        enregistrerDroits({permissions: [...donnes], retraits: [...retires]}, select);
-      }));
-    carte.append(dGroupes, dDroits);
-    for (const [d, cle] of [[dGroupes, 'g'], [dDroits, 'd']]) {
-      d.open = ouverts.has(c.id + cle);
-      d.ontoggle = () => d.open ? ouverts.add(c.id + cle) : ouverts.delete(c.id + cle);
-    }
+    carte.append(garder(el('details', {}, el('summary', {}, `Exceptions pour ${c.nom}` + (nbExc ? ` (${nbExc})` : '')),
+      el('p', {class: 'aide', style: 'margin-top:6px'}, `Par défaut, ${c.nom} a les droits du groupe ${g.nom}. « Toujours » ou « Jamais » ne vaut que pour cette personne.`),
+      exceptions(new Set(g.permissions), c.permissions_propres, c.retraits, enregistrer)), c.id + ':exc'));
   }
   // ce qui lui appartient, et son journal
   const corps = el('div');
@@ -252,38 +239,38 @@ function carteGroupe(g) {
   const z = el('p', {class: 'msg'});
   const carte = el('div', {class: 'carte'});
   const membres = g.membres.map(m => (D.comptes.find(c => c.id === m) || {}).nom || m);
-  carte.append(el('h2', {}, g.nom, g.parent ? el('span', {class: 'pastille'}, 'sous-groupe de ' + nomGroupe(g.parent)) : null),
-    el('p', {class: 'sous'}, `${g.effectives.length} droit(s) · membres : ${membres.join(', ') || 'personne'}`));
+  carte.append(el('h2', {}, g.nom, g.fige ? el('span', {class: 'pastille admin'}, 'tous les droits') : null,
+                  g.enfant ? el('span', {class: 'pastille'}, 'parle comme à un enfant') : null),
+    el('p', {class: 'sous'}, `${g.permissions.length} droit(s) sur ${total()} · membres : ${membres.join(', ') || 'personne'}`));
+  if (g.fige) {
+    carte.append(el('p', {class: 'aide', style: 'margin-top:8px'}, 'Tout, y compris gérer les comptes, les groupes et les réglages de la maison. Ce groupe ne se modifie pas et garde au moins une personne.'));
+    return carte;
+  }
   const nom = el('input', {type: 'text', value: g.nom, maxLength: 40});
-  const parent = el('select', {title: 'Sous-groupe de'}, el('option', {value: ''}, 'Groupe principal'),
-    ...D.groupes.filter(x => x.id !== g.id).map(x => el('option', {value: x.id}, 'Sous-groupe de ' + x.nom)));
-  parent.value = g.parent || '';
-  const enregistrer = async (maj, select) => {
-    const corps = {nom: nom.value.trim() || g.nom, parent: parent.value, permissions: g.permissions, retraits: g.retraits, ...maj};
-    try { await api(`/api/groupes/${encodeURIComponent(g.id)}`, 'PUT', corps); msg(z, 'Enregistré.', true); await charger(); }
-    catch (e) { msg(z, e.message, false); if (select) select.value = ''; parent.value = g.parent || ''; }
-  };
-  nom.onchange = () => enregistrer({});
-  parent.onchange = () => enregistrer({});
-  const suppr = el('button', {type: 'button', class: 'b danger'}, 'Supprimer');
-  suppr.onclick = async () => {
-    if (!confirm(`Supprimer le groupe ${g.nom} ?`)) return;
-    try { await api(`/api/groupes/${encodeURIComponent(g.id)}`, 'DELETE'); await charger(); }
+  const enfant = el('input', {type: 'checkbox', checked: g.enfant});
+  const enregistrer = async maj => {
+    const corps = {nom: nom.value.trim() || g.nom, enfant: enfant.checked, permissions: g.permissions, ...maj};
+    try { await api(`/api/groupes/${encodeURIComponent(g.id)}`, 'PUT', corps); await charger(); }
     catch (e) { msg(z, e.message, false); }
   };
-  carte.append(el('div', {class: 'rangee'}, nom, parent, suppr), z);
-  const herite = new Set(g.parent ? (D.groupes.find(x => x.id === g.parent) || {}).effectives || [] : []);
-  const d = el('details', {}, el('summary', {}, 'Droits du groupe'),
-    grille(herite, g.permissions, g.retraits, g.parent ? 'Comme ' + nomGroupe(g.parent) : 'Non donné', (perm, valeur, select) => {
-      const donnes = new Set(g.permissions), retires = new Set(g.retraits);
-      donnes.delete(perm); retires.delete(perm);
-      if (valeur === 'donne') donnes.add(perm);
-      if (valeur === 'retire') retires.add(perm);
-      enregistrer({permissions: [...donnes], retraits: [...retires]}, select);
-    }));
-  d.open = ouverts.has('groupe:' + g.id);
-  d.ontoggle = () => d.open ? ouverts.add('groupe:' + g.id) : ouverts.delete('groupe:' + g.id);
-  carte.append(d);
+  nom.onchange = () => enregistrer({});
+  enfant.onchange = () => enregistrer({});
+  const rangee = el('div', {class: 'rangee'}, nom, el('label', {class: 'aide'}, enfant, ' Parler comme à un enfant'));
+  if (g.id !== 'foyer') {
+    const suppr = el('button', {type: 'button', class: 'b danger'}, 'Supprimer');
+    suppr.onclick = async () => {
+      if (!confirm(`Supprimer le groupe ${g.nom} ?`)) return;
+      try { await api(`/api/groupes/${encodeURIComponent(g.id)}`, 'DELETE'); await charger(); }
+      catch (e) { msg(z, e.message, false); }
+    };
+    rangee.append(suppr);
+  }
+  carte.append(rangee, z, garder(el('details', {}, el('summary', {}, 'Droits du groupe'),
+    cases(g.permissions, false, (perm, coche) => {
+      const p = new Set(g.permissions);
+      if (coche) p.add(perm); else p.delete(perm);
+      enregistrer({permissions: [...p]});
+    })), 'groupe:' + g.id));
   return carte;
 }
 
@@ -298,29 +285,30 @@ async function charger() {
   catch (e) { $('listePersonnes').replaceChildren(el('p', {class: 'msg ko'}, e.message)); return; }
   $('listePersonnes').replaceChildren(...D.comptes.map(cartePersonne));
   $('listeGroupes').replaceChildren(...D.groupes.map(carteGroupe));
-  const opts = () => D.groupes.map(g => el('option', {value: g.id}, g.nom));
   const g0 = $('nvGroupe').value;
-  $('nvGroupe').replaceChildren(...opts());
-  $('nvGroupe').value = g0 || 'adultes';
-  const p0 = $('ngParent').value;
-  $('ngParent').replaceChildren(el('option', {value: ''}, 'Groupe principal'), ...D.groupes.map(g => el('option', {value: g.id}, 'Sous-groupe de ' + g.nom)));
-  $('ngParent').value = p0;
+  $('nvGroupe').replaceChildren(...D.groupes.map(g => el('option', {value: g.id}, g.nom)));
+  $('nvGroupe').value = D.groupes.some(g => g.id === g0) ? g0 : 'foyer';
+  const m0 = $('ngModele').value;
+  $('ngModele').replaceChildren(el('option', {value: ''}, 'Partir de zéro'),
+    ...D.groupes.map(g => el('option', {value: g.id}, 'Partir des droits de ' + g.nom)));
+  $('ngModele').value = m0;
 }
 
 $('nvInviter').onclick = async () => {
   const nom = $('nvNom').value.trim();
   if (!nom) { msg($('nvMsg'), 'Indique un prénom.', false); return; }
   try {
-    const o = await api('/api/comptes', 'POST', {nom, admin: $('nvAdmin').checked, groupes: [$('nvGroupe').value]});
-    $('nvNom').value = ''; $('nvAdmin').checked = false;
+    const o = await api('/api/comptes', 'POST', {nom, groupe: $('nvGroupe').value});
+    $('nvNom').value = '';
     montrerLien($('nvMsg'), nom, o.lien); await charger();
   } catch (e) { msg($('nvMsg'), e.message, false); }
 };
 $('ngCreer').onclick = async () => {
   const nom = $('ngNom').value.trim();
   if (!nom) { msg($('ngMsg'), 'Indique un nom.', false); return; }
+  const modele = D.groupes.find(g => g.id === $('ngModele').value);
   try {
-    await api('/api/groupes', 'POST', {nom, parent: $('ngParent').value, permissions: [], retraits: []});
+    await api('/api/groupes', 'POST', {nom, permissions: modele ? modele.permissions : [], enfant: !!(modele && modele.enfant)});
     $('ngNom').value = ''; msg($('ngMsg'), `Groupe ${nom} créé : règle ses droits ci-dessous.`, true); await charger();
   } catch (e) { msg($('ngMsg'), e.message, false); }
 };

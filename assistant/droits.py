@@ -1,12 +1,10 @@
-"""Droits fins par personne : un catalogue de permissions (une par outil ou capacité), des groupes et
-sous-groupes, et des réglages propres à chaque compte.
+"""Droits fins par personne : un catalogue de permissions (une par outil ou capacité) et des groupes.
 
-Calcul (fonctions pures, testées à part) :
-- un groupe donne ses `permissions` et retire ses `retraits`, après avoir hérité de son `parent` :
-  effectif(groupe) = (effectif(parent) ∪ permissions) − retraits ;
-- une personne cumule ses groupes, puis ses propres ajouts et retraits (le dernier mot est le sien) :
-  effectif(compte) = (∪ effectif(groupes) ∪ permissions) − retraits ;
-- un administrateur a tout (et lui seul gère comptes, groupes et réglages de l'assistant).
+Simple à lire : chaque personne est dans UN groupe (Admin, Foyer, Extérieur, ou un groupe créé ensuite).
+- le groupe « Admin » a tout, y compris gérer les comptes et les réglages de la maison ; il ne se modifie pas ;
+- un autre groupe donne ses `permissions`, et peut « parler comme à un enfant » ;
+- quelques exceptions par personne restent possibles (ajouts, retraits), elles ont le dernier mot :
+  effectif(personne) = (permissions du groupe ∪ ajouts) − retraits.
 
 Les catégories d'appareils (« maison.piloter.lumieres »…) remplacent les anciens « interdits ».
 """
@@ -60,15 +58,18 @@ RUBRIQUES: list[tuple[str, list[tuple[str, str]]]] = [
 PERMISSIONS: dict[str, str] = {p: lib for _, liste in RUBRIQUES for p, lib in liste}
 CATEGORIES = ["lumieres", "prises", "volets", "chauffage", "medias", "ventilateurs"]
 
-# Groupes créés au premier démarrage (modifiables ensuite). « Enfants » est un sous-groupe de « Adultes ».
+# Groupes créés au premier démarrage (modifiables ensuite, sauf Admin ; d'autres peuvent être ajoutés).
+ADMIN = "admin"
 TOUT_SAUF_SERVEUR = [p for p in PERMISSIONS if not p.startswith(("serveur.", "telegram.", "automatismes.habitudes",
                                                                   "maison.historique"))]
+EXTERIEUR = ["maison.voir", "maison.piloter.lumieres", "maison.piloter.medias", "rappels.utiliser",
+             "memoire.utiliser", "assistant.web"]
 GROUPES_DEFAUT: dict[str, dict] = {
-    "adultes": {"nom": "Adultes", "parent": "", "permissions": TOUT_SAUF_SERVEUR, "retraits": []},
-    "enfants": {"nom": "Enfants", "parent": "adultes", "permissions": [],
-                "retraits": ["maison.piloter.chauffage", "agenda.ecrire", "automatismes.regles",
-                             "automatismes.routines", "memoire.foyer"]},
+    ADMIN: {"nom": "Admin", "permissions": list(PERMISSIONS), "enfant": False},
+    "foyer": {"nom": "Foyer", "permissions": TOUT_SAUF_SERVEUR, "enfant": False},
+    "exterieur": {"nom": "Extérieur", "permissions": EXTERIEUR, "enfant": False},
 }
+GROUPE_PAR_DEFAUT = "foyer"
 
 
 class DroitInvalide(ValueError):
@@ -90,31 +91,12 @@ def ident_groupe(nom: str) -> str:
     return re.sub(r"[^a-z0-9]+", "-", t).strip("-")[:32]
 
 
-def ancetres(groupes: dict[str, dict], gid: str) -> list[str]:
-    """gid, son parent, le parent du parent… (une boucle est coupée)."""
-    vus: list[str] = []
-    while gid and gid in groupes and gid not in vus:
-        vus.append(gid)
-        gid = groupes[gid].get("parent") or ""
-    return vus
-
-
-def effectif_groupe(groupes: dict[str, dict], gid: str) -> set[str]:
-    perms: set[str] = set()
-    for g in reversed(ancetres(groupes, gid)):          # du plus haut au groupe lui-même
-        perms = (perms | set(groupes[g].get("permissions") or [])) - set(groupes[g].get("retraits") or [])
-    return perms
-
-
-def effectif(groupes: dict[str, dict], membre_de: list[str], permissions=(), retraits=()) -> set[str]:
-    perms: set[str] = set()
-    for g in membre_de or []:
-        perms |= effectif_groupe(groupes, g)
-    return ((perms | set(permissions or [])) - set(retraits or [])) & set(PERMISSIONS)
-
-
-def cree_une_boucle(groupes: dict[str, dict], gid: str, parent: str) -> bool:
-    return bool(parent) and gid in ancetres(groupes, parent)
+def effectif(groupes: dict[str, dict], groupe: str, permissions=(), retraits=()) -> set[str]:
+    """Droits d'une personne : ceux de son groupe, plus ses ajouts, moins ses retraits. Admin : tout."""
+    if groupe == ADMIN:
+        return set(PERMISSIONS)
+    base = set((groupes.get(groupe) or {}).get("permissions") or [])
+    return ((base | set(permissions or [])) - set(retraits or [])) & set(PERMISSIONS)
 
 
 def interdits(perms: set[str]) -> list[str]:
