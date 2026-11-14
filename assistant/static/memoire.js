@@ -201,7 +201,8 @@
 
   function meta(sv) {
     const m = texte('div', null, 'mem-meta');
-    m.append(texte('span', sv.portee === 'prive' ? 'privé' : 'foyer', 'mem-tag' + (sv.portee === 'prive' ? ' prive' : '')));
+    // privé d'une autre personne (vu par l'administrateur) : à qui il est
+    m.append(texte('span', sv.portee === 'prive' ? 'privé' + (sv.a_moi === false ? ' · ' + sv.auteur : '') : 'foyer', 'mem-tag' + (sv.portee === 'prive' ? ' prive' : '')));
     const qui = sv.origine === 'conversation' ? 'retenu en conversation' + (sv.auteur ? ' avec ' + sv.auteur : '') : 'ajouté' + (sv.auteur ? ' par ' + sv.auteur : '');
     m.append(texte('span', (sv.statut === 'propose' ? 'proposé en conversation' + (sv.auteur ? ' avec ' + sv.auteur : '') : qui) + ' · ' + quand(sv.maj)));
     return m;

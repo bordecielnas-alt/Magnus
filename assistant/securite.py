@@ -23,6 +23,7 @@ import secrets
 import time
 from pathlib import Path
 
+from . import droits as D
 from . import totp
 from .config import SecuriteConfig
 
@@ -32,9 +33,9 @@ DUREE_ETAPE_S = 300            # entre le mot de passe et le code TOTP
 DUREE_INVITATION_S = 7 * 86400
 COMPTE_MACHINE = "machine"
 PROFIL_DEFAUT = {"type": "adulte", "ton": "normal", "consigne": "", "piece": ""}
-# Droits par personne : catégories d'appareils qu'elle ne pilote pas (voir maison.CATEGORIES_DROITS).
-# Tant qu'un administrateur n'a rien choisi, un enfant ne touche pas au chauffage.
-INTERDITS_ENFANT = ["chauffage"]
+# Droits par personne : groupes, sous-groupes, ajouts et retraits propres (voir droits.py).
+# Tant qu'un administrateur n'a rien choisi, le groupe suit le type : « Adultes » ou « Enfants ».
+GROUPE_DU_TYPE = {"adulte": "adultes", "enfant": "enfants"}
 
 
 # --- empreintes -------------------------------------------------------------------------
@@ -125,6 +126,23 @@ class Securite:
                                                    "admin": True, "gen": 1}}
             self._ecrire()
         self._etat.setdefault("comptes", {})
+        if "groupes" not in self._etat:
+            self._etat["groupes"] = {g: {**v, "permissions": list(v["permissions"]), "retraits": list(v["retraits"])}
+                                     for g, v in D.GROUPES_DEFAUT.items()}
+            # anciens droits (« ne pilote pas : … ») : un choix explicite par catégorie, propre au compte
+            for c in self._etat["comptes"].values():
+                anciens = (c.get("profil") or {}).pop("interdits", None)
+                if anciens is not None:
+                    self._choisir_categories(c, anciens)
+            if self.fichier.exists():
+                self._ecrire()
+
+    @staticmethod
+    def _choisir_categories(c: dict, refusees: list[str]) -> None:
+        pil = {f"maison.piloter.{x}" for x in D.CATEGORIES}
+        refus = {f"maison.piloter.{x}" for x in refusees if x in D.CATEGORIES}
+        c["retraits"] = sorted((set(c.get("retraits") or []) - pil) | refus)
+        c["permissions"] = sorted((set(c.get("permissions") or []) - pil) | (pil - refus))
 
     def _cle(self) -> bytes:
         if "cle" not in self._etat:
@@ -219,27 +237,114 @@ class Securite:
     def profil(self, compte: str | None) -> dict:
         """Ton, consigne personnelle, pièce par défaut, type (adulte / enfant) et droits du compte."""
         p = dict(PROFIL_DEFAUT)
-        p.update((self.comptes.get(compte or "") or {}).get("profil") or {})
-        if p.get("interdits") is None:       # jamais choisi : selon le type
-            p["interdits"] = list(INTERDITS_ENFANT) if p["type"] == "enfant" else []
+        p.update({k: v for k, v in ((self.comptes.get(compte or "") or {}).get("profil") or {}).items()
+                  if k in PROFIL_DEFAUT})
+        p["interdits"] = D.interdits(self.permissions(compte)) if compte in self.comptes else []
         return p
 
     def definir_profil(self, compte: str, maj: dict) -> dict:
         c = self.comptes[compte]
-        p = {**PROFIL_DEFAUT, **(c.get("profil") or {})}
+        p = {k: v for k, v in {**PROFIL_DEFAUT, **(c.get("profil") or {})}.items() if k in PROFIL_DEFAUT}
         for cle, val in maj.items():
-            if (cle in PROFIL_DEFAUT or cle == "interdits") and val is not None:
-                p[cle] = sorted(set(val)) if cle == "interdits" else val
+            if cle in PROFIL_DEFAUT and val is not None:
+                p[cle] = val
         c["profil"] = p
+        if maj.get("interdits") is not None:     # « ne pilote pas : … » (ancien écran)
+            self._choisir_categories(c, maj["interdits"])
         self._ecrire()
         return self.profil(compte)
 
     def est_admin(self, compte: str | None) -> bool:
         return compte == COMPTE_MACHINE or bool(self.comptes.get(compte or "", {}).get("admin"))
 
+    # --- groupes et permissions ------------------------------------------------------------------------
+    @property
+    def groupes(self) -> dict[str, dict]:
+        return self._etat.setdefault("groupes", {})
+
+    def groupes_de(self, compte: str | None) -> list[str]:
+        c = self.comptes.get(compte or "") or {}
+        if c.get("groupes") is not None:
+            return [g for g in c["groupes"] if g in self.groupes]
+        g = GROUPE_DU_TYPE.get((c.get("profil") or {}).get("type") or "adulte", "adultes")
+        return [g] if g in self.groupes else []
+
+    def permissions(self, compte: str | None) -> set[str]:
+        """Permissions effectives ; un administrateur (ou la machine elle-même) a tout."""
+        if self.est_admin(compte):
+            return set(D.PERMISSIONS)
+        c = self.comptes.get(compte or "")
+        if not c:
+            return set()
+        return D.effectif(self.groupes, self.groupes_de(compte), c.get("permissions"), c.get("retraits"))
+
+    def peut(self, compte: str | None, permission: str) -> bool:
+        if permission not in D.PERMISSIONS:
+            raise D.DroitInvalide(f"permission inconnue : {permission}")
+        return permission in self.permissions(compte)
+
+    def definir_droits(self, compte: str, groupes: list[str] | None = None, permissions: list[str] | None = None,
+                       retraits: list[str] | None = None) -> None:
+        c = self.comptes[compte]
+        if groupes is not None:
+            inconnus = [g for g in groupes if g not in self.groupes]
+            if inconnus:
+                raise D.DroitInvalide(f"groupe inconnu : {', '.join(inconnus)}")
+        nouvelles = D.valider(permissions) if permissions is not None else None
+        nouveaux_r = D.valider(retraits) if retraits is not None else None
+        if groupes is not None:
+            c["groupes"] = sorted(set(groupes))
+        if nouvelles is not None:
+            c["permissions"] = nouvelles
+        if nouveaux_r is not None:
+            c["retraits"] = nouveaux_r
+        self._ecrire()
+
+    def definir_admin(self, compte: str, admin: bool) -> None:
+        c = self.comptes[compte]
+        if not admin and c.get("admin") and sum(1 for x in self.comptes.values() if x.get("admin")) <= 1:
+            raise AccesRefuse("il faut garder au moins un administrateur")
+        c["admin"] = bool(admin)
+        self._ecrire()
+
+    def enregistrer_groupe(self, gid: str, nom: str, parent: str = "", permissions=(), retraits=()) -> str:
+        """Crée (gid vide) ou modifie un groupe ; un sous-groupe hérite de son parent puis ajoute ou retire."""
+        if not nom.strip():
+            raise D.DroitInvalide("un groupe a un nom")
+        gid = gid or D.ident_groupe(nom)
+        if not gid:
+            raise D.DroitInvalide("nom de groupe invalide")
+        if parent and parent not in self.groupes:
+            raise D.DroitInvalide(f"groupe parent inconnu : {parent}")
+        if parent == gid or (gid in self.groupes and D.cree_une_boucle(self.groupes, gid, parent)):
+            raise D.DroitInvalide("un groupe ne peut pas descendre de lui-même")
+        self.groupes[gid] = {"nom": nom.strip()[:40], "parent": parent or "", "permissions": D.valider(permissions),
+                             "retraits": D.valider(retraits)}
+        self._ecrire()
+        return gid
+
+    def supprimer_groupe(self, gid: str) -> None:
+        if gid not in self.groupes:
+            raise D.DroitInvalide("groupe inconnu")
+        enfants = [g["nom"] for g in self.groupes.values() if g.get("parent") == gid]
+        if enfants:
+            raise D.DroitInvalide(f"il a des sous-groupes : {', '.join(enfants)}")
+        membres = [c.get("nom", i) for i, c in self.comptes.items() if gid in self.groupes_de(i)]
+        if membres:
+            raise D.DroitInvalide(f"il a encore des membres : {', '.join(membres)}")
+        del self.groupes[gid]
+        self._ecrire()
+
+    def liste_groupes(self) -> list[dict]:
+        return [{"id": g, **v, "effectives": sorted(D.effectif_groupe(self.groupes, g)),
+                 "membres": [i for i in self.comptes if g in self.groupes_de(i) and not self.est_admin(i)]}
+                for g, v in self.groupes.items()]
+
     def liste(self) -> list[dict]:
         return [{"id": i, "nom": c.get("nom", i), "admin": bool(c.get("admin")), "actif": bool(c.get("mdp")),
                  "type": self.profil(i)["type"], "interdits": self.profil(i)["interdits"],
+                 "groupes": self.groupes_de(i), "permissions_propres": c.get("permissions") or [],
+                 "retraits": c.get("retraits") or [], "effectives": sorted(self.permissions(i)),
                  "totp": bool(c.get("totp")), "secours_restants": len(c.get("secours", [])),
                  "invitation_en_cours": bool(c.get("invitation")), "derniere_connexion": c.get("derniere_connexion")}
                 for i, c in self.comptes.items()]

@@ -46,6 +46,12 @@
     #config .journal div { padding:3px 0; border-bottom:1px dashed var(--bord); }
     #config .journal b { color:var(--fg); font-weight:500; }
     #config .lienInv { word-break:break-all; user-select:all; }
+    #rubriques { display:flex; flex-wrap:wrap; gap:6px; margin:0 0 10px; }
+    #rubriques[hidden] { display:none; }
+    #rubriques button { border:1px solid var(--bord); background:transparent; color:var(--fg); border-radius:999px;
+                        padding:5px 12px; font:inherit; font-size:.82rem; cursor:pointer; }
+    #rubriques button[aria-pressed="true"] { background:var(--accent); color:var(--accent-fg); border-color:var(--accent); }
+    #config details[data-cache] { display:none; }
   `;
   document.head.appendChild(css);
 
@@ -53,6 +59,7 @@
   zone.id = 'config';
   zone.innerHTML = `
     <p class="aide" id="cVersionHaut" style="margin:0 0 8px;text-align:right"></p>
+    <div id="rubriques" role="tablist" hidden></div>
     <div id="bandeauRedemarrage" hidden><span>Certains changements s'appliqueront au redémarrage.</span>
       <button type="button" class="bouton principal" id="cfgRedemarrer">Redémarrer</button></div>
     <details id="cfgMonCompte"><summary>Mon compte <span class="etat" id="eMonCompte"></span></summary>
@@ -76,16 +83,35 @@
         <button type="button" class="bouton" id="cDeconnexion">Se déconnecter</button><span class="aide" data-msg="compte"></span></div>
       <div class="codes" id="cCodes" hidden></div>
     </details>
+    <details id="cfgMesOutils" hidden><summary>Mon agenda et mon Telegram <span class="etat" id="eMesOutils"></span></summary>
+      <div id="cMonAgendaBloc">
+        <p class="aide">Ton agenda à toi (CalDAV : Radicale, Nextcloud, iCloud…). L'assistant y lit et y ajoute tes rendez-vous, et te les rappelle, à toi seulement.</p>
+        <label class="champ">Adresse du calendrier<input id="cMonAgendaUrl" placeholder="https://…/moi/agenda/"></label>
+        <label class="champ">Identifiant<input id="cMonAgendaUser" autocomplete="off"></label>
+        <label class="champ">Mot de passe<input id="cMonAgendaMdp" type="password" autocomplete="off" placeholder="laisser vide pour garder l'actuel"></label>
+        <div class="rangee"><button type="button" class="bouton principal" id="cMonAgendaBtn">Enregistrer</button>
+          <button type="button" class="bouton" id="cMonAgendaOff">Débrancher</button><span class="aide" data-msg="monagenda"></span></div>
+      </div>
+      <div id="cMonTgBloc" style="margin-top:14px">
+        <p class="aide">Mon Telegram : <span id="cMonTgEtat">…</span></p>
+        <div class="rangee"><button type="button" class="bouton" id="cMonTgCode">Relier mon Telegram</button>
+          <button type="button" class="bouton" id="cMonTgVerif" hidden>J'ai envoyé le code</button>
+          <button type="button" class="bouton" id="cMonTgOff" hidden>Délier</button></div>
+        <p class="aide" data-msg="montg"></p>
+      </div>
+    </details>
     <details id="cfgMemoire"><summary>Mémoire <span class="etat" id="eMemoire"></span></summary>
       <p class="aide">Ce que l'assistant sait de la maison et de toi : souvenirs à valider, recherche, modification, corbeille. Aussi dans le menu ⋯ &gt; Mémoire.</p>
       <div class="rangee"><button type="button" class="bouton principal" id="cMemoireOuvrir">Ouvrir la mémoire</button></div>
       <p class="aide" data-msg="memoire"></p>
     </details>
-    <details id="cfgHabitudes"><summary>Habitudes et routines <span class="etat" id="eHabitudes"></span></summary>
+    <details id="cfgHabitudes"><summary>Routines, habitudes et automatisations <span class="etat" id="eHabitudes"></span></summary>
       <p class="aide">Habitudes repérées dans l'historique des actions : « Automatiser » crée l'automatisation dans Home Assistant (administrateur).</p>
       <div id="cHabitudesListe"></div>
       <p class="aide" style="margin-top:12px">Routines : dis par exemple « crée une routine mode cinéma qui ferme les volets du salon et met la lumière à 20 % », puis « mode cinéma ».</p>
       <div id="cRoutinesListe"></div>
+      <p class="aide" style="margin-top:12px" id="cAutosTitre" hidden>Automatisations créées dans Home Assistant à partir d'une habitude :</p>
+      <div id="cAutosListe"></div>
       <p class="aide" data-msg="habitudes"></p>
     </details>
     <details id="cfgRegles" hidden><summary>Règles « si… alors… » <span class="etat" id="eRegles"></span></summary>
@@ -125,26 +151,30 @@
       <label class="champ">Durée d'une connexion (jours)<input id="cSession" type="number" min="1" max="365"></label>
       <div class="rangee"><button type="button" class="bouton principal" data-enr="acces">Enregistrer</button><span class="aide" data-msg="acces"></span></div>
     </details>
-    <details id="cfgComptes" hidden><summary>Comptes <span class="etat" id="eComptes"></span></summary>
+    <details id="cfgComptes" hidden><summary>Personnes et droits <span class="etat" id="eComptes"></span></summary>
+      <p class="aide">Inviter quelqu'un, choisir son rôle, ses groupes (et sous-groupes) et ses droits un par un : serveur, Telegram, agenda, maison, règles…</p>
+      <div class="rangee"><a class="bouton principal" href="/admin" style="text-decoration:none">Ouvrir la page Personnes et droits</a></div>
       <div id="cListeComptes"></div>
-      <div class="rangee"><input id="cNouveauNom" placeholder="prénom du nouveau compte" maxlength="40" style="flex:1;min-width:0;background:var(--bg);color:var(--fg);border:1px solid var(--bord);border-radius:8px;padding:7px 9px;font:inherit;font-size:.85rem">
-        <label class="aide" style="margin:0"><input type="checkbox" id="cNouveauAdmin"> admin</label>
-        <button type="button" class="bouton principal" id="cCreerCompte">Inviter</button></div>
       <p class="aide" data-msg="comptes"></p>
-      <p class="aide">L'invitation est un lien à usage unique, valable 7 jours : la personne y choisit son mot de passe puis configure le code de son téléphone.</p>
     </details>
     <details id="cfgJournal" hidden><summary>Journal <span class="etat" id="eJournal"></span></summary>
       <div class="journal" id="cJournal"></div>
     </details>
-    <details id="cfgServices"><summary>Météo, annonces, agenda, Docker <span class="etat" id="eServices"></span></summary>
+    <details id="cfgServices"><summary>Annonces et météo <span class="etat" id="eServices"></span></summary>
       <label class="aide" style="display:flex;gap:8px;align-items:center;margin-top:10px"><input type="checkbox" id="cProActif"> L'assistant peut prendre la parole de lui-même</label>
       <label class="champ">Heures calmes (seules les urgences sont dites)<input id="cCalme" placeholder="22:00-07:30"></label>
       <label class="champ">Briefing du matin (heure, vide = jamais)<input id="cBriefing" placeholder="07:30"></label>
       <label class="champ">Ville par défaut pour la météo<input id="cVille" placeholder="ex. Douai"></label>
+      <div class="rangee"><button type="button" class="bouton principal" data-enr="services">Enregistrer</button><span class="aide" data-msg="services"></span></div>
+    </details>
+    <details id="cfgAgenda"><summary>Agenda <span class="etat" id="eAgenda"></span></summary>
       <label class="champ">Agenda CalDAV : adresse du calendrier<input id="cAgendaUrl" placeholder="http://192.168.1.2:5232/benjamin/agenda/"></label>
       <label class="champ">Agenda : identifiant<input id="cAgendaUser" autocomplete="off"></label>
       <label class="champ">Agenda : mot de passe<input id="cAgendaMdp" type="password" autocomplete="off" placeholder="laisser vide pour garder l'actuel"></label>
       <label class="champ">Annoncer un rendez-vous (minutes avant)<input id="cAgendaAvant" type="number" min="0" max="240"></label>
+      <div class="rangee"><button type="button" class="bouton principal" data-enr="agenda">Enregistrer</button><span class="aide" data-msg="agenda"></span></div>
+    </details>
+    <details id="cfgServeur"><summary>Serveur Unraid et Docker <span class="etat" id="eServeur"></span></summary>
       <label class="champ">Docker via l'API Unraid : adresse<input id="cUnraidUrl" placeholder="http://192.168.1.2/graphql"></label>
       <label class="champ">API Unraid : clé (rôle lecture seule)<input id="cUnraidCle" type="password" autocomplete="off" placeholder="laisser vide pour garder l'actuelle"></label>
       <label class="champ">API Unraid : clé pour redémarrer ou mettre à jour un conteneur (droits Docker seulement, facultatif)<input id="cUnraidCleActions" type="password" autocomplete="off" placeholder="laisser vide pour garder l'actuelle"></label>
@@ -153,15 +183,19 @@
         <label class="champ" style="flex:1">Array : libre minimum (%)<input id="cLibreMin" type="number" min="0" max="100"></label>
         <label class="champ" style="flex:1">Parité : contrôle max (jours)<input id="cPariteJours" type="number" min="0" max="365"></label></div>
       <input id="cDockerUrl" type="hidden">
+      <div class="rangee"><button type="button" class="bouton principal" data-enr="serveur">Enregistrer</button><span class="aide" data-msg="serveur"></span></div>
+    </details>
+    <details id="cfgTelegram"><summary>Telegram <span class="etat" id="eTelegram"></span></summary>
       <label class="champ">Telegram : jeton du bot (donné par @BotFather)<input id="cTgJeton" type="password" autocomplete="off" placeholder="laisser vide pour garder l'actuel"></label>
+      <p class="aide">Alertes envoyées sur Telegram :</p>
       <div class="rangee"><label class="aide" style="margin:0"><input type="checkbox" id="cTgDocker"> conteneurs</label>
         <label class="aide" style="margin:0"><input type="checkbox" id="cTgDisques"> disques</label>
         <label class="aide" style="margin:0"><input type="checkbox" id="cTgAgenda"> rendez-vous</label>
         <label class="aide" style="margin:0"><input type="checkbox" id="cTgMaj"> mises à jour</label></div>
       <div class="rangee"><button type="button" class="bouton" id="cTgTrouver">Trouver mon chat</button>
         <button type="button" class="bouton" id="cTgTest">Message de test</button><span class="aide" data-msg="telegram"></span></div>
-      <p class="aide">Telegram : crée un bot avec @BotFather, colle son jeton, enregistre et redémarre ; envoie « /start » à ton bot, puis « Trouver mon chat ».</p>
-      <div class="rangee"><button type="button" class="bouton principal" data-enr="services">Enregistrer</button><span class="aide" data-msg="services"></span></div>
+      <p class="aide">Telegram : crée un bot avec @BotFather, colle son jeton, enregistre et redémarre ; envoie « /start » à ton bot, puis « Trouver mon chat ». Les rappels d'une personne n'y partent que si elle a le droit « recevoir sur Telegram ».</p>
+      <div class="rangee"><button type="button" class="bouton principal" data-enr="telegram">Enregistrer</button><span class="aide" data-msg="telegram-enr"></span></div>
     </details>
     <details id="cfgSysteme"><summary>Système <span class="etat" id="eSysteme"></span></summary>
       <p class="aide" id="cSystemeInfo"></p>
@@ -176,11 +210,59 @@
   for (const [cible, texte] of [['cfgMonCompte', 'Mon compte'], ['cfgMemoire', 'Mémoire'], ['cfgAssistant', "Réglages de l'assistant"]]) {
     const a = Object.assign(document.createElement('a'), {href: '#', textContent: texte + ' ↓'});
     a.style.color = 'var(--accent)';
-    a.onclick = ev => { ev.preventDefault(); const d = $(cible); d.open = true; d.scrollIntoView({behavior: 'smooth', block: 'start'}); };
+    a.dataset.cible = cible;
+    a.onclick = ev => {
+      ev.preventDefault();
+      const r = Object.keys(RUBRIQUES).find(k => RUBRIQUES[k][1].includes(cible));
+      if (r) choisirRubrique(r);
+      const d = $(cible); d.open = true; d.scrollIntoView({behavior: 'smooth', block: 'start'});
+    };
     raccourci.appendChild(a);
   }
   const titre = dlg.querySelector('h2');
   if (titre) titre.after(raccourci); else dlg.prepend(raccourci);
+
+  // --- rubriques (onglets) : « Moi » pour tout le monde, le reste pour les administrateurs -------------------
+  const RUBRIQUES = {
+    moi: ['Moi', ['cfgMonCompte', 'cfgMesOutils', 'cfgMemoire', 'cfgHabitudes', 'cfgRegles']],
+    maison: ['Maison', ['cfgHA']],
+    assistant: ['Assistant', ['cfgAssistant', 'cfgModeles', 'cfgClaude']],
+    services: ['Services', ['cfgServices', 'cfgAgenda', 'cfgTelegram']],
+    serveur: ['Serveur', ['cfgServeur']],
+    securite: ['Sécurité', ['cfgComptes', 'cfgAcces', 'cfgJournal']],
+    systeme: ['Système', ['cfgSysteme']],
+  };
+  let rubrique = 'moi', estAdmin = false;
+  try { rubrique = localStorage.getItem('reglages.rubrique') || 'moi'; } catch (e) {}
+  for (const [cle, [nom]] of Object.entries(RUBRIQUES)) {
+    const b = Object.assign(document.createElement('button'), {type: 'button', textContent: nom});
+    b.dataset.rubrique = cle;
+    b.onclick = () => choisirRubrique(cle);
+    $('rubriques').appendChild(b);
+  }
+  function choisirRubrique(cle) {
+    if (!estAdmin) cle = 'moi';
+    rubrique = cle;
+    try { localStorage.setItem('reglages.rubrique', cle); } catch (e) {}
+    for (const b of $('rubriques').children) b.setAttribute('aria-pressed', String(b.dataset.rubrique === cle));
+    for (const [r, [, ids]] of Object.entries(RUBRIQUES))
+      for (const id of ids) { const d = $(id); if (d) d.toggleAttribute('data-cache', r !== cle); }
+  }
+  // Réglages de toute la maison dans la fenêtre d'affichage (thème et mot de réveil, voix, écoute du serveur) :
+  // administrateurs seulement ; l'apparence de cette page (orbe, écran, sons) reste à chacun.
+  const REGLAGES_MAISON = ['themes', 'noteTheme', 'listeVoix', 'fenetre', 'toujours'];
+  function appliquerRole(admin) {
+    estAdmin = admin;
+    $('rubriques').hidden = !admin;
+    for (const l of raccourci.querySelectorAll('a')) if (l.dataset.cible === 'cfgAssistant') l.style.display = admin ? '' : 'none';
+    for (const id of REGLAGES_MAISON) {
+      const e = $(id);
+      const bloc = e && (e.closest('fieldset') && id === 'listeVoix' ? e.closest('fieldset') : e.closest('.ligne, label.case') || e);
+      if (bloc) bloc.style.display = admin ? '' : 'none';
+    }
+    choisirRubrique(admin ? rubrique : 'moi');
+  }
+  choisirRubrique('moi');
 
   let donnees = null;
   const msg = (cle, texte, ok) => { const e = zone.querySelector(`[data-msg="${cle}"]`); if (e) { e.textContent = texte; e.className = 'aide ' + (ok ? 'msg-ok' : 'msg-ko'); } };
@@ -256,7 +338,10 @@
     $('cPlein').value = dk.plein_pct ?? 95; $('cLibreMin').value = dk.libre_min_pct ?? 10; $('cPariteJours').value = dk.parite_max_jours ?? 45;
     $('cTgJeton').placeholder = tg.jeton_defini ? 'jeton enregistré — laisser vide pour le garder' : 'jeton du bot';
     $('cAgendaAvant').value = ag.annonce_avant_min ?? 15; $('cDockerUrl').value = dk.url || ''; $('cUnraidUrl').value = dk.unraid_url || '';
-    etat('eServices', [ag.url ? 'agenda' : '', (dk.unraid_url || dk.url) ? 'Docker' : '', pa.briefing_heure ? 'briefing ' + pa.briefing_heure : ''].filter(Boolean).join(' · ') || 'rien de branché');
+    etat('eServices', [pa.active ? 'parle de lui-même' : 'muet', pa.briefing_heure ? 'briefing ' + pa.briefing_heure : '', pa.ville || ''].filter(Boolean).join(' · '));
+    etat('eAgenda', ag.url ? 'branché' : 'non branché', ag.url ? 'ok' : '');
+    etat('eServeur', dk.unraid_url ? 'API Unraid' : (dk.url ? 'Docker' : 'non branché'), (dk.unraid_url || dk.url) ? 'ok' : '');
+    etat('eTelegram', tg.jeton_defini ? (tg.chat_id ? 'relié' : 'chat à trouver') : 'non branché', tg.jeton_defini && tg.chat_id ? 'ok' : '');
     const v = e.voix || {};
     $('cSystemeInfo').textContent = `Version ${e.version} · ${e.conteneur ? 'conteneur Docker' : 'PC'} · transcription sur ${v.appareil || '?'} · voix ${v.moteur || '?'}`;
     etat('eSysteme', 'v' + e.version);
@@ -264,7 +349,12 @@
   }
 
   async function charger() {
-    try { afficher(await api('/api/reglages')); } catch (e) { etat('eSysteme', 'réglages indisponibles : ' + e.message, 'ko'); }
+    let s = null;
+    try { s = await api('/api/securite'); } catch (e) {}
+    appliquerRole(!!(s && s.admin));
+    if (s && s.admin) {
+      try { afficher(await api('/api/reglages')); } catch (e) { etat('eSysteme', 'réglages indisponibles : ' + e.message, 'ko'); }
+    }
     chargerComptes();
     chargerMemoire();
     chargerHabitudes();
@@ -301,9 +391,27 @@
   $('cMemoireOuvrir').onclick = () => { if (window.memoireAssistant) window.memoireAssistant.ouvrir(); };
   const VERBES_R = {allumer: 'allumer', eteindre: 'éteindre', ouvrir: 'ouvrir', fermer: 'fermer', regler: 'régler'};
   async function chargerHabitudes() {
-    let h, r;
-    try { [h, r] = await Promise.all([api('/api/habitudes'), api('/api/routines')]); }
+    let h = {habitudes: []}, r;
+    try { r = await api('/api/routines'); }
     catch (e) { $('cfgHabitudes').hidden = true; return; }
+    try { h = await api('/api/habitudes'); } catch (e) {}     // tirées de l'historique : selon les droits
+    let au = {automatisations: []};
+    try { au = await api('/api/automatisations'); } catch (e) {}
+    $('cAutosTitre').hidden = !au.automatisations.length;
+    $('cAutosListe').replaceChildren(...au.automatisations.map(a => {
+      const ligne = document.createElement('div'); ligne.className = 'compte';
+      const t = texte('div', a.alias);
+      t.appendChild(texte('small', 'créée le ' + quand(a.cree) + (a.auteur ? ' par ' + a.auteur : '')));
+      const bt = texte('button', 'Supprimer'); bt.type = 'button'; bt.className = 'bouton';
+      bt.onclick = async () => {
+        if (!confirm(`Supprimer de Home Assistant : ${a.alias} ?`)) return;
+        const rep = await fetch(`/api/automatisations/${encodeURIComponent(a.id)}`, {method: 'DELETE'});
+        msg('habitudes', rep.ok ? 'Automatisation supprimée.' : 'Suppression impossible.', rep.ok);
+        chargerHabitudes();
+      };
+      ligne.append(t, bt);
+      return ligne;
+    }));
     $('cfgHabitudes').hidden = false;
     etat('eHabitudes', `${h.habitudes.length} habitude(s) · ${r.routines.length} routine(s)`);
     const lh = $('cHabitudesListe'); lh.replaceChildren();
@@ -327,7 +435,7 @@
     for (const rt of r.routines) {
       const ligne = document.createElement('div'); ligne.className = 'compte';
       const t = texte('div', rt.nom);
-      t.appendChild(texte('small', rt.etapes.map(e => `${VERBES_R[e.action] || e.action} ${e.entity_ids.join(', ')}${e.valeur != null ? ' ' + e.valeur : ''}${e.couleur ? ' ' + e.couleur : ''}`).join(' · ')));
+      t.appendChild(texte('small', (rt.auteur ? 'de ' + rt.auteur + ' · ' : '') + rt.etapes.map(e => `${VERBES_R[e.action] || e.action} ${e.entity_ids.join(', ')}${e.valeur != null ? ' ' + e.valeur : ''}${e.couleur ? ' ' + e.couleur : ''}`).join(' · ')));
       const bt = texte('button', 'Supprimer'); bt.type = 'button'; bt.className = 'bouton';
       bt.onclick = async () => {
         if (!confirm(`Supprimer la routine « ${rt.nom} » ?`)) return;
@@ -352,7 +460,7 @@
       const ligne = document.createElement('div'); ligne.className = 'compte';
       const t = texte('div', x.texte);
       if (!x.active) t.style.opacity = '.55';
-      t.appendChild(texte('small', (x.active ? '' : 'En pause · ') + 'Dernier déclenchement : ' + quand(x.derniere)
+      t.appendChild(texte('small', (x.auteur ? 'de ' + x.auteur + ' · ' : '') + (x.active ? '' : 'En pause · ') + 'Dernier déclenchement : ' + quand(x.derniere)
         + (x.resultat ? ' (' + x.resultat + ')' : '')));
       const b = document.createElement('div'); b.className = 'rangee'; b.style.marginTop = '0';
       const pause = texte('button', x.active ? 'Mettre en pause' : 'Reprendre'); pause.type = 'button';
@@ -388,66 +496,22 @@
       } catch (e) {}
       afficherContexte();
       afficherVoix();
+      afficherMesOutils();
     }
     $('cfgComptes').hidden = $('cfgJournal').hidden = !s.admin;
     if (!s.admin) return;
     try {
-      const {comptes, moi} = await api('/api/comptes');
+      // Résumé ; la gestion complète (rôle, groupes, sous-groupes, droits un par un) est sur la page /admin
+      const {comptes} = await api('/api/comptes');
       etat('eComptes', comptes.length + ' compte' + (comptes.length > 1 ? 's' : ''));
-      const liste = $('cListeComptes');
-      liste.replaceChildren();
-      for (const c of comptes) {
+      $('cListeComptes').replaceChildren(...comptes.map(c => {
         const ligne = document.createElement('div'); ligne.className = 'compte';
-        const nom = texte('div', c.nom + (c.admin ? ' · admin' : ''));
-        nom.appendChild(texte('small', !c.actif ? 'invitation en attente' : (c.totp ? 'code téléphone actif' : 'code téléphone à configurer') +
-          ' · dernière connexion : ' + quand(c.derniere_connexion) + (c.totp ? ' · ' + c.secours_restants + ' codes de secours' : '')));
-        const boutons = document.createElement('div'); boutons.className = 'rangee'; boutons.style.marginTop = '0';
-        const reinv = texte('button', c.actif ? 'Réinitialiser' : 'Nouveau lien'); reinv.type = 'button'; reinv.className = 'bouton';
-        reinv.title = 'Nouveau lien d\'invitation : nouveau mot de passe et nouveau code téléphone ; ses appareils sont déconnectés';
-        reinv.onclick = async () => {
-          if (c.actif && !confirm(`Réinitialiser ${c.nom} ? Ses appareils seront déconnectés et il faudra lui envoyer le nouveau lien.`)) return;
-          try { montrerLien(c.nom, (await api(`/api/comptes/${encodeURIComponent(c.id)}/invitation`, {})).lien); chargerComptes(); }
-          catch (e) { msg('comptes', e.message, false); }
-        };
-        boutons.appendChild(reinv);
-        const type = document.createElement('select'); type.className = 'bouton'; type.title = 'Type de compte';
-        for (const t of ['adulte', 'enfant']) type.appendChild(Object.assign(document.createElement('option'), {value: t, textContent: t}));
-        type.value = c.type || 'adulte';
-        type.onchange = async () => {
-          try { await api(`/api/comptes/${encodeURIComponent(c.id)}/profil`, {type: type.value}); msg('comptes', `${c.nom} : compte ${type.value}.`, true); chargerComptes(); }
-          catch (e) { msg('comptes', e.message, false); }
-        };
-        boutons.appendChild(type);
-        // Droits par personne : ce qu'elle ne pilote pas (appliqué aussi quand sa voix est reconnue ailleurs)
-        const droits = document.createElement('div'); droits.className = 'droits';
-        droits.appendChild(texte('small', 'Ne pilote pas :'));
-        for (const [cle, lib] of DROITS) {
-          const l = document.createElement('label'); const cb = document.createElement('input');
-          cb.type = 'checkbox'; cb.checked = (c.interdits || []).includes(cle);
-          cb.onchange = async () => {
-            const choix = [...droits.querySelectorAll('input')].filter(x => x.checked).map(x => x.dataset.cle);
-            try { await api(`/api/comptes/${encodeURIComponent(c.id)}/profil`, {interdits: choix});
-                  msg('comptes', `${c.nom} : ${choix.length ? 'ne pilote pas ' + choix.map(x => DROITS.find(d => d[0] === x)[1]).join(', ') : 'pilote tout'}.`, true); }
-            catch (e) { cb.checked = !cb.checked; msg('comptes', e.message, false); }
-          };
-          cb.dataset.cle = cle; l.append(cb, ' ' + lib); droits.appendChild(l);
-        }
-        nom.appendChild(droits);
-        if (c.id !== moi) {
-          const suppr = texte('button', 'Supprimer'); suppr.type = 'button'; suppr.className = 'bouton';
-          suppr.onclick = async () => {
-            if (!confirm(`Supprimer le compte ${c.nom} ? Ses appareils seront déconnectés.`)) return;
-            try {
-              const r = await fetch(`/api/comptes/${encodeURIComponent(c.id)}`, {method: 'DELETE'});
-              if (!r.ok) throw new Error((await r.json()).detail || 'erreur ' + r.status);
-              msg('comptes', c.nom + ' supprimé.', true); chargerComptes();
-            } catch (e) { msg('comptes', e.message, false); }
-          };
-          boutons.appendChild(suppr);
-        }
-        ligne.append(nom, boutons);
-        liste.appendChild(ligne);
-      }
+        const nom = texte('div', c.nom + (c.admin ? ' · administrateur' : ''));
+        nom.appendChild(texte('small', (!c.actif ? 'invitation en attente' : 'dernière connexion : ' + quand(c.derniere_connexion))
+          + (c.admin ? '' : ' · ' + c.effectives.length + ' droit(s)')));
+        ligne.append(nom);
+        return ligne;
+      }));
       const {evenements} = await api('/api/audit?n=60');
       etat('eJournal', evenements.length ? 'dernier : ' + quand(evenements[0].date) : 'vide');
       $('cJournal').replaceChildren(...evenements.map(ev => {
@@ -469,14 +533,56 @@
     if (navigator.clipboard) navigator.clipboard.writeText(lien).then(() => p.append(' · copié'), () => {});
   }
 
-  $('cCreerCompte').onclick = async () => {
-    const nom = $('cNouveauNom').value.trim();
-    if (!nom) { msg('comptes', 'Indique un prénom.', false); return; }
+  // --- son agenda et son Telegram (selon ses droits) --------------------------------------------------
+  async function afficherMesOutils() {
+    let o;
+    try { o = await api('/api/compte/outils'); } catch (e) { $('cfgMesOutils').hidden = true; return; }
+    $('cfgMesOutils').hidden = !(o.agenda.permis || o.telegram.permis);
+    $('cMonAgendaBloc').hidden = !o.agenda.permis;
+    $('cMonTgBloc').hidden = !o.telegram.permis;
+    if (document.activeElement !== $('cMonAgendaUrl')) $('cMonAgendaUrl').value = o.agenda.url;
+    if (document.activeElement !== $('cMonAgendaUser')) $('cMonAgendaUser').value = o.agenda.utilisateur;
+    $('cMonAgendaMdp').placeholder = o.agenda.mdp_defini ? 'enregistré — laisser vide pour le garder' : 'mot de passe';
+    $('cMonTgEtat').textContent = !o.telegram.bot ? "pas de bot Telegram (un administrateur doit le brancher)"
+      : o.telegram.relie ? 'relié (' + o.telegram.relie + ')' : 'pas relié';
+    $('cMonTgCode').hidden = !o.telegram.bot || !!o.telegram.relie;
+    $('cMonTgOff').hidden = !o.telegram.relie;
+    etat('eMesOutils', [o.agenda.permis ? (o.agenda.url ? 'agenda branché' : "pas d'agenda") : '',
+      o.telegram.permis ? (o.telegram.relie ? 'Telegram relié' : 'Telegram pas relié') : ''].filter(Boolean).join(' · '));
+  }
+  $('cMonAgendaBtn').onclick = async () => {
     try {
-      const o = await api('/api/comptes', {nom, admin: $('cNouveauAdmin').checked});
-      $('cNouveauNom').value = ''; $('cNouveauAdmin').checked = false;
-      montrerLien(nom, o.lien); chargerComptes();
-    } catch (e) { msg('comptes', e.message, false); }
+      const o = await api('/api/compte/agenda', {url: $('cMonAgendaUrl').value.trim(), utilisateur: $('cMonAgendaUser').value.trim(),
+                                                  mot_de_passe: $('cMonAgendaMdp').value});
+      $('cMonAgendaMdp').value = '';
+      msg('monagenda', o.branche ? `Branché : ${o.evenements_7_jours} rendez-vous dans les 7 jours.` : 'Débranché.', true);
+    } catch (e) { msg('monagenda', e.message, false); }
+    afficherMesOutils();
+  };
+  $('cMonAgendaOff').onclick = async () => {
+    if (!confirm('Débrancher ton agenda ? Les rendez-vous restent dans ton calendrier.')) return;
+    $('cMonAgendaUrl').value = '';
+    $('cMonAgendaBtn').click();
+  };
+  $('cMonTgCode').onclick = async () => {
+    try {
+      const o = await api('/api/compte/telegram/code', {});
+      msg('montg', `Dans Telegram, envoie « ${o.code} » à ${o.bot ? '@' + o.bot : 'ton bot'} (valable ${o.expire_min} min), puis clique « J'ai envoyé le code ».`, true);
+      $('cMonTgVerif').hidden = false;
+    } catch (e) { msg('montg', e.message, false); }
+  };
+  $('cMonTgVerif').onclick = async () => {
+    try {
+      const o = await api('/api/compte/telegram/relier', {});
+      msg('montg', `Relié à ${o.nom || 'ton Telegram'} : un message vient de t'y être envoyé.`, true);
+      $('cMonTgVerif').hidden = true;
+    } catch (e) { msg('montg', e.message, false); }
+    afficherMesOutils();
+  };
+  $('cMonTgOff').onclick = async () => {
+    try { const r = await fetch('/api/compte/telegram', {method: 'DELETE'}); if (!r.ok) throw new Error('erreur ' + r.status); msg('montg', 'Délié.', true); }
+    catch (e) { msg('montg', e.message, false); }
+    afficherMesOutils();
   };
 
   const NOMS_MASQUES = {etat_sensible: 'état du chauffage, du portail…', historique: 'historique des actions', personnel: 'tes préférences'};
@@ -602,9 +708,10 @@
       const jeton = $('cHaJeton').value.trim();
       enregistrer('ha', {home_assistant: {url: $('cHaUrl').value.trim()}},
         jeton ? async () => { await api('/api/reglages/secret', {nom: 'HA_JETON', valeur: jeton}); $('cHaJeton').value = ''; } : null);
-    } else if (b.dataset.enr === 'services') {
+    } else if (['services', 'agenda', 'serveur', 'telegram'].includes(b.dataset.enr)) {
+      // les quatre rubriques partagent un enregistrement (mêmes sections du fichier de réglages)
       const mdp = $('cAgendaMdp').value;
-      enregistrer('services', {
+      enregistrer(b.dataset.enr === 'telegram' ? 'telegram-enr' : b.dataset.enr, {
         proactif: {active: $('cProActif').checked, heures_calmes: $('cCalme').value.trim(), briefing_heure: $('cBriefing').value.trim(), ville: $('cVille').value.trim()},
         agenda: {url: $('cAgendaUrl').value.trim(), utilisateur: $('cAgendaUser').value.trim(), annonce_avant_min: +$('cAgendaAvant').value || 0},
         docker: {url: $('cDockerUrl').value.trim(), unraid_url: $('cUnraidUrl').value.trim(), mises_a_jour: $('cMaj').checked,
@@ -671,6 +778,19 @@
   }
   $('cfgRedemarrer').onclick = () => redemarrer('systeme');
   $('cfgRedemarrer2').onclick = () => redemarrer('systeme');
+
+  // Au chargement de la page : le menu ne propose que ce que ce compte a le droit d'ouvrir
+  (async () => {
+    try {
+      const s = await api('/api/securite');
+      const p = new Set(s.permissions || []);
+      for (const [id, perm] of [['ouvrirHisto', 'maison.historique'], ['ouvrirAgenda', 'agenda.lire']]) {
+        const b = $(id);
+        if (b && s.compte) b.style.display = p.has(perm) ? '' : 'none';
+      }
+      appliquerRole(!!s.admin);
+    } catch (e) {}
+  })();
 
   // chargement à chaque ouverture du panneau
   new MutationObserver(() => { if (dlg.open) charger(); }).observe(dlg, {attributes: true, attributeFilter: ['open']});

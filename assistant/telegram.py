@@ -31,18 +31,26 @@ class Telegram:
             raise RuntimeError(f"Telegram : {d.get('description') or r.status_code}")
         return d
 
-    async def envoyer(self, texte: str) -> None:
-        if not self.configure:
+    async def envoyer(self, texte: str, chat_id: str = "") -> None:
+        """Vers le chat de la maison, ou vers celui d'une personne (relié dans ⚙ Mon compte)."""
+        chat = str(chat_id or self.chat_id)
+        if not (self.jeton and chat):
             raise RuntimeError("Telegram non configuré (jeton du bot et chat)")
-        await self._appel("sendMessage", chat_id=self.chat_id, text=texte[:4000], disable_web_page_preview=True)
+        await self._appel("sendMessage", chat_id=chat, text=texte[:4000], disable_web_page_preview=True)
 
-    async def trouver_chat(self) -> dict | None:
-        """Le dernier chat privé qui a écrit au bot (après « /start »)."""
+    async def nom_du_bot(self) -> str:
+        d = await self._appel("getMe")
+        return (d.get("result") or {}).get("username", "")
+
+    async def trouver_chat(self, code: str = "") -> dict | None:
+        """Le dernier chat privé qui a écrit au bot (après « /start ») ; avec `code`, celui qui a envoyé ce code
+        (relier le Telegram d'une personne sans risquer de prendre le chat d'une autre)."""
         if not self.jeton:
             raise RuntimeError("jeton du bot manquant")
-        d = await self._appel("getUpdates", limit=20, allowed_updates=["message"])
+        d = await self._appel("getUpdates", limit=50, allowed_updates=["message"])
         for u in reversed(d.get("result") or []):
-            chat = ((u.get("message") or {}).get("chat")) or {}
-            if chat.get("type") == "private":
+            m = u.get("message") or {}
+            chat = m.get("chat") or {}
+            if chat.get("type") == "private" and (not code or code in (m.get("text") or "")):
                 return {"id": str(chat["id"]), "nom": chat.get("first_name") or chat.get("username") or ""}
         return None
