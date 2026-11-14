@@ -106,24 +106,39 @@ def semble_charabia(texte: str) -> bool:
 
 
 class Reveil:
-    """État d'écoute par conversation (page) : réveillé jusqu'à telle heure."""
+    """État d'écoute par conversation (page) : réveillé jusqu'à telle heure.
+
+    `fenetre_s` et `toujours` sont les valeurs de la maison ; chaque conversation peut avoir les siennes
+    (celles de la personne connectée, voir regler)."""
 
     def __init__(self, fenetre_s: float, toujours: bool = False) -> None:
         self.fenetre_s = fenetre_s
         self.toujours = toujours
         self._jusqu_a: dict[str, float] = {}
+        self._propres: dict[str, tuple[float, bool]] = {}
+
+    def regler(self, conversation: str, fenetre_s: float, toujours: bool) -> None:
+        """Réglages d'écoute de la personne qui parle dans cette conversation."""
+        if conversation:
+            self._propres[conversation] = (float(fenetre_s), bool(toujours))
+
+    def _fenetre(self, conversation: str) -> float:
+        return self._propres.get(conversation, (self.fenetre_s, self.toujours))[0]
+
+    def _toujours(self, conversation: str) -> bool:
+        return self._propres.get(conversation, (self.fenetre_s, self.toujours))[1]
 
     def eveille(self, conversation: str) -> bool:
-        return self.toujours or time.monotonic() < self._jusqu_a.get(conversation, 0)
+        return self._toujours(conversation) or time.monotonic() < self._jusqu_a.get(conversation, 0)
 
     def prolonger(self, conversation: str) -> None:
-        self._jusqu_a[conversation] = time.monotonic() + self.fenetre_s
+        self._jusqu_a[conversation] = time.monotonic() + self._fenetre(conversation)
 
     def endormir(self, conversation: str) -> None:
         self._jusqu_a.pop(conversation, None)
 
     def restant_s(self, conversation: str) -> float | None:
-        if self.toujours:
+        if self._toujours(conversation):
             return None
         return max(0.0, round(self._jusqu_a.get(conversation, 0) - time.monotonic(), 1))
 
@@ -145,7 +160,7 @@ class Reveil:
         if self.eveille(conversation):
             if semble_charabia(texte):
                 return {"action": "ignorer", "raison": "incompréhensible"}
-            if not self.toujours:
+            if not self._toujours(conversation):
                 self.prolonger(conversation)   # la conversation continue : on prolonge la fenêtre
             return {"action": "commande", "commande": texte.strip(), "fenetre_s": self.restant_s(conversation)}
         return {"action": "ignorer", "raison": "pas de wake word"}

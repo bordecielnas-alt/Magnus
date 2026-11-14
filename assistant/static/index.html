@@ -339,49 +339,61 @@
 <dialog id="dlgOrbe">
   <form method="dialog">
     <h2>Réglages</h2>
-    <div class="ligne">Thème<div class="ecoles" id="themes"><button type="button" data-theme="orbe">Orbe</button><button type="button" data-theme="hal">HAL 9000</button></div></div>
-    <p class="note" id="noteTheme"></p>
-    <div id="variantesHal" hidden>
-      <label class="ligne" for="halStyle">Style de l'œil<select id="halStyle"><option value="classique">Classique (proche du film)</option><option value="moderne">Moderne (pulse, couronne de graduations)</option></select></label>
-      <label class="case"><input type="checkbox" id="halCouronne"> Couronne de graduations dans le verre</label>
-      <label class="ligne" for="halEveil">Son d'éveil de l'œil<select id="halEveil"></select></label>
-    </div>
-    <div class="ligne">École de magie<div class="ecoles" id="ecoles"></div></div>
-    <label class="ligne" for="rgParticules">Particules<input type="range" id="rgParticules" min="0" max="400" step="10"></label>
-    <label class="ligne" for="rgTrainees">Traînées (à gauche : particules nettes)<input type="range" id="rgTrainees" min="0" max="12" step="1"></label>
-    <label class="ligne" for="rgBrume">Brume<input type="range" id="rgBrume" min="0" max="100"></label>
-    <label class="case"><input type="checkbox" id="lireTout"> Lire aussi à voix haute les réponses aux messages écrits</label>
-    <label class="case"><input type="checkbox" id="sonAccueil"> Son d'éveil de l'orbe avant qu'il parle</label>
-    <label class="ligne" for="quandAccueil">Quand<select id="quandAccueil"><option value="toujours">Avant chaque réponse, au rechargement et quand il parle seul</option><option value="seul">Seulement au rechargement et quand il parle seul</option></select></label>
-    <label class="ligne" for="choixAccueil">Son d'éveil<select id="choixAccueil"></select></label>
-    <p class="note" id="noteAccueil"><button type="button" class="discret" id="essaiAccueil">Écouter</button> <span></span></p>
-    <fieldset>
-      <legend>Écran</legend>
-      <label class="ligne" for="rotation">Orientation
-        <select id="rotation"><option value="0">Normale</option><option value="90">Tournée d'un quart (90°)</option><option value="180">À l'envers (180°)</option><option value="270">Tournée de trois quarts (270°)</option></select></label>
-      <label class="case"><input type="checkbox" id="miroir"> Mode miroir (écriture inversée, pour un reflet ou un affichage tête haute)</label>
-    </fieldset>
-    <fieldset>
-      <legend>Voix</legend>
-      <div class="voix" id="listeVoix" role="radiogroup" aria-label="Voix de l'assistant"></div>
-      <p class="note" id="noteVoix">Chargement des voix…</p>
-    </fieldset>
-    <fieldset>
-      <legend>Écoute continue</legend>
-      <label class="case"><input type="checkbox" id="continu"> Écouter en continu et réagir au mot de réveil (aussi : appui long sur le micro)</label>
-      <label class="case" for="fenetre">Après le mot de réveil, écouter encore <input type="number" id="fenetre" min="0" max="3600" step="5"> s</label>
-      <p class="note">0 = dire le mot de réveil avant chaque phrase.</p>
-      <label class="case"><input type="checkbox" id="toujours"> Toujours à l'écoute, sans mot de réveil</label>
-      <label class="case"><input type="checkbox" id="interruption"> Il se tait quand je dis son nom ou « stop » pendant qu'il parle (même sans écoute continue)</label>
-      <label class="case"><input type="checkbox" id="prechauffe"> Préparer le micro dès le premier toucher (premier enregistrement plus fiable ; l'icône micro du téléphone reste allumée)</label>
-      <p class="note" id="noteEcoute"></p>
-    </fieldset>
-    <details class="diag" id="diagAudio">
-      <summary>Diagnostic audio</summary>
-      <p class="note">Ce qui s'est passé avec le micro et le son, sur cette page et la précédente. Le même journal est envoyé au serveur au fil de l'eau.</p>
-      <pre id="diagTexte"></pre>
-      <button type="button" class="discret" id="diagCopier">Copier</button>
-    </details>
+    <!-- Rubriques (onglets ajoutés par reglages.js) : « Affichage » et « Voix et écoute » sont à chaque personne
+         (thème, voix et écoute gardés dans son compte ; l'apparence et l'écran, dans ce navigateur). -->
+    <section class="rubrique" data-rubrique="affichage" aria-label="Affichage">
+      <fieldset>
+        <legend>Assistant</legend>
+        <div class="ligne">Thème<div class="ecoles" id="themes"><button type="button" data-theme="orbe">Orbe</button><button type="button" data-theme="hal">HAL 9000</button></div></div>
+        <p class="note" id="noteTheme"></p>
+        <div id="variantesHal" hidden>
+          <label class="ligne" for="halStyle">Style de l'œil<select id="halStyle"><option value="classique">Classique (proche du film)</option><option value="moderne">Moderne (pulse, couronne de graduations)</option></select></label>
+          <label class="case"><input type="checkbox" id="halCouronne"> Couronne de graduations dans le verre</label>
+        </div>
+        <div class="ligne">École de magie<div class="ecoles" id="ecoles"></div></div>
+        <label class="ligne" for="rgParticules">Particules<input type="range" id="rgParticules" min="0" max="400" step="10"></label>
+        <label class="ligne" for="rgTrainees">Traînées (à gauche : particules nettes)<input type="range" id="rgTrainees" min="0" max="12" step="1"></label>
+        <label class="ligne" for="rgBrume">Brume<input type="range" id="rgBrume" min="0" max="100"></label>
+      </fieldset>
+      <fieldset>
+        <legend>Écran</legend>
+        <label class="ligne" for="rotation">Orientation
+          <select id="rotation"><option value="0">Normale</option><option value="90">Tournée d'un quart (90°)</option><option value="180">À l'envers (180°)</option><option value="270">Tournée de trois quarts (270°)</option></select></label>
+        <label class="case"><input type="checkbox" id="miroir"> Mode miroir (écriture inversée, pour un reflet ou un affichage tête haute)</label>
+      </fieldset>
+    </section>
+    <section class="rubrique" data-rubrique="voix" aria-label="Voix et écoute">
+      <fieldset>
+        <legend>Voix</legend>
+        <div class="voix" id="listeVoix" role="radiogroup" aria-label="Voix de l'assistant"></div>
+        <p class="note" id="noteVoix">Chargement des voix…</p>
+        <label class="case"><input type="checkbox" id="lireTout"> Lire aussi à voix haute les réponses aux messages écrits</label>
+      </fieldset>
+      <fieldset>
+        <legend>Son d'éveil</legend>
+        <label class="case"><input type="checkbox" id="sonAccueil"> Son d'éveil avant qu'il parle</label>
+        <label class="ligne" for="quandAccueil">Quand<select id="quandAccueil"><option value="toujours">Avant chaque réponse, au rechargement et quand il parle seul</option><option value="seul">Seulement au rechargement et quand il parle seul</option></select></label>
+        <label class="ligne" for="choixAccueil">Son de l'orbe<select id="choixAccueil"></select></label>
+        <label class="ligne" for="halEveil">Son de l'œil (HAL 9000)<select id="halEveil"></select></label>
+        <p class="note" id="noteAccueil"><button type="button" class="discret" id="essaiAccueil">Écouter</button> <span></span></p>
+      </fieldset>
+      <fieldset>
+        <legend>Écoute</legend>
+        <label class="case"><input type="checkbox" id="continu"> Écouter en continu et réagir au mot de réveil (aussi : appui long sur le micro)</label>
+        <label class="case" for="fenetre">Après le mot de réveil, écouter encore <input type="number" id="fenetre" min="0" max="3600" step="5"> s</label>
+        <p class="note">0 = dire le mot de réveil avant chaque phrase.</p>
+        <label class="case"><input type="checkbox" id="toujours"> Toujours à l'écoute, sans mot de réveil</label>
+        <label class="case"><input type="checkbox" id="interruption"> Il se tait quand je dis son nom ou « stop » pendant qu'il parle (même sans écoute continue)</label>
+        <label class="case"><input type="checkbox" id="prechauffe"> Préparer le micro dès le premier toucher (premier enregistrement plus fiable ; l'icône micro du téléphone reste allumée)</label>
+        <p class="note" id="noteEcoute"></p>
+      </fieldset>
+      <details class="diag" id="diagAudio">
+        <summary>Diagnostic audio</summary>
+        <p class="note">Ce qui s'est passé avec le micro et le son, sur cette page et la précédente. Le même journal est envoyé au serveur au fil de l'eau.</p>
+        <pre id="diagTexte"></pre>
+        <button type="button" class="discret" id="diagCopier">Copier</button>
+      </details>
+    </section>
     <div class="actions">
       <button type="button" class="discret" id="orbeDefaut">Valeurs par défaut</button>
       <button value="ok">Fermer</button>
@@ -2395,6 +2407,7 @@ function appliquerTheme(t) {
   }
   for (const id of REGLAGES_ORBE) { const el = $(id); const bloc = el && (el.closest('.ligne') || el); if (bloc) bloc.style.display = t === 'hal' ? 'none' : ''; }
   $('variantesHal').hidden = t !== 'hal';
+  $('halEveil').closest('.ligne').style.display = t === 'hal' ? '' : 'none';   // son d'éveil de l'œil (rubrique Voix)
   const mot = t === 'hal' ? 'hal' : ($('wake').textContent || '').trim();
   $('noteTheme').textContent = 'Mot de réveil : « ' + (mot && mot !== '…' ? mot.charAt(0).toUpperCase() + mot.slice(1) : '…') + ' »';
   if (change) diag('thème : ' + t);
